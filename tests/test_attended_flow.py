@@ -88,7 +88,7 @@ def test_attended_reviewers_settle_a_whole_run_through_the_command_line(tmp_path
 
 
 def test_a_reject_from_an_attended_reviewer_sends_the_row_to_a_second_family(tmp_path):
-    config, config_path, controller = build(tmp_path)
+    _config, config_path, controller = build(tmp_path)
     controller.add_task(task_spec(("001",), image="picture.jpg"))
     controller.run()
     desk = tmp_path / "desk"

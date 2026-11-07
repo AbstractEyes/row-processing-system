@@ -133,8 +133,9 @@ def test_a_whole_run_with_escalation_and_audit_killed_after_any_event_ends_in_th
     expected = outcome(reference)
     total = len(reference.events())
     assert total > 40 and len(expected[1]) == 4  # every row is settled and shipped in the end
-    assert any(v[1] == "reject" for status, verdicts in expected[0].values() for v in verdicts)  # escalation happened
-    assert any(v[2] for status, verdicts in expected[0].values() for v in verdicts)  # and so did an audit
+    judged = [v for _status, verdicts in expected[0].values() for v in verdicts]
+    assert any(v[1] == "reject" for v in judged)  # escalation happened
+    assert any(v[2] for v in judged)  # and so did an audit
 
     for count in range(1, total):
         world = World(tmp_path / f"kill-{count}", config=config)
