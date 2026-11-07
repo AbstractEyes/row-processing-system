@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-06",
+  "batch_discount": 0.5,
+  "notes": "US dollars per million tokens. cache_write is the one-hour cache rate. Rates come from each provider's pricing page on the date above; check them before spending and keep this file's date current.",
+  "models": {
+    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_write": 0.20, "cache_read": 0.01},
+    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_write": 4.00, "cache_read": 0.10},
+    "gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_write": 0.0, "cache_read": 0.01},
+    "gpt-6.1-sol": {"input": 2.00, "output": 10.00, "cache_write": 0.0, "cache_read": 0.10},
+    "gemini-4-argon": {"input": 2.00, "output": 10.00, "cache_write": 0.0, "cache_read": 0.0, "valid_until": "2026-11-30", "note": "introductory rate"},
+    "gemini-3.8-flash": {"input": 0.75, "output": 3.75, "cache_write": 0.0, "cache_read": 0.0, "valid_until": "2026-12-31", "note": "introductory rate"},
+    "fake-model": {"input": 1.00, "output": 2.00, "cache_write": 0.0, "cache_read": 0.10, "note": "test double, not a real price"}
+  }
+}
