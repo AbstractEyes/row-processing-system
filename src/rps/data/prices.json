@@ -1,14 +1,96 @@
 {
-  "date": "2026-11-06",
+  "date": "2026-11-07",
+  "currency": "USD",
+  "unit": "per million tokens",
   "batch_discount": 0.5,
-  "notes": "US dollars per million tokens. cache_write is the one-hour cache rate. Rates come from each provider's pricing page on the date above; check them before spending and keep this file's date current.",
+  "notes": "Rates come from each provider's pricing page on the date each model was checked; check them before spending. Batch and synchronous rates are separate. Where a provider's pages do not say whether the batch discount and the cache prices stack, the batch card carries the higher (unstacked) cache rate until the pricing test against the billed figure settles it. Prompts above a provider's long-prompt threshold (Anthropic 100K, OpenAI 272K input tokens) are billed at higher rates that this table does not model.",
   "models": {
-    "claude-haiku-5-5": {"input": 0.10, "output": 0.50, "cache_write": 0.20, "cache_read": 0.01},
-    "claude-sonnet-5-5": {"input": 2.00, "output": 10.00, "cache_write": 4.00, "cache_read": 0.10},
-    "gpt-6-luna": {"input": 0.10, "output": 0.50, "cache_write": 0.0, "cache_read": 0.01},
-    "gpt-6.1-sol": {"input": 2.00, "output": 10.00, "cache_write": 0.0, "cache_read": 0.10},
-    "gemini-4-argon": {"input": 2.00, "output": 10.00, "cache_write": 0.0, "cache_read": 0.0, "valid_until": "2026-11-30", "note": "introductory rate"},
-    "gemini-3.8-flash": {"input": 0.75, "output": 3.75, "cache_write": 0.0, "cache_read": 0.0, "valid_until": "2026-12-31", "note": "introductory rate"},
-    "fake-model": {"input": 1.00, "output": 2.00, "cache_write": 0.0, "cache_read": 0.10, "note": "test double, not a real price"}
+    "claude-haiku-5-5": {
+      "provider": "anthropic",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-11-07",
+      "sync": {"input": 0.10, "output": 0.50, "cache_write": 0.20, "cache_read": 0.01},
+      "batch": {"input": 0.05, "output": 0.25, "cache_write": 0.20, "cache_read": 0.01},
+      "note": "cache_write is the 1-hour rate (5 minutes: 0.125); batch cache rates are the unstacked ones (50% off would give 0.10 and 0.005); above 100K prompt tokens the page lists 0.50 in / 2.50 out"
+    },
+    "claude-sonnet-5-5": {
+      "provider": "anthropic",
+      "source": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "checked": "2026-11-07",
+      "sync": {"input": 2.00, "output": 10.00, "cache_write": 4.00, "cache_read": 0.10},
+      "batch": {"input": 1.00, "output": 5.00, "cache_write": 4.00, "cache_read": 0.10},
+      "note": "cache_write is the 1-hour rate (5 minutes: 2.50); batch cache rates are the unstacked ones"
+    },
+    "gpt-6-luna": {
+      "provider": "openai",
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-11-07",
+      "sync": {"input": 0.10, "output": 0.50, "cache_read": 0.01},
+      "batch": {"input": 0.05, "output": 0.25, "cache_read": 0.01},
+      "note": "the page says Batch is 50% of Standard, which would make cached input 0.005; 0.01 is used until the pricing test settles it; no cache write price is listed, so input-rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output"
+    },
+    "gpt-6.1-sol": {
+      "provider": "openai",
+      "source": "https://developers.openai.com/api/docs/pricing",
+      "checked": "2026-11-07",
+      "sync": {"input": 2.00, "output": 10.00, "cache_read": 0.10},
+      "batch": {"input": 1.00, "output": 5.00, "cache_read": 0.10},
+      "note": "batch cached input is the unstacked 0.10 (50% off would give 0.05); no cache write price is listed, so the input rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output"
+    },
+    "gemini-3.8-flash": {
+      "provider": "gemini",
+      "source": "https://aistudio.google.com/docs/pricing",
+      "checked": "2026-11-07",
+      "until": "2026-12-31",
+      "note": "introductory rate until 2026-12-31; the page lists one input rate, so cached tokens are priced at it (an upper bound); context-cache storage is billed separately and is not counted here",
+      "sync": {"input": 0.75, "output": 3.75, "cache_read": 0.75},
+      "batch": {"input": 0.375, "output": 1.875, "cache_read": 0.75},
+      "then": {
+        "note": "list rate after the introductory period",
+        "sync": {"input": 1.50, "output": 7.50, "cache_read": 1.50},
+        "batch": {"input": 0.75, "output": 3.75, "cache_read": 1.50}
+      }
+    },
+    "gemini-4-argon": {
+      "provider": "gemini",
+      "source": "https://aistudio.google.com/docs/pricing",
+      "checked": "2026-11-07",
+      "until": "2026-11-30",
+      "note": "introductory rate until 2026-11-30; cached tokens are priced at the input rate (an upper bound)",
+      "sync": {"input": 2.00, "output": 10.00, "cache_read": 2.00},
+      "batch": {"input": 1.00, "output": 5.00, "cache_read": 2.00},
+      "then": {
+        "note": "list rate after the introductory period",
+        "sync": {"input": 4.00, "output": 20.00, "cache_read": 4.00},
+        "batch": {"input": 2.00, "output": 10.00, "cache_read": 4.00}
+      }
+    },
+    "deepseek-flash": {
+      "provider": "deepseek",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "checked": "2026-11-07",
+      "note": "no batch API; peak is Mon-Fri 01:00-04:00 and 06:00-10:00 UTC (double price); the page does not name the currency; the cache is automatic and a miss is billed as plain input",
+      "tiers": {
+        "offpeak": {"sync": {"input": 0.15, "output": 0.60, "cache_read": 0.003}},
+        "peak": {"sync": {"input": 0.30, "output": 1.20, "cache_read": 0.006}}
+      }
+    },
+    "deepseek-v4-pro": {
+      "provider": "deepseek",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "checked": "2026-11-07",
+      "note": "text only; no batch API; peak hours as for deepseek-flash",
+      "tiers": {
+        "offpeak": {"sync": {"input": 0.66, "output": 1.98, "cache_read": 0.022}},
+        "peak": {"sync": {"input": 1.32, "output": 3.96, "cache_read": 0.044}}
+      }
+    },
+    "fake-model": {
+      "provider": "fake",
+      "source": "none: test double, not a real price",
+      "checked": "2026-11-07",
+      "sync": {"input": 1.00, "output": 2.00, "cache_read": 0.10},
+      "note": "test double, not a real price"
+    }
   }
 }

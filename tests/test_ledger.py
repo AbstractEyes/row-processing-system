@@ -49,10 +49,16 @@ def test_cost_counts_every_token_bucket_and_halves_batches():
 
 def test_estimate_is_an_upper_bound_on_cost():
     prices = table()
-    assert prices.estimate("fake-model", 1000, 500) == pytest.approx((1000 * 1.0 + 500 * 2.0) / 1e6)
-    assert prices.estimate("fake-model", 1000, 500, batch=True) == pytest.approx((1000 + 1000) / 1e6 * 0.5)
-    usage = Usage(input_tokens=800, cache_read_tokens=100, output_tokens=300)
-    assert prices.cost("fake-model", usage) <= prices.estimate("fake-model", 1000, 500)
+    # Every input token is priced at the highest input-side rate (here a cache write, 1.25).
+    assert prices.estimate("fake-model", 1000, 500) == pytest.approx((1000 * 1.25 + 500 * 2.0) / 1e6)
+    assert prices.estimate("fake-model", 1000, 500, batch=True) == pytest.approx((1000 * 1.25 + 1000) / 1e6 * 0.5)
+    for usage in (
+        Usage(input_tokens=800, cache_read_tokens=100, output_tokens=300),
+        Usage(cache_write_tokens=1000, output_tokens=500),
+        Usage(input_tokens=1000, reasoning_tokens=500),
+    ):
+        assert prices.cost("fake-model", usage) <= prices.estimate("fake-model", 1000, 500)
+        assert prices.cost("fake-model", usage, batch=True) <= prices.estimate("fake-model", 1000, 500, batch=True)
 
 
 def test_unknown_model_cannot_be_priced():
