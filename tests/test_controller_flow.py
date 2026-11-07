@@ -340,6 +340,18 @@ def test_a_model_cannot_write_its_own_writer_label(tmp_path):
     assert len(world.events_of("verdict_received")) == 2
 
 
+def test_the_size_of_the_picture_the_writer_saw_is_in_its_label(tmp_path):
+    world = World(tmp_path)
+    controller = world.controller()
+    controller.add_task(task_spec(("001", "002"), batch="with-pictures", image="p.jpg"))
+    controller.add_task(task_spec(("003",), batch="text-only"))
+    world.drive(controller)
+    sizes = {e.payload["line"]: e.payload["image_size"] for e in world.events_of("call_prepared")}
+    assert sizes == {"001": 64, "002": 64, "003": None}
+    labels = {row["row_id"].split("_")[1]: row["writer"]["image_size"] for row in world.shipped_rows()}
+    assert labels == {"001": 64, "002": 64, "003": None}
+
+
 def test_a_route_without_a_writer_or_a_license_is_refused_up_front(tmp_path):
     world = World(tmp_path)
     controller = world.controller()
