@@ -40,6 +40,9 @@ def test_format_progress_names_job_size_done_time_spent_and_time_left():
     assert "est." in line and "$1.2345 spent" in line and "waiting: 3 calls in flight" in line
     assert "packets" not in line
     assert "time left no limit" in format_progress(lines_total=1, lines_done=0, rows=0, elapsed=5, budget=None)
+    assert "done 0 (0%)" in format_progress(lines_total=0, lines_done=0, rows=0, elapsed=0, budget=60)
+    status_line = format_progress(lines_total=4, lines_done=2, rows=3, elapsed=None, budget=None, spent_usd=0.5)
+    assert status_line == "job 4 lines | done 2 (50%) | rows 3 | $0.5000 spent"  # a status print belongs to no run, so no clock
 
 
 def test_a_task_runs_from_spec_lines_to_shipped_rows(tmp_path):

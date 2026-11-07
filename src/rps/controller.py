@@ -103,17 +103,22 @@ def format_progress(
     lines_total: int,
     lines_done: int,
     rows: int,
-    elapsed: float,
+    elapsed: float | None,
     budget: float | None,
     spent_usd: float | None = None,
     waiting: Mapping[str, int] | None = None,
 ) -> str:
-    """One progress line: job size, done, time spent and time left."""
-    percent = 100.0 * lines_done / lines_total if lines_total else 100.0
-    parts = [f"job {lines_total} lines", f"done {lines_done} ({percent:.0f}%)", f"rows {rows}", f"time spent {format_duration(elapsed)}"]
-    parts.append(f"time left {format_duration(budget - elapsed)}" if budget is not None else "time left no limit")
-    if lines_done and lines_total > lines_done:
-        parts.append(f"est. {format_duration(elapsed * (lines_total - lines_done) / lines_done)} to finish")
+    """One progress line: job size, done, time spent and time left.
+
+    With `elapsed` of None (a status print that belongs to no run) the time parts are left out.
+    """
+    percent = 100.0 * lines_done / lines_total if lines_total else 0.0
+    parts = [f"job {lines_total} lines", f"done {lines_done} ({percent:.0f}%)", f"rows {rows}"]
+    if elapsed is not None:
+        parts.append(f"time spent {format_duration(elapsed)}")
+        parts.append(f"time left {format_duration(budget - elapsed)}" if budget is not None else "time left no limit")
+        if lines_done and lines_total > lines_done:
+            parts.append(f"est. {format_duration(elapsed * (lines_total - lines_done) / lines_done)} to finish")
     if spent_usd is not None:
         parts.append(f"${spent_usd:.4f} spent")
     busy = [f"{count} {name}" for name, count in (waiting or {}).items() if count]
@@ -1309,7 +1314,7 @@ class Controller:
             "calls refused by a budget": len(self._parked),
         }
 
-    def _progress_line(self, elapsed: float, budget: float | None) -> str:
+    def _progress_line(self, elapsed: float | None, budget: float | None) -> str:
         progress = self.state.job_progress(self.config.max_attempts)
         spent = sum(self.state.spend(route).total for route in self.config.routes)
         return format_progress(
@@ -1339,7 +1344,7 @@ class Controller:
         counts = self.state.counts()
         lines = [
             f"run {self.instance}",
-            self._progress_line(0.0, None),
+            self._progress_line(None, None),
             f"rows: {counts['rows']}  calls: {counts['calls']}",
             f"batches waiting: {counts['batches_waiting']}  packets open: {counts['packets_open']}  hand queue: {counts['hand_queue']}",
             "",
