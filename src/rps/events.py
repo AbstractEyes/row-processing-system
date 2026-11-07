@@ -21,12 +21,16 @@ Event kinds and their payloads:
     call_failed          call_id, handle_id, error, retryable, billed, usage, usd, minutes
     batch_collected      handle_id, returned, failed
     row_assessed         row_id, call_id, passed, flags, errors
-    row_rejected         row_id, call_id, by, reason, errors, retry
+    row_rejected         row_id, call_id, by (assessor or reviewers), reason, errors, retry
     row_set_aside        call_id, row_id (optional), class, reason
-    packet_published     packet_id, row_ids, brief_version, assigned_to
-    verdict_received     packet_id, row_id, reviewer_id, verdict, reasons, notes
-    row_accepted         row_id, call_id, verdicts
-    packet_burned        packet_id, deleted
+    packet_published     packet_id, reviewer_id, family, brief_version, rr_next,
+                         items [{row_id, image, round, audit}]
+    verdict_received     packet_id, row_id, reviewer_id, family, verdict, reasons, notes
+    row_escalated        row_id, call_id, reason (in_question or audit_reject), round, families_used
+    row_to_hand          row_id, call_id, reason, verdicts (the owner's hand queue)
+    row_accepted         row_id, call_id, by, reason
+    hand_resolved        row_id, call_id, decision (accept, discard, replace), row (for replace)
+    packet_burned        packet_id, row_ids, deleted (pictures deleted from the shared store)
     shipped              task_id, route, row_ids, path, count
 """
 
@@ -55,7 +59,10 @@ EVENT_KINDS: tuple[str, ...] = (
     "row_set_aside",
     "packet_published",
     "verdict_received",
+    "row_escalated",
+    "row_to_hand",
     "row_accepted",
+    "hand_resolved",
     "packet_burned",
     "shipped",
 )

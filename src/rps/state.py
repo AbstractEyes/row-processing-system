@@ -49,6 +49,7 @@ class TaskState:
     effort: str | None
     pool_version: str
     created: str
+    dataset: str = ""
     lines: dict[str, LineState] = field(default_factory=dict)
 
 
@@ -268,6 +269,7 @@ class State:
             effort=p.get("effort"),
             pool_version=p["pool_version"],
             created=event.ts,
+            dataset=p.get("dataset") or p["source"],
             lines=lines,
         )
 
@@ -484,7 +486,7 @@ class State:
     def _on_row_to_hand(self, event: Event) -> None:
         p = event.payload
         row = self.rows.get(p["row_id"])
-        if row is None or row.status not in ("in_review", "in_question"):
+        if row is None or row.status not in ("passed", "in_review", "in_question"):
             return
         row.status = "hand"
         row.hand = {"reason": str(p.get("reason", "")), "ts": event.ts}
