@@ -8,6 +8,7 @@ purpose. Planners produce `TaskSpec` objects; the controller records each as a
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -16,6 +17,7 @@ from . import ids
 from .config import PURPOSES, ConfigError
 from .layout import NAME_PATTERN
 from .routing import SOURCE_CLASSES
+from .store.base import NotFound, Store
 
 
 @dataclass(frozen=True)
@@ -122,15 +124,27 @@ class TaskSpec:
 Planner = Callable[[Any], Sequence[TaskSpec]]
 
 
+def parse_task_specs(text: str, where: str) -> list[TaskSpec]:
+    """The tasks in the text of a tasks file (a JSON list; see `TaskSpec.from_dict`). `where` names the file in errors."""
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as error:
+        raise ConfigError(f"cannot read {where}: {error}") from None
+    if not isinstance(data, list):
+        raise ConfigError(f"{where} must hold a list of tasks")
+    for index, item in enumerate(data):
+        if not isinstance(item, Mapping):
+            raise ConfigError(f"{where}: task {index} must be an object")
+    return [TaskSpec.from_dict(item) for item in data]
+
+
 def load_task_specs(path: str | Path) -> list[TaskSpec]:
     """Read a JSON file holding a list of tasks (see `TaskSpec.from_dict`)."""
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as error:
         raise ConfigError(f"cannot read tasks file {str(path)!r}: {error}") from None
-    if not isinstance(data, list):
-        raise ConfigError(f"tasks file {str(path)!r} must hold a list of tasks")
-    return [TaskSpec.from_dict(item) for item in data]
+    return parse_task_specs(text, f"tasks file {str(path)!r}")
 
 
 class FilePlanner:
@@ -145,3 +159,43 @@ class FilePlanner:
 
     def __call__(self, state: Any) -> list[TaskSpec]:
         return load_task_specs(self.path)
+
+
+class StorePlanner:
+    """A planner that reads the tasks file from the state store (a bucket or a local store).
+
+    The file is read through the store each time the planner is asked, so tasks can be added
+    from outside while a run goes on and the run holds nothing in memory. A file that does not
+    exist means no tasks (it may be added later). With `min_interval_seconds` above zero the
+    planner reads at most that often and, in between, hands back what it read last: a store
+    behind a network is not asked several times a second. `clock` returns monotonic seconds.
+    """
+
+    def __init__(
+        self,
+        store: Store,
+        path: str,
+        *,
+        min_interval_seconds: float = 0.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.store = store
+        self.path = path
+        self.min_interval_seconds = min_interval_seconds
+        self._clock = clock
+        self._last_read = float("-inf")
+        self._last_specs: list[TaskSpec] = []
+
+    def __call__(self, state: Any) -> list[TaskSpec]:
+        now = self._clock()
+        if self.min_interval_seconds > 0 and now - self._last_read < self.min_interval_seconds:
+            return list(self._last_specs)
+        self._last_read = now
+        try:
+            text = self.store.read_text(self.path)
+        except NotFound:
+            self._last_specs = []
+            return []
+        specs = parse_task_specs(text, f"tasks file {self.path!r} in the state store")
+        self._last_specs = specs
+        return list(specs)

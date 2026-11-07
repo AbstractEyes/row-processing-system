@@ -77,11 +77,15 @@ from .review.policy import (
 from .routing import ImageRoutingError, allowed_image, check_image_allowed
 from .state import LineState, RowState, State, TaskState
 from .store.base import ActorStore, NotFound, RateLimitedError, Store, StoreError
+from .store.local import LocalStore
 from .store.remote import describe_error
-from .tasks import FilePlanner, Planner, TaskSpec
+from .tasks import FilePlanner, Planner, StorePlanner, TaskSpec
 
 ImageLoader = Callable[[Any, Any], "tuple[bytes, str, int]"]
 HAND_DECISIONS = ("accept", "discard", "replace")
+
+# A tasks file in a store behind a network is read at most this often (a local folder, on every pass).
+TASKS_CHECK_SECONDS = 15.0
 
 
 class ControllerError(RuntimeError):
@@ -203,7 +207,9 @@ class Controller:
     (system prompt, row schema, version); when omitted they are read from the
     configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
     (UTC datetime) and `sleep` can be replaced in tests; `on_event` is called after
-    every event is written and applied.
+    every event is written and applied. `tasks_check_seconds` sets how often a tasks file
+    in the state store ("store:<path>") is read: by default on every pass for a local folder
+    and at most every 15 seconds for a store behind a network.
     """
 
     def __init__(
@@ -228,6 +234,7 @@ class Controller:
         progress_seconds: float = 30.0,
         stop_check_seconds: float = 15.0,
         max_consecutive_failures: int = 5,
+        tasks_check_seconds: float | None = None,
     ) -> None:
         self.config = config
         self._now = now
@@ -250,9 +257,9 @@ class Controller:
                 self.assess_call = checker.assess_call
             if callable(checker):
                 self.assess = checker
-        self.planner: Planner | None = planner or (FilePlanner(config.tasks_file) if config.tasks_file else None)
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
+        self.planner: Planner | None = planner or self._tasks_planner(state_store, tasks_check_seconds)
         self._sleep = sleep
         self._print = printer
         self._on_event = on_event
@@ -578,11 +585,43 @@ class Controller:
         )
         return task_id
 
+    def _tasks_planner(self, store: Store, check_seconds: float | None) -> Planner | None:
+        """The planner the configuration names: the tasks file on disk, or one in the state store.
+
+        A file in the state store is read through the store, on every pass for a local folder and at
+        most every `TASKS_CHECK_SECONDS` for a store behind a network (`check_seconds` sets it).
+        """
+        tasks_file = self.config.tasks_file
+        if not tasks_file:
+            return None
+        in_store = self.config.tasks_store_path()
+        if in_store is None:
+            return FilePlanner(tasks_file)
+        if check_seconds is None:
+            check_seconds = 0.0 if isinstance(store, LocalStore) else TASKS_CHECK_SECONDS
+        return StorePlanner(self.state_store, in_store, min_interval_seconds=check_seconds, clock=self._clock)
+
     def _stage_plan(self) -> None:
+        """Record the tasks the planner hands over. A tasks file that cannot be read, or a task that cannot
+        be added, is reported once and skipped: the run goes on, and the next pass reads the file again."""
         if self.planner is None:
             return
-        for spec in self.planner(self.state):
-            self.add_task(spec)
+        try:
+            specs = list(self.planner(self.state))
+        except (ConfigError, StoreError) as error:
+            self._planner_trouble(f"the tasks could not be read: {describe_error(error)}")
+            return
+        for spec in specs:
+            try:
+                self.add_task(spec)
+            except (ConfigError, TaskConflict) as error:
+                self._planner_trouble(f"a task was not added: {describe_error(error)}")
+
+    def _planner_trouble(self, text: str) -> None:
+        """Note a problem with the tasks the planner handed over; each distinct problem is printed once."""
+        if text not in self._reported:
+            self._warn(text)
+        self._note_problem(text)
 
     # ------------------------------------------------------------------ submit
 

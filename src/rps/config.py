@@ -108,6 +108,15 @@ def _reject_secret_values(value: Any, where: str = "config") -> None:
 DISABLED_BY_DEFAULT: frozenset[str] = frozenset({"deepseek"})
 # The most calls a synchronous route may keep in flight at once.
 MAX_WORKERS = 2500
+# `tasks_file` of the form "store:<path>" names a file in the state store, not a local file.
+TASKS_STORE_PREFIX = "store:"
+
+
+def tasks_store_path(tasks_file: str | None) -> str | None:
+    """The state-store path when `tasks_file` has the form "store:<path>", else None."""
+    if tasks_file is not None and tasks_file.startswith(TASKS_STORE_PREFIX):
+        return tasks_file[len(TASKS_STORE_PREFIX) :]
+    return None
 
 
 @dataclass(frozen=True)
@@ -606,6 +615,10 @@ class Config:
     their pictures; `data_repo` names the dataset repository that receives accepted
     rows and the ledger. When either is None the run keeps that data in a local
     folder under `work_dir` instead (used for tests and dry runs).
+
+    `tasks_file` is a local file, or "store:<path>" for a file in the state store (for
+    example "store:control/tasks.json"). The controller reads it again on every pass, and a
+    missing file means no tasks, so tasks can be added from outside while a run goes on.
     """
 
     data_repo: str | None = None
@@ -645,6 +658,10 @@ class Config:
             return None
         path = Path(self.stop_file)
         return path if path.is_absolute() else self.work_path(self.stop_file)
+
+    def tasks_store_path(self) -> str | None:
+        """The state-store path of the tasks file when `tasks_file` is "store:<path>", else None."""
+        return tasks_store_path(self.tasks_file)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -711,6 +728,13 @@ class Config:
                 remote_stop = normalize_path(remote_stop)
             except PathError as error:
                 raise ConfigError(f"remote_stop_path: {error}") from None
+        tasks_file = _text(data.get("tasks_file"), "tasks_file", allow_none=True)
+        in_store = tasks_store_path(tasks_file)
+        if in_store is not None:
+            try:
+                normalize_path(in_store)
+            except PathError as error:
+                raise ConfigError(f"tasks_file: {error} (the form is \"{TASKS_STORE_PREFIX}control/tasks.json\")") from None
         return cls(
             data_repo=_text(data.get("data_repo"), "data_repo", allow_none=True),
             bucket=_text(data.get("bucket"), "bucket", allow_none=True),
@@ -730,7 +754,7 @@ class Config:
                 data.get("events_max_bytes", default.events_max_bytes), "events_max_bytes", minimum=1024, integer=True
             ),
             wait_for_review=_flag(data.get("wait_for_review", default.wait_for_review), "wait_for_review"),
-            tasks_file=_text(data.get("tasks_file"), "tasks_file", allow_none=True),
+            tasks_file=tasks_file,
             rules=None if data.get("rules") is None else RulesConfig.from_dict(data["rules"]),
         )
 

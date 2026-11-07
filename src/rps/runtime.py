@@ -17,9 +17,10 @@ from typing import Any, Mapping
 
 from .config import Config
 from .controller import Controller
+from .layout import operator_actor
 from .providers import make_writer
 from .providers.base import Writer
-from .store.base import Store
+from .store.base import ActorStore, Store
 from .store.bucket import BucketStore
 from .store.hub import HubStore
 from .store.local import LocalStore
@@ -40,6 +41,16 @@ def build_state_store(config: Config, *, create: bool = False) -> Store:
             store.ensure_exists(private=True)
         return store
     return LocalStore(config.work_path("state"))
+
+
+def build_operator_store(config: Config, *, create: bool = False) -> Store:
+    """The state store as the operator sees it: the operator may write under `control/` (the stop
+    file, the owner's hand decisions, and the tasks file when `tasks_file` is "store:<path>").
+
+    Write a file, then `flush(force=True)` so it is durable (a bucket buffers writes). The
+    controller reads it from its own view of the same store.
+    """
+    return ActorStore(build_state_store(config, create=create), operator_actor())
 
 
 def build_ship_store(config: Config, *, create: bool = False) -> Store:
