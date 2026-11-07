@@ -103,14 +103,26 @@ class Builder:
             {"handle_id": handle_id, "handle": {"handle_id": handle_id}, "route": route, "call_ids": call_ids},
         )
 
-    def row(self, call_id: str, index: int = 0, *, text: str = "thought", provider: str = "fake") -> dict[str, Any]:
+    def row(
+        self,
+        call_id: str,
+        index: int = 0,
+        *,
+        text: str = "thought",
+        provider: str = "fake",
+        model: str = "fake-model",
+        source_block: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         task_id, line, _ = ids.parse_call_id(call_id)
         writer = WriterLabel(
-            provider=provider, model="fake-model", route="batch", effort="low", date="2026-11-07",
+            provider=provider, model=model, route="batch", effort="low", date="2026-11-07",
             task_id=task_id, pool_version="1", image_size=None,
         )
         source = SourceLabel(dataset="photos", item_id=f"img-{line}", license="CC BY-NC")
-        return stamp_row({"id": f"{line}-{index}", "thoughts": [text]}, row_id=ids.row_id(call_id, index), writer=writer, source=source)
+        body: dict[str, Any] = {"id": f"{line}-{index}", "thoughts": [text]}
+        if source_block is not None:
+            body["source"] = source_block
+        return stamp_row(body, row_id=ids.row_id(call_id, index), writer=writer, source=source)
 
     def returned(self, call_id: str, *, rows: int = 1, usd: float = 0.005, skips=None, handle_id: str = "batch-1", flags=None) -> list[str]:
         records = [self.row(call_id, index) for index in range(rows)]

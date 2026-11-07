@@ -6,18 +6,28 @@ A packet is a folder addressed to one reviewer:
     packets/<reviewer>/<packet>/images/<row_id>.<ext>
 
 packet.json holds the rows to review, the review brief version and the verdict
-schema; the picture for a row (when it has one) is named by the row's id. The
-reviewer returns verdicts only, one JSON line per row in review/<reviewer>/<packet>.jsonl,
-and never an edited row. A verdict has exactly these fields:
+schema; the picture for a row (when it has one) is named by the row's id.
+
+Reviewers are blind to the writer. Each entry in packet.json carries a review view
+of the stored row, never the row itself: the writer label is removed and the row's
+own `source.model` is blanked. Beside the view goes the task's spec line for the
+row (under "task"), so the reviewer can see what the writer was asked to do. The
+controller keeps the row id to writer mapping in its own events and matches
+verdicts back by row id.
+
+The reviewer returns verdicts only, one JSON line per row in
+review/<reviewer>/<packet>.jsonl, and never an edited row. A verdict has exactly
+these fields:
 
     row_id    which row
     verdict   keep, fix or reject
     reasons   short codes (lowercase letters, digits and "_"); required for fix and reject
-    notes     free text
+    notes     free text: name the problem and where it is (which field or thought)
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from dataclasses import dataclass, field
@@ -47,7 +57,11 @@ VERDICT_SCHEMA: dict[str, Any] = {
             "items": {"type": "string", "pattern": REASON_PATTERN.pattern},
             "description": "short codes; at least one is required for fix and reject",
         },
-        "notes": {"type": "string", "maxLength": MAX_NOTES_LENGTH},
+        "notes": {
+            "type": "string",
+            "maxLength": MAX_NOTES_LENGTH,
+            "description": "name the problem and where it is (which field or thought)",
+        },
     },
 }
 
@@ -104,17 +118,41 @@ def normalize_verdict(obj: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def review_view(stored_row: Mapping[str, Any], line: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The blind view of a stored row, as a reviewer sees it.
+
+    The stored row must carry its writer label (a row that does not is refused). The
+    view drops the label and blanks the row's own `source.model`; everything else in
+    the row stays. `line` is the task's spec line for the row (line id, item id and
+    spec, which for seeded items includes the seed id and hint text); it goes under
+    "task". Returns {"row_id", "row", "task"}.
+    """
+    require_label(stored_row)
+    row = copy.deepcopy({key: value for key, value in stored_row.items() if key != "writer"})
+    source = row.get("source")
+    if isinstance(source, dict) and "model" in source:
+        source["model"] = ""
+    task = None
+    if line is not None:
+        task = {
+            "line_id": line.get("line_id"),
+            "item_id": line.get("item_id"),
+            "spec": copy.deepcopy(line.get("spec")),
+        }
+    return {"row_id": stored_row["row_id"], "row": row, "task": task}
+
+
 @dataclass
 class PacketRow:
-    """A row in a packet, with its picture (bytes while building a packet)."""
+    """A row in a packet: its review view and picture (bytes while a packet is being built)."""
 
-    row: dict[str, Any]
+    view: dict[str, Any]
     image_ext: str | None = None
     image_bytes: bytes | None = field(default=None, repr=False)
 
     @property
     def row_id(self) -> str:
-        return self.row["row_id"]
+        return self.view["row_id"]
 
     @property
     def image_name(self) -> str | None:
@@ -143,22 +181,23 @@ def build_packet(
     reviewer_id: str,
     brief_version: str,
     created: str,
-    rows: Sequence[tuple[dict[str, Any], bytes | None, str | None]],
+    rows: Sequence[tuple[Mapping[str, Any], Mapping[str, Any] | None, bytes | None, str | None]],
 ) -> Packet:
-    """Assemble a packet from (row, picture bytes, picture extension) triples.
+    """Assemble a packet from (stored row, spec line, picture bytes, picture extension) tuples.
 
-    Every row must carry its writer label; a row without one is refused.
+    Each stored row is turned into its blind review view (see `review_view`); a row
+    without a writer label is refused.
     """
     if not rows:
         raise PacketError("a packet needs at least one row")
     items: list[PacketRow] = []
     seen: set[str] = set()
-    for row, image_bytes, ext in rows:
-        require_label(row)
-        if row["row_id"] in seen:
-            raise PacketError(f"row {row['row_id']!r} appears twice in the packet")
-        seen.add(row["row_id"])
-        items.append(PacketRow(row=row, image_ext=ext if image_bytes is not None else None, image_bytes=image_bytes))
+    for stored_row, line, image_bytes, ext in rows:
+        view = review_view(stored_row, line)
+        if view["row_id"] in seen:
+            raise PacketError(f"row {view['row_id']!r} appears twice in the packet")
+        seen.add(view["row_id"])
+        items.append(PacketRow(view=view, image_ext=ext if image_bytes is not None else None, image_bytes=image_bytes))
     return Packet(packet_id=packet_id, reviewer_id=reviewer_id, brief_version=brief_version, created=created, rows=items)
 
 
@@ -174,7 +213,8 @@ def packet_document(packet: Packet) -> dict[str, Any]:
         "rows": [
             {
                 "row_id": item.row_id,
-                "row": item.row,
+                "row": item.view["row"],
+                "task": item.view["task"],
                 "image": f"images/{item.image_name}" if item.image_name else None,
             }
             for item in packet.rows
