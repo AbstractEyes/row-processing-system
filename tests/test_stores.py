@@ -5,7 +5,7 @@ import pytest
 from rps import layout
 from rps.ids import packet_id, task_id
 from rps.layout import PathError, controller_actor, operator_actor, reviewer_actor
-from rps.store import ActorStore, LocalStore, NotFound, OwnershipError
+from rps.store import ActorStore, NotFound, OwnershipError
 
 TASK = task_id("photos", "1", {"001": "x"})
 PACKET = packet_id(["r1"])

@@ -5,15 +5,14 @@ import pytest
 from rps import layout
 from rps.assess import Assessment
 from rps.config import ConfigError
-from rps.controller import ControllerError, TaskConflict, format_progress, parse_output
-from rps.ledger import PriceTable
+from rps.controller import TaskConflict, format_progress, parse_output
 from rps.providers import FakeOutcome, FakeWriter
 from rps.providers.base import PollStatus
 from rps.provenance import require_label
 from rps.state import State
 
 from fakes import Clock
-from harness import World, keep_all, task_spec
+from harness import World, task_spec
 from helpers import make_config
 
 

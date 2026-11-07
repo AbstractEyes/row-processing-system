@@ -11,7 +11,7 @@ from rps.events import replay
 from rps.providers import SimulatedCrash
 from rps.state import State
 
-from harness import World, keep_all, task_spec
+from harness import World, task_spec
 
 LINES = ("001", "002", "003", "004")
 

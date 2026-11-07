@@ -2,12 +2,10 @@
 
 import json
 
-import pytest
-
 from rps import ids, layout
 from rps.assess import Assessment
-from rps.review.policy import audit_selected
 from rps.provenance import is_human_row, require_label
+from rps.review.policy import audit_selected
 
 from harness import World, keep_all, task_spec
 from helpers import make_config
@@ -62,7 +60,7 @@ def setup(tmp_path, config=None, lines=("001", "002", "003", "004", "005", "006"
 
 
 def test_first_reviews_rotate_across_all_reviewers(tmp_path):
-    world, controller = setup(tmp_path)
+    _world, controller = setup(tmp_path)
     controller.run()
     packets = controller.state.packets.values()
     assert sorted(p.reviewer_id for p in packets) == ["rev-a", "rev-b", "rev-c"]
@@ -213,7 +211,7 @@ def test_a_row_goes_to_hand_when_every_reviewer_shares_the_writers_family(tmp_pa
 
 
 def test_rows_wait_when_no_reviewer_is_configured(tmp_path):
-    world, controller = setup(tmp_path, config=review_config(reviewers=[]), lines=("001", "002"))
+    _world, controller = setup(tmp_path, config=review_config(reviewers=[]), lines=("001", "002"))
     summary = controller.run()
     assert summary.reason == "idle"
     assert controller.state.counts()["rows"] == {"passed": 2}

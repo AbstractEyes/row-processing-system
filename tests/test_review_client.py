@@ -455,7 +455,7 @@ def test_the_cli_check_validates_a_hand_written_file(cli_env, tmp_path):
 
 
 def test_the_cli_reports_a_missing_packet_and_a_bad_config(cli_env, tmp_path):
-    config_path, state, into = cli_env
+    _config_path, _state, into = cli_env
     code, _, err = cli("verdict", "--packet", "p0123456789ab", "--row", "r", "--verdict", "keep", "--into", str(into))
     assert code == EXIT_INVALID and "run pull first" in err
     code, _, err = cli("pull", "--reviewer", "rev-a", "--config", str(tmp_path / "missing.json"), "--into", str(into))

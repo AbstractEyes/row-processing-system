@@ -18,7 +18,7 @@ keeps the date of the table it was priced with.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date as Date
 from importlib import resources
 from pathlib import Path

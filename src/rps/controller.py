@@ -50,7 +50,7 @@ from .provenance import (
     stamp_row,
 )
 from .providers.base import CallResult, CallSpec, Handle, Request, Writer
-from .review.packets import PacketError, build_packet, parse_verdict_lines, publish_packet, validate_verdict
+from .review.packets import build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
     ACCEPT,
     DISCARD,
