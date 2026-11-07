@@ -401,7 +401,8 @@ class State:
 
     def _on_route_halted(self, event: Event) -> None:
         p = event.payload
-        if any(h.get("call_id") == p.get("call_id") and h.get("route") == p["route"] for h in self.halts):
+        route = p["route"]
+        if any(h.get("call_id") == p.get("call_id") and h.get("route") == route for h in self.halts):
             return
         self.halts.append({"ts": event.ts, **p})
 
