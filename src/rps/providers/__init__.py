@@ -1,10 +1,21 @@
-"""Writers: one adapter per model provider, plus a fake for tests."""
+"""Writers: one adapter per model provider and access path, plus a fake for tests.
+
+    provider    route kind "batch"                    route kind "api" (one call at a time)
+    anthropic   AnthropicBatchWriter (Message Batches)   AnthropicSyncWriter
+    openai      OpenAIBatchWriter (Batch API)            OpenAISyncWriter
+    gemini      GeminiBatchWriter (inline batches)       GeminiSyncWriter
+    deepseek    (no batch service)                       DeepSeekWriter (off-peak gate)
+    fake        FakeWriter, for tests and dry runs without a network
+
+`make_writer` picks the writer for a route from its provider and kind.
+"""
 
 from __future__ import annotations
 
 from ..config import ConfigError, RouteConfig
-from .anthropic_api import AnthropicWriter
+from .anthropic_api import AnthropicBatchWriter, AnthropicSyncWriter
 from .base import (
+    Acceptance,
     CallResult,
     CallSpec,
     FakeOutcome,
@@ -14,42 +25,63 @@ from .base import (
     PollStatus,
     ProviderError,
     Request,
+    RouteRejected,
+    RouteUnavailable,
     SimulatedCrash,
     Writer,
 )
-from .gemini_api import GeminiWriter
-from .openai_api import OpenAIWriter
+from .deepseek_api import DeepSeekWriter
+from .gemini_api import GeminiBatchWriter, GeminiSyncWriter
+from .openai_api import OpenAIBatchWriter, OpenAISyncWriter
 
-_WRITERS: dict[str, type[Writer]] = {
-    "anthropic": AnthropicWriter,
-    "openai": OpenAIWriter,
-    "gemini": GeminiWriter,
-    "fake": FakeWriter,
+_WRITERS: dict[tuple[str, str], type[Writer]] = {
+    ("anthropic", "batch"): AnthropicBatchWriter,
+    ("anthropic", "api"): AnthropicSyncWriter,
+    ("openai", "batch"): OpenAIBatchWriter,
+    ("openai", "api"): OpenAISyncWriter,
+    ("gemini", "batch"): GeminiBatchWriter,
+    ("gemini", "api"): GeminiSyncWriter,
+    ("deepseek", "api"): DeepSeekWriter,
 }
+_PROVIDERS = {provider for provider, _kind in _WRITERS} | {"fake"}
 
 
 def make_writer(route_name: str, route: RouteConfig) -> Writer:
-    """Build the writer for a route from its provider name."""
+    """Build the writer for a route from its provider name and kind."""
+    if route.provider == "fake":
+        return FakeWriter(route_name, route)
     try:
-        writer_class = _WRITERS[route.provider]
+        writer_class = _WRITERS[(route.provider, route.kind)]
     except KeyError:
-        raise ConfigError(f"route {route_name!r}: no adapter for provider {route.provider!r}") from None
+        if route.provider not in _PROVIDERS:
+            raise ConfigError(f"route {route_name!r}: no adapter for provider {route.provider!r}") from None
+        offered = sorted(kind for provider, kind in _WRITERS if provider == route.provider)
+        raise ConfigError(
+            f"route {route_name!r}: provider {route.provider!r} has no {route.kind!r} route; use kind {' or '.join(map(repr, offered))}"
+        ) from None
     return writer_class(route_name, route)
 
 
 __all__ = [
-    "AnthropicWriter",
+    "Acceptance",
+    "AnthropicBatchWriter",
+    "AnthropicSyncWriter",
     "CallResult",
     "CallSpec",
+    "DeepSeekWriter",
     "FakeOutcome",
     "FakeProvider",
     "FakeWriter",
-    "GeminiWriter",
+    "GeminiBatchWriter",
+    "GeminiSyncWriter",
     "Handle",
-    "OpenAIWriter",
+    "OpenAIBatchWriter",
+    "OpenAISyncWriter",
     "PollStatus",
     "ProviderError",
     "Request",
+    "RouteRejected",
+    "RouteUnavailable",
     "SimulatedCrash",
     "Writer",
     "make_writer",

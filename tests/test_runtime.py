@@ -7,7 +7,8 @@ from rps import runtime
 from rps.config import ConfigError
 from rps.controller import Controller
 from rps.events import replay
-from rps.providers import AnthropicWriter, FakeWriter
+from rps.prompting import make_rules
+from rps.providers import AnthropicBatchWriter, FakeWriter
 from rps.store.base import StoreError
 from rps.store.bucket import BucketStore
 from rps.store.hub import HubStore
@@ -128,12 +129,23 @@ def test_a_provider_without_an_adapter_is_refused_when_the_controller_is_built(t
         runtime.build_controller(config)
 
 
-def test_a_stub_adapter_fails_loudly_the_first_time_it_is_used(tmp_path):
+def test_a_real_adapter_without_its_key_leaves_its_route_closed_and_spends_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     config = local_config(tmp_path, routes={"claude-batch": route(provider="anthropic", model="claude-haiku-5-5")})
-    controller = runtime.build_controller(config, printer=lambda text: None, image_loader=fake_image_loader)
-    assert isinstance(controller.writers["claude-batch"], AnthropicWriter)
+    rules = make_rules("Write rows as json.", {"type": "object", "additionalProperties": False, "properties": {}}, "v1")
+    controller = runtime.build_controller(config, rules=rules, printer=lambda text: None, image_loader=fake_image_loader)
+    assert isinstance(controller.writers["claude-batch"], AnthropicBatchWriter)
     controller.add_task(task_spec(("001",), route="claude-batch"))
-    with pytest.raises(NotImplementedError, match="stub"):
-        controller.run()
+    summary = controller.run()
+    assert summary.reason == "idle"  # nothing else could be done, and the run says why
+    assert any("ANTHROPIC_API_KEY is not set" in problem for problem in summary.problems)
     kinds = [event.kind for event in replay(controller.state_store).events]
     assert "task_created" in kinds and "call_prepared" not in kinds  # no call was recorded, so nothing was spent
+
+
+def test_a_real_adapter_needs_the_writing_rules_before_the_run_starts(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "not-a-real-key")
+    config = local_config(tmp_path, routes={"claude-batch": route(provider="anthropic", model="claude-haiku-5-5")})
+    controller = runtime.build_controller(config, printer=lambda text: None, image_loader=fake_image_loader)
+    with pytest.raises(ConfigError, match="no rules are set"):
+        controller.start()

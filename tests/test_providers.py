@@ -6,14 +6,18 @@ from rps import ids
 from rps.config import ConfigError, RouteConfig
 from rps.ledger import Usage
 from rps.providers import (
-    AnthropicWriter,
+    AnthropicBatchWriter,
+    AnthropicSyncWriter,
     CallSpec,
+    DeepSeekWriter,
     FakeOutcome,
     FakeProvider,
     FakeWriter,
-    GeminiWriter,
+    GeminiBatchWriter,
+    GeminiSyncWriter,
     Handle,
-    OpenAIWriter,
+    OpenAIBatchWriter,
+    OpenAISyncWriter,
     SimulatedCrash,
     make_writer,
 )
@@ -109,24 +113,26 @@ def test_handles_round_trip_through_plain_data():
     assert Handle.from_dict(json.loads(json.dumps(handle.to_dict()))) == handle
 
 
-@pytest.mark.parametrize("writer_class", [AnthropicWriter, OpenAIWriter, GeminiWriter])
-def test_the_real_adapters_are_stubs_that_say_so(writer_class):
-    writer = writer_class("r1", route(provider="x"))
-    with pytest.raises(NotImplementedError, match="stub"):
-        writer.prepare([spec()])
-    with pytest.raises(NotImplementedError, match="stub"):
-        writer.submit([])
-    with pytest.raises(NotImplementedError, match="stub"):
-        writer.poll(Handle("h", ()))
-    with pytest.raises(NotImplementedError, match="stub"):
-        writer.results(Handle("h", ()))
-    assert writer.recover([]) is None
-
-
-def test_the_registry_builds_writers_by_provider():
+def test_the_registry_builds_writers_by_provider_and_route_kind():
     assert isinstance(make_writer("r", route(provider="fake")), FakeWriter)
-    assert isinstance(make_writer("r", route(provider="anthropic")), AnthropicWriter)
-    assert isinstance(make_writer("r", route(provider="openai")), OpenAIWriter)
-    assert isinstance(make_writer("r", route(provider="gemini")), GeminiWriter)
-    with pytest.raises(ConfigError):
+    assert isinstance(make_writer("r", route(provider="fake", kind="api")), FakeWriter)
+    expected = {
+        ("anthropic", "batch"): AnthropicBatchWriter,
+        ("anthropic", "api"): AnthropicSyncWriter,
+        ("openai", "batch"): OpenAIBatchWriter,
+        ("openai", "api"): OpenAISyncWriter,
+        ("gemini", "batch"): GeminiBatchWriter,
+        ("gemini", "api"): GeminiSyncWriter,
+        ("deepseek", "api"): DeepSeekWriter,
+    }
+    for (provider, kind), writer_class in expected.items():
+        assert type(make_writer("r", route(provider=provider, kind=kind))) is writer_class
+
+
+def test_the_registry_refuses_what_it_has_no_adapter_for():
+    with pytest.raises(ConfigError, match="no adapter for provider 'mystery'"):
         make_writer("r", route(provider="mystery"))
+    with pytest.raises(ConfigError, match="no 'batch' route"):
+        make_writer("r", route(provider="deepseek", kind="batch"))  # DeepSeek has no batch service
+    with pytest.raises(ConfigError, match="no 'claude-code' route"):
+        make_writer("r", route(provider="anthropic", kind="claude-code"))
