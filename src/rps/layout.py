@@ -13,6 +13,10 @@ All stores share one path layout. Each file has exactly one writer:
 
 No actor edits a file it does not own. `ActorStore` (in `rps.store.base`) applies
 these rules to every write and delete.
+
+All paths here are relative to the store's root. A storage bucket may be given with a
+folder ("owner/name/folder", see `parse_bucket`): the store then keeps every one of these
+paths under that folder, so two runs that name different folders of one bucket share no file.
 """
 
 from __future__ import annotations
@@ -70,6 +74,40 @@ def check_name(value: str, what: str = "name") -> str:
     if not isinstance(value, str) or not NAME_PATTERN.match(value):
         raise PathError(f"invalid {what}: {value!r}")
     return value
+
+
+# The directories at the top of the state store's layout.
+STATE_DIRS = (EVENTS_DIR, PACKETS_DIR, REVIEW_DIR, ACCEPTED_DIR, LEDGER_DIR, HAND_DIR, CONTROL_DIR)
+_BUCKET_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
+
+
+def parse_bucket(value: str) -> tuple[str, str]:
+    """Split a `bucket` setting, "owner/name" or "owner/name/folder[/more]", into (bucket id, folder).
+
+    The folder is where every state path lives inside the bucket; "" when none is named, which keeps
+    the layout at the bucket's root. Test runs and production can share one bucket by each naming a
+    folder of its own. Each folder part is a plain name, and none may be one of the state store's own
+    directories, so the files of one folder can never be mistaken for the layout of another store of
+    the same bucket (one with no folder, or with a shorter or a longer one).
+    """
+    if not isinstance(value, str) or not value:
+        raise PathError("a bucket is named owner/name, or owner/name/folder")
+    parts = value.split("/")
+    if len(parts) < 2 or not all(_BUCKET_PART.match(part) for part in parts[:2]):
+        raise PathError(f"a bucket is named owner/name, or owner/name/folder; got {value!r}")
+    folder = parts[2:]
+    for part in folder:
+        if not NAME_PATTERN.match(part):
+            raise PathError(
+                f"the folder in {value!r} has a part {part!r} that is not a plain name "
+                "(letters, digits, '.', '_' and '-', up to 64 characters, no empty parts)"
+            )
+        if part in STATE_DIRS:
+            raise PathError(
+                f"the folder in {value!r} has a part {part!r}, which is one of the state store's own "
+                f"directories ({', '.join(STATE_DIRS)}); give it another name"
+            )
+    return "/".join(parts[:2]), "/".join(folder)
 
 
 def events_path(instance: str, part: int = 0) -> str:

@@ -7,6 +7,12 @@ batch calls are not transactional (some operations can succeed while others fail
 so a failed operation is retried on its own; every operation here is an overwrite or
 a delete, which makes a repeat harmless.
 
+The bucket may be named with a folder, "owner/name/folder" (one or more parts after
+the bucket id): every path of the store then lives under that folder, and nothing
+outside it is ever listed, read, written or deleted. Test runs and production share a
+bucket by each naming a folder of its own. The paths the rest of the system sees are the
+same with or without a folder; only the remote paths change.
+
 Writes are buffered and sent in batches (by count and by age), as in the other
 remote stores. The token is read from the environment (HF_TOKEN by default) on the
 first remote call and never stored, printed or logged here.
@@ -20,6 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from ..layout import parse_bucket
 from .base import StoreError
 from .remote import RemoteStore, is_missing_file
 
@@ -48,7 +55,8 @@ class BucketStore(RemoteStore):
             hourly_cap=None,
             **kwargs,
         )
-        self.bucket_id = bucket_id
+        self.bucket_id, self.folder = parse_bucket(bucket_id)  # a PathError (a ValueError) when it is not a bucket name
+        self._root = f"{self.folder}/" if self.folder else ""  # where this store's paths start in the bucket
         self._api = api
         self._token_env = token_env
         self._cache_root = Path(cache_dir) if cache_dir else Path(tempfile.gettempdir()) / "rps-bucket-cache"
@@ -64,8 +72,18 @@ class BucketStore(RemoteStore):
         return self._api
 
     def ensure_exists(self, private: bool = True) -> None:
-        """Create the bucket (private by default) if it does not exist."""
+        """Create the bucket (private by default) if it does not exist. A folder needs no creating."""
         self._call(self._client().create_bucket, self.bucket_id, private=private, exist_ok=True)
+
+    # ------------------------------------------------------------ paths
+
+    def _remote(self, path: str) -> str:
+        """The path of a store file inside the bucket (under the folder, if there is one)."""
+        return self._root + path
+
+    def _local(self, remote: str) -> str:
+        """The store path of a file at a remote path under the folder."""
+        return remote[len(self._root) :]
 
     # ------------------------------------------------------------ remote reads
 
@@ -73,7 +91,9 @@ class BucketStore(RemoteStore):
         self._cache_root.mkdir(parents=True, exist_ok=True)
         target = self._cache_root / f"{secrets.token_hex(8)}.download"
         try:
-            self._client().download_bucket_files(self.bucket_id, [(path, str(target))], raise_on_missing_files=True)
+            self._client().download_bucket_files(
+                self.bucket_id, [(self._remote(path), str(target))], raise_on_missing_files=True
+            )
             return target.read_bytes() if target.exists() else None
         except Exception as exc:
             if is_missing_file(exc):
@@ -86,23 +106,25 @@ class BucketStore(RemoteStore):
                 pass
 
     def _remote_exists(self, path: str) -> bool:
-        infos = self._client().get_bucket_paths_info(self.bucket_id, [path])
-        return any(getattr(info, "path", None) == path for info in infos)
+        remote = self._remote(path)
+        infos = self._client().get_bucket_paths_info(self.bucket_id, [remote])
+        return any(getattr(info, "path", None) == remote for info in infos)
 
     def _remote_list(self, prefix: str) -> list[str]:
-        directory = prefix.rsplit("/", 1)[0] + "/" if "/" in prefix else None
+        wanted = self._remote(prefix)  # the prefix as the bucket knows it: under the folder, if there is one
+        directory = wanted.rsplit("/", 1)[0] + "/" if "/" in wanted else None
         items = self._client().list_bucket_tree(self.bucket_id, prefix=directory, recursive=True)
         return sorted(
-            item.path
+            self._local(item.path)
             for item in items
-            if getattr(item, "type", "file") == "file" and item.path.startswith(prefix)
+            if getattr(item, "type", "file") == "file" and item.path.startswith(wanted)
         )
 
     # ------------------------------------------------------------ writes
 
     def _remote_apply(self, operations: list[tuple[str, tuple[str, bytes | None]]]) -> list[str]:
-        add = [(data, path) for path, (kind, data) in operations if kind == "put"]
-        delete = [path for path, (kind, _) in operations if kind == "delete"]
+        add = [(data, self._remote(path)) for path, (kind, data) in operations if kind == "put"]
+        delete = [self._remote(path) for path, (kind, _) in operations if kind == "delete"]
         try:
             self._client().batch_bucket_files(self.bucket_id, add=add or None, delete=delete or None)
         except Exception as exc:
@@ -118,5 +140,10 @@ class BucketStore(RemoteStore):
                 if path in deleted and ("not found" in text or "does not exist" in text or "no such" in text):
                     continue
                 failed.append(path)
-            return [path for path in failed if path]
+            if any(path and not path.startswith(self._root) for path in failed):
+                # A failure names a file that is not under this folder, so it cannot be matched to an
+                # operation. Send all of them again (an overwrite or a delete repeats harmlessly) rather
+                # than count a failure as done.
+                return [path for path, _ in operations]
+            return [self._local(path) for path in failed if path]
         return []

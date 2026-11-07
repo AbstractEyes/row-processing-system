@@ -3,7 +3,8 @@
 A run uses two stores:
 
     state store   event logs, review packets and their pictures, reviewers' verdicts
-                  (a storage bucket when `bucket` is set, else a local folder)
+                  (a storage bucket when `bucket` is set, else a local folder; `bucket` may name
+                  a folder inside the bucket, "owner/name/folder", and everything then lives there)
     ship store    accepted rows and the ledger
                   (a dataset repository when `data_repo` is set, else a local folder)
 
@@ -29,7 +30,9 @@ from .store.local import LocalStore
 def build_state_store(config: Config, *, create: bool = False) -> Store:
     """The store for event logs, packets and verdicts.
 
-    With `create` the bucket is created (private) if it does not exist yet.
+    With `create` the bucket is created (private) if it does not exist yet; a folder named in
+    `bucket` needs no creating. The controller, the operator store and the reviewer commands all
+    get their store here, so all of them keep their files under the same folder.
     """
     if config.bucket:
         store = BucketStore(

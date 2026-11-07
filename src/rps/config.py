@@ -32,7 +32,7 @@ from typing import Any, Mapping
 
 from .ids import canonical_json
 from .keys import looks_like_secret
-from .layout import NAME_PATTERN, PathError, normalize_path
+from .layout import NAME_PATTERN, PathError, normalize_path, parse_bucket
 from .routing import SOURCE_CLASSES
 
 # Why a call is made. Each (route, purpose) pair has its own dollar cap.
@@ -625,9 +625,16 @@ class Config:
     rows and the ledger. When either is None the run keeps that data in a local
     folder under `work_dir` instead (used for tests and dry runs).
 
+    `bucket` may name a folder inside the bucket, "owner/name/folder" (one or more parts after
+    the bucket id). Every state path then lives under that folder, for the controller, the
+    operator store and the reviewer commands alike, so a test run ("owner/name/test") and a
+    production run ("owner/name/prod") share a bucket and no file. Without a folder the paths
+    start at the bucket's root.
+
     `tasks_file` is a local file, or "store:<path>" for a file in the state store (for
-    example "store:control/tasks.json"). The controller reads it again on every pass, and a
-    missing file means no tasks, so tasks can be added from outside while a run goes on.
+    example "store:control/tasks.json", which is under the bucket's folder when there is one).
+    The controller reads it again on every pass, and a missing file means no tasks, so tasks
+    can be added from outside while a run goes on.
     """
 
     data_repo: str | None = None
@@ -737,6 +744,12 @@ class Config:
                 remote_stop = normalize_path(remote_stop)
             except PathError as error:
                 raise ConfigError(f"remote_stop_path: {error}") from None
+        bucket = _text(data.get("bucket"), "bucket", allow_none=True)
+        if bucket is not None:
+            try:
+                parse_bucket(bucket)
+            except PathError as error:
+                raise ConfigError(f"bucket: {error}") from None
         tasks_file = _text(data.get("tasks_file"), "tasks_file", allow_none=True)
         in_store = tasks_store_path(tasks_file)
         if in_store is not None:
@@ -746,7 +759,7 @@ class Config:
                 raise ConfigError(f"tasks_file: {error} (the form is \"{TASKS_STORE_PREFIX}control/tasks.json\")") from None
         return cls(
             data_repo=_text(data.get("data_repo"), "data_repo", allow_none=True),
-            bucket=_text(data.get("bucket"), "bucket", allow_none=True),
+            bucket=bucket,
             work_dir=_text(data.get("work_dir", default.work_dir), "work_dir"),
             price_table=_text(data.get("price_table"), "price_table", allow_none=True),
             pool_version=str(_text(str(data.get("pool_version", default.pool_version)), "pool_version")),
