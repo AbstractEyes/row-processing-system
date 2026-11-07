@@ -33,6 +33,7 @@ from typing import Any, Mapping
 from .ids import canonical_json
 from .keys import looks_like_secret
 from .layout import NAME_PATTERN, PathError, normalize_path
+from .routing import SOURCE_CLASSES
 
 # Why a call is made. Each (route, purpose) pair has its own dollar cap.
 PURPOSES: tuple[str, ...] = ("test", "pricing", "probe", "rebound", "production")
@@ -103,12 +104,26 @@ def _reject_secret_values(value: Any, where: str = "config") -> None:
             _reject_secret_values(item, f"{where}[{index}]")
 
 
+# Providers whose routes stay off until a configuration turns them on.
+DISABLED_BY_DEFAULT: frozenset[str] = frozenset({"deepseek"})
+# The most calls a synchronous route may keep in flight at once.
+MAX_WORKERS = 2500
+
+
 @dataclass(frozen=True)
 class RouteConfig:
     """One way of getting rows written: a provider, a model and an access path.
 
     `budget_usd` is the total cap for the route. `purpose_caps` holds one dollar cap
     per purpose; a purpose with no entry has a cap of zero, so its calls are refused.
+
+    `enabled` turns a route on or off; left unset it is on, except for providers listed
+    in `DISABLED_BY_DEFAULT`, which a configuration must turn on. `max_retries` and
+    `timeout_seconds` go to the provider's client (its own retries with backoff handle
+    rate limits and server errors). `workers` is how many calls a synchronous route keeps
+    in flight. `truncation_factor` scales the token limit of the one retry that follows
+    an answer cut off at the limit. `options` holds settings that belong to one
+    provider (picture detail, media resolution, cache use); the adapter checks them.
     """
 
     provider: str
@@ -119,6 +134,19 @@ class RouteConfig:
     purpose_caps: Mapping[str, float] = field(default_factory=dict)
     max_output_tokens: int = 4096
     max_batch_calls: int = 500
+    enabled: bool | None = None
+    max_retries: int = 2
+    timeout_seconds: float | None = None
+    workers: int = 16
+    truncation_factor: float = 2.0
+    options: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_enabled(self) -> bool:
+        """Whether the route may send calls."""
+        if self.enabled is not None:
+            return self.enabled
+        return self.provider not in DISABLED_BY_DEFAULT
 
     def cap_for(self, purpose: str) -> float:
         """Dollar cap for a purpose on this route."""
@@ -136,6 +164,12 @@ class RouteConfig:
             "purpose_caps": {key: self.purpose_caps[key] for key in sorted(self.purpose_caps)},
             "max_output_tokens": self.max_output_tokens,
             "max_batch_calls": self.max_batch_calls,
+            "enabled": self.enabled,
+            "max_retries": self.max_retries,
+            "timeout_seconds": self.timeout_seconds,
+            "workers": self.workers,
+            "truncation_factor": self.truncation_factor,
+            "options": {key: self.options[key] for key in sorted(self.options)},
         }
 
     @classmethod
@@ -147,7 +181,11 @@ class RouteConfig:
             _fail(f"{where}: expected an object")
         _check_keys(
             data,
-            {"provider", "model", "kind", "effort", "budget_usd", "purpose_caps", "max_output_tokens", "max_batch_calls"},
+            {
+                "provider", "model", "kind", "effort", "budget_usd", "purpose_caps", "max_output_tokens",
+                "max_batch_calls", "enabled", "max_retries", "timeout_seconds", "workers", "truncation_factor",
+                "options",
+            },
             where,
         )
         kind = data.get("kind", "api")
@@ -161,6 +199,18 @@ class RouteConfig:
             if purpose not in PURPOSES:
                 _fail(f"{where}.purpose_caps: unknown purpose {purpose!r}; use one of {list(PURPOSES)}")
             caps[purpose] = float(_number(cap, f"{where}.purpose_caps.{purpose}", minimum=0))
+        enabled = data.get("enabled")
+        if enabled is not None and not isinstance(enabled, bool):
+            _fail(f"{where}.enabled: expected true or false, got {enabled!r}")
+        timeout = data.get("timeout_seconds")
+        options_in = data.get("options", {})
+        if not isinstance(options_in, Mapping):
+            _fail(f"{where}.options: expected an object")
+        options: dict[str, Any] = {}
+        for key, value in options_in.items():
+            if not isinstance(key, str) or not isinstance(value, (str, int, float, bool, type(None))):
+                _fail(f"{where}.options.{key}: expected a string, number, true/false or null")
+            options[key] = value
         return cls(
             provider=_text(data.get("provider"), f"{where}.provider"),
             model=_text(data.get("model"), f"{where}.model"),
@@ -172,6 +222,16 @@ class RouteConfig:
                 data.get("max_output_tokens", 4096), f"{where}.max_output_tokens", minimum=1, integer=True
             ),
             max_batch_calls=_number(data.get("max_batch_calls", 500), f"{where}.max_batch_calls", minimum=1, integer=True),
+            enabled=enabled,
+            max_retries=_number(data.get("max_retries", 2), f"{where}.max_retries", minimum=0, maximum=10, integer=True),
+            timeout_seconds=None
+            if timeout is None
+            else float(_number(timeout, f"{where}.timeout_seconds", minimum=1)),
+            workers=_number(data.get("workers", 16), f"{where}.workers", minimum=1, maximum=MAX_WORKERS, integer=True),
+            truncation_factor=float(
+                _number(data.get("truncation_factor", 2.0), f"{where}.truncation_factor", minimum=1, maximum=16)
+            ),
+            options=options,
         )
 
 
@@ -181,13 +241,16 @@ class SourceConfig:
 
     `image_size` is the longest side in pixels of the pictures shown to the writer
     and to reviewers; None keeps the original size. `images_dir` is the folder that
-    holds the original pictures.
+    holds the original pictures. `image_class` is the class of the pictures' own
+    origin (see `rps.routing`), which decides which providers may see them; a spec
+    line can override it.
     """
 
     image_size: int | None = None
     license: str | None = None
     dataset: str | None = None
     images_dir: str | None = None
+    image_class: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +258,7 @@ class SourceConfig:
             "license": self.license,
             "dataset": self.dataset,
             "images_dir": self.images_dir,
+            "image_class": self.image_class,
         }
 
     @classmethod
@@ -202,14 +266,61 @@ class SourceConfig:
         where = f"sources.{name}"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"image_size", "license", "dataset", "images_dir"}, where)
+        _check_keys(data, {"image_size", "license", "dataset", "images_dir", "image_class"}, where)
         size = data.get("image_size")
+        image_class = _text(data.get("image_class"), f"{where}.image_class", allow_none=True)
+        if image_class is not None and image_class not in SOURCE_CLASSES:
+            _fail(f"{where}.image_class: must be one of {list(SOURCE_CLASSES)}, got {image_class!r}")
         return cls(
             image_size=None if size is None else _number(size, f"{where}.image_size", minimum=16, integer=True),
             license=_text(data.get("license"), f"{where}.license", allow_none=True),
             dataset=_text(data.get("dataset"), f"{where}.dataset", allow_none=True),
             images_dir=_text(data.get("images_dir"), f"{where}.images_dir", allow_none=True),
+            image_class=image_class,
         )
+
+
+@dataclass(frozen=True)
+class RulesConfig:
+    """Where the writing rules come from: the system prompt, the row schema, the version.
+
+    The rules are inputs. Name the two files, or a Python package that holds files
+    called `writer_system.md` and `row_schema.json` (and `VERSION`). The version is
+    recorded on every row; when none is given it is a hash of the two files, so a
+    changed rule set always has a new version.
+    """
+
+    system_file: str | None = None
+    schema_file: str | None = None
+    version: str | None = None
+    version_file: str | None = None
+    package: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "system_file": self.system_file,
+            "schema_file": self.schema_file,
+            "version": self.version,
+            "version_file": self.version_file,
+            "package": self.package,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RulesConfig":
+        where = "rules"
+        if not isinstance(data, Mapping):
+            _fail(f"{where}: expected an object")
+        _check_keys(data, {"system_file", "schema_file", "version", "version_file", "package"}, where)
+        rules = cls(
+            system_file=_text(data.get("system_file"), f"{where}.system_file", allow_none=True),
+            schema_file=_text(data.get("schema_file"), f"{where}.schema_file", allow_none=True),
+            version=_text(data.get("version"), f"{where}.version", allow_none=True),
+            version_file=_text(data.get("version_file"), f"{where}.version_file", allow_none=True),
+            package=_text(data.get("package"), f"{where}.package", allow_none=True),
+        )
+        if rules.package is None and (rules.system_file is None or rules.schema_file is None):
+            _fail(f"{where}: name both system_file and schema_file, or a package that holds them")
+        return rules
 
 
 @dataclass(frozen=True)
@@ -472,6 +583,7 @@ _TOP_KEYS = {
     "events_max_bytes",
     "wait_for_review",
     "tasks_file",
+    "rules",
 }
 
 
@@ -502,6 +614,7 @@ class Config:
     events_max_bytes: int = 2 * 1024 * 1024
     wait_for_review: bool = False
     tasks_file: str | None = None
+    rules: RulesConfig | None = None
 
     def route(self, name: str) -> RouteConfig:
         try:
@@ -541,6 +654,7 @@ class Config:
             "events_max_bytes": self.events_max_bytes,
             "wait_for_review": self.wait_for_review,
             "tasks_file": self.tasks_file,
+            "rules": None if self.rules is None else self.rules.to_dict(),
         }
 
     def digest(self) -> str:
@@ -551,6 +665,8 @@ class Config:
         """Pre-flight notes: things that are legal but probably not intended."""
         notes: list[str] = []
         for name, route in self.routes.items():
+            if not route.is_enabled:
+                notes.append(f"route {name}: disabled (set \"enabled\": true to use it)")
             if route.budget_usd <= 0:
                 notes.append(f"route {name}: total budget is $0, so every call with a cost will be refused")
             for purpose in PURPOSES:
@@ -604,6 +720,7 @@ class Config:
             ),
             wait_for_review=_flag(data.get("wait_for_review", default.wait_for_review), "wait_for_review"),
             tasks_file=_text(data.get("tasks_file"), "tasks_file", allow_none=True),
+            rules=None if data.get("rules") is None else RulesConfig.from_dict(data["rules"]),
         )
 
     @classmethod

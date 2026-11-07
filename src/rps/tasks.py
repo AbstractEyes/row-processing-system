@@ -15,6 +15,7 @@ from typing import Any, Callable, Mapping, Sequence
 from . import ids
 from .config import PURPOSES, ConfigError
 from .layout import NAME_PATTERN
+from .routing import SOURCE_CLASSES
 
 
 @dataclass(frozen=True)
@@ -24,7 +25,9 @@ class SpecLine:
     `spec` is whatever the writer needs (text or a JSON object). `item_id` is the seed
     or picture id for the source label (the line id when omitted). `image` names the
     line's picture file under the source's images folder. `license` overrides the
-    source's license.
+    source's license. `image_class` overrides the source's picture class (see
+    `rps.routing`): a narration of a COCO picture is COCO class even when its source
+    is a collection of narrations.
     """
 
     line_id: str
@@ -32,9 +35,14 @@ class SpecLine:
     item_id: str | None = None
     image: str | None = None
     license: str | None = None
+    image_class: str | None = None
 
     def __post_init__(self) -> None:
         ids.check_line_id(self.line_id)
+        if self.image_class is not None and self.image_class not in SOURCE_CLASSES:
+            raise ConfigError(
+                f"spec line {self.line_id}: image_class must be one of {list(SOURCE_CLASSES)}, got {self.image_class!r}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,11 +51,12 @@ class SpecLine:
             "item_id": self.item_id or self.line_id,
             "image": self.image,
             "license": self.license,
+            "image_class": self.image_class,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "SpecLine":
-        unknown = sorted(set(data) - {"line_id", "spec", "item_id", "image", "license"})
+        unknown = sorted(set(data) - {"line_id", "spec", "item_id", "image", "license", "image_class"})
         if unknown:
             raise ConfigError(f"spec line: unknown key(s) {unknown}")
         if "line_id" not in data or "spec" not in data:
@@ -58,6 +67,7 @@ class SpecLine:
             item_id=data.get("item_id"),
             image=data.get("image"),
             license=data.get("license"),
+            image_class=data.get("image_class"),
         )
 
 

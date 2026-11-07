@@ -1,8 +1,8 @@
 """The assessment hook.
 
 After a row is written, the controller asks an assess function whether it passes.
-The real assessor is plugged in later; until then `default_assess` accepts any row
-that has content. An assess function takes the row and a context and returns an
+The real assessor is plugged in separately; until then `default_assess` accepts any
+row that has content. An assess function takes the row and a context and returns an
 `Assessment`:
 
     passed      False means a hard failure: the row is rejected, and the call is
@@ -11,12 +11,18 @@ that has content. An assess function takes the row and a context and returns an
                 never accepted on a single "keep"
     errors      one line per hard failure
     set_aside   a dict (class, reason) to set the row aside instead (no retry)
+
+Some checks need every row of one call at once (a series' nesting, one genre for the
+whole series). For those the controller can be given an `AssessCallFn`: it receives
+all the rows one call returned and the call's context, and returns one `Assessment`
+per row, in the same order. When both are given the call-level function is used; the
+per-row function is the fallback.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .provenance import RESERVED_ROW_KEYS
 
@@ -45,6 +51,7 @@ class Assessment:
 
 
 AssessFn = Callable[[Mapping[str, Any], AssessContext], Assessment]
+AssessCallFn = Callable[[Sequence[Mapping[str, Any]], AssessContext], Sequence[Assessment]]
 
 
 def default_assess(row: Mapping[str, Any], context: AssessContext) -> Assessment:
