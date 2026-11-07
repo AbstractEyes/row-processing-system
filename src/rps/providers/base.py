@@ -179,7 +179,10 @@ class CallResult:
     `retryable` False marks an error a second attempt would not fix. `minutes` is the
     time the call took when the adapter knows it. `kind` says why the call failed (one
     of `FAILURE_KINDS`). `tier` names the price tier the call was billed at when the
-    provider has tiers (DeepSeek's peak and off-peak hours).
+    provider has tiers (DeepSeek's peak and off-peak hours). `rate_limited` is True when
+    the provider turned the call away for its rate limit (HTTP 429): it did not run and
+    was not billed, and a worker pool pauses and sends it again rather than recording a
+    failed attempt.
     """
 
     call_id: str
@@ -191,6 +194,7 @@ class CallResult:
     stop_reason: str | None = None
     kind: str | None = None
     tier: str | None = None
+    rate_limited: bool = False
 
 
 def split_requests(

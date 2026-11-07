@@ -660,6 +660,10 @@ class State:
     def submitted_calls(self) -> list[CallState]:
         return [c for c in self.calls.values() if c.status == "submitted"]
 
+    def unfinished_calls(self, route: str) -> int:
+        """How many calls on a route are prepared or submitted and not yet answered."""
+        return sum(1 for c in self.calls.values() if c.route == route and c.status in ("prepared", "submitted"))
+
     def batches_to_poll(self, route: str | None = None) -> list[BatchState]:
         """Submitted batches with at least one call still waiting for its result."""
         waiting = []

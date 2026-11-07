@@ -355,6 +355,9 @@ class AnthropicSyncWriter(_AnthropicCommon, PoolWriter):
         PoolWriter.__init__(self, route_name, route)
         self._setup(client)
 
+    def accepting(self) -> Acceptance:
+        return self.unless_paused(_AnthropicCommon.accepting(self))
+
     def send(self, request: Request) -> CallResult:
         params = dict(request.payload["params"])
         # An explicit timeout also keeps the SDK from refusing a large token limit on a plain call.

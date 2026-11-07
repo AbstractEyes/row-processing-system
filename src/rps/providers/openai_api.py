@@ -65,6 +65,7 @@ BATCH_MAX_BYTES = 190 * 1024 * 1024  # the limit is 200 MB
 IMAGE_TOKENS = {"low": 400, "auto": 2500, "high": 2500, "original": 6000}
 MIN_FILE_EXPIRY_SECONDS = 3600
 MAX_FILE_EXPIRY_SECONDS = 30 * 24 * 3600
+RATE_LIMIT_CODE = "rate_limit_exceeded"  # the error code of a call turned away for the rate limit
 
 
 # ---------------------------------------------------------------------------- parsing
@@ -122,7 +123,16 @@ def parse_response(call_id: str, body: Any, *, max_tokens: int | None = None, mi
         message = str(lookup(body, "error", "message") or "")[:200]
         if code == "invalid_prompt":
             return CallResult(call_id=call_id, output=None, usage=usage, error=f"{code}: {message}", retryable=False, kind=KIND_BLOCKED, minutes=minutes)
-        return CallResult(call_id=call_id, output=None, usage=usage, error=f"{code or 'failed'}: {message}", retryable=True, kind=KIND_PROVIDER, minutes=minutes)
+        return CallResult(
+            call_id=call_id,
+            output=None,
+            usage=usage,
+            error=f"{code or 'failed'}: {message}",
+            retryable=True,
+            kind=KIND_PROVIDER,
+            minutes=minutes,
+            rate_limited=code == RATE_LIMIT_CODE,  # a response that failed for the rate limit did not run either
+        )
     return finished_call(call_id, text=None, stop=STOP_OTHER, detail=f"status {status}", **common)
 
 
@@ -415,11 +425,20 @@ class OpenAIBatchWriter(_OpenAICommon, Writer):
 
 
 class OpenAISyncWriter(_OpenAICommon, PoolWriter):
-    """One `responses.create` call per request, from a pool of workers (route kind "api")."""
+    """One `responses.create` call per request, from a pool of workers (route kind "api").
+
+    This is how GPT is used in this project: one call at a time, `workers` of them at once. The
+    SDK retries a rate-limited call by itself (the route's `max_retries`, honoring the provider's
+    `retry-after`); a call still turned away after that is sent again by the pool after a pause,
+    and a long run of them closes the route for a while (see `rps.providers.pool`).
+    """
 
     def __init__(self, route_name: str, route: RouteConfig, *, client: Any | None = None) -> None:
         PoolWriter.__init__(self, route_name, route)
         self._setup(client)
+
+    def accepting(self) -> Acceptance:
+        return self.unless_paused(_OpenAICommon.accepting(self))
 
     def send(self, request: Request) -> CallResult:
         body = dict(request.payload["body"])

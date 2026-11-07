@@ -86,6 +86,8 @@ HAND_DECISIONS = ("accept", "discard", "replace")
 
 # A tasks file in a store behind a network is read at most this often (a local folder, on every pass).
 TASKS_CHECK_SECONDS = 15.0
+# A one-call (api) route keeps at most this many calls per worker prepared and unfinished (see `_api_room`).
+API_CALLS_PER_WORKER = 4
 
 
 class ControllerError(RuntimeError):
@@ -723,6 +725,20 @@ class Controller:
         self._note_problem(f"route {route_name} stopped for this run ({kind}): {text}")
         self._print(f"[rps] route {route_name} stopped for this run ({kind}): {text}")
 
+    def _api_room(self, route_name: str, route: RouteConfig) -> int:
+        """How many more calls a one-call (api) route takes now.
+
+        Such a route keeps at most `workers` times `API_CALLS_PER_WORKER` calls prepared and
+        unfinished, however long the list of due lines is. Calls wait in memory and in the budget's
+        reserve until a worker takes them, and a stop loses them (they come back as rebounds), so a
+        job of tens of thousands of lines is fed to the pool a window at a time. New calls are taken
+        when a quarter of the window has freed up (or nothing is in flight), so every batch of calls
+        the controller records is a useful size.
+        """
+        window = route.workers * API_CALLS_PER_WORKER
+        room = window - self.state.unfinished_calls(route_name)
+        return room if room >= max(1, window // 4) else 0
+
     def _stage_submit(self) -> None:
         if self._stop_reason:
             return
@@ -737,6 +753,8 @@ class Controller:
                 if task.route == route_name
                 and ids.call_id(task.task_id, line.line_id, status.next_attempt) not in self._parked
             ]
+            if route.kind == "api":
+                due = due[: self._api_room(route_name, route)]
             for group in _chunks(due, route.max_batch_calls):
                 specs: list[CallSpec] = []
                 sizes: dict[str, int | None] = {}

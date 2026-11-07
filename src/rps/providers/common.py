@@ -199,10 +199,32 @@ def classify_exception(error: BaseException) -> tuple[str, bool]:
     return KIND_UNEXPECTED, False
 
 
+def is_rate_limit(error: BaseException) -> bool:
+    """True when a provider turned a call away for its rate limit: HTTP 429 that is not a spent balance.
+
+    The provider's own client has already retried the call a few times (with the provider's
+    `retry-after` pause) before it raises this, so what reaches here is a limit that stayed.
+    """
+    status = http_status(error)
+    if _spent_balance(error, status):
+        return False
+    if status is not None:
+        return status == 429
+    return any(cls.__name__ == "RateLimitError" for cls in type(error).__mro__)
+
+
 def failure_from_exception(call_id: str, error: BaseException, *, minutes: float | None = None) -> CallResult:
     """A failed call result for an exception raised while sending one call."""
     kind, retryable = classify_exception(error)
-    return CallResult(call_id=call_id, output=None, error=describe_error(error), retryable=retryable, minutes=minutes, kind=kind)
+    return CallResult(
+        call_id=call_id,
+        output=None,
+        error=describe_error(error),
+        retryable=retryable,
+        minutes=minutes,
+        kind=kind,
+        rate_limited=is_rate_limit(error),
+    )
 
 
 _ANTHROPIC_ERROR_KINDS = {

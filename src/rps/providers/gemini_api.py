@@ -462,6 +462,9 @@ class GeminiSyncWriter(_GeminiCommon, PoolWriter):
         PoolWriter.__init__(self, route_name, route)
         self._setup(client)
 
+    def accepting(self) -> Acceptance:
+        return self.unless_paused(_GeminiCommon.accepting(self))
+
     def send(self, request: Request) -> CallResult:
         inlined = request.payload["request"]
         try:

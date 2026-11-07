@@ -165,7 +165,7 @@ class DeepSeekWriter(PoolWriter):
             ends = peak_ends(self._now())
             if ends is not None:
                 return Acceptance(False, f"peak hours (double price) until {ends.strftime('%H:%M')} UTC", later=True)
-        return Acceptance(True)
+        return self.unless_paused(Acceptance(True))
 
     def gate(self) -> float | None:
         if not self._offpeak_only:

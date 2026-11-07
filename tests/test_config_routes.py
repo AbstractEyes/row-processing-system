@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from rps.config import Config, ConfigError, RouteConfig, RulesConfig, SourceConfig
+from rps.config import DEFAULT_WORKERS, Config, ConfigError, RouteConfig, RulesConfig, SourceConfig
 from rps.tasks import SpecLine
 
 from helpers import make_config
@@ -19,7 +19,8 @@ def route_dict(**overrides):
 def test_a_route_has_safe_defaults_for_the_new_settings():
     route = RouteConfig.from_dict("luna", route_dict())
     assert route.enabled is None and route.is_enabled is True
-    assert (route.max_retries, route.timeout_seconds, route.workers, route.truncation_factor) == (2, None, 16, 2.0)
+    assert (route.max_retries, route.timeout_seconds, route.workers, route.truncation_factor) == (2, None, DEFAULT_WORKERS, 2.0)
+    assert DEFAULT_WORKERS == 32 and RouteConfig(provider="openai", model="m").workers == 32
     assert dict(route.options) == {}
 
 

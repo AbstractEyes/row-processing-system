@@ -14,23 +14,45 @@ stop loses only the calls still in flight. The handle lives in this object's mem
 a restart `poll` answers `failed` for it and the controller sends the calls again as
 rebounds. Subclasses supply `send` (one call, returning a `CallResult`), and may supply
 `gate` (seconds to wait before sending, for routes with sending hours).
+
+Rate limits. The provider's own client already retries a rate-limited call a few times,
+pausing as the provider asks (the route's `max_retries`). A call that is still turned away
+after that comes back from `send` with `rate_limited` set: it did not run and was not billed,
+so the pool does not record it as a failed attempt. It waits and sends the call again. After
+`RATE_LIMIT_PARK_AFTER` of these in a row, with no call getting an answer in between, the
+whole route is paused: every worker holds still for `RATE_LIMIT_PAUSE_SECONDS` (twice as long
+for each pause in a row, up to `RATE_LIMIT_PAUSE_MAX_SECONDS`), and `accepting` answers
+"closed for now" so the controller prepares no more calls until the pause ends. A route paused
+this way is never stopped for the run: the pause ends by itself, and one call that gets an
+answer clears the count. A call turned away `RATE_LIMIT_CALL_TRIES` times in a row is handed
+up as a failed call after all (retried as a rebound), so one call that can never go through
+does not hold the route for ever.
 """
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
-from typing import Sequence
+from typing import Callable, Sequence
 
 from ..config import RouteConfig
-from .base import CallResult, Handle, PollStatus, Request, Writer
+from .base import Acceptance, CallResult, Handle, PollStatus, Request, Writer
 from .common import failure_from_exception
 
 # The longest a worker sleeps at the gate before looking again at the stop flag.
 GATE_POLL_SECONDS = 30.0
+
+# Rate limits (see the module description).
+RATE_LIMIT_PARK_AFTER = 5
+RATE_LIMIT_PAUSE_SECONDS = 60.0
+RATE_LIMIT_PAUSE_MAX_SECONDS = 900.0
+RATE_LIMIT_CALL_TRIES = 8
+RATE_LIMIT_RESUME_JITTER_SECONDS = 5.0  # after a pause each worker waits a random part of this longer
+RATE_LIMIT_REASON = "the provider's rate limit is reached; the route pauses and sends again by itself"
 
 
 @dataclass
@@ -47,6 +69,8 @@ class PoolWriter(Writer):
     needs_rules = True
     # How long a worker waiting at the gate sleeps before it looks at the gate and the stop flag again.
     gate_poll_seconds = GATE_POLL_SECONDS
+    # How long, at most, a worker waits beyond the end of a rate-limit pause (a different time for each).
+    resume_jitter_seconds = RATE_LIMIT_RESUME_JITTER_SECONDS
 
     def __init__(self, route_name: str, route: RouteConfig) -> None:
         super().__init__(route_name, route)
@@ -54,6 +78,11 @@ class PoolWriter(Writer):
         self._jobs: dict[str, _Job] = {}
         self._executor: ThreadPoolExecutor | None = None
         self._stop = threading.Event()
+        # Monotonic seconds; replaceable in tests.
+        self.clock: Callable[[], float] = time.monotonic
+        self._rate_streak = 0  # rate-limited sends in a row
+        self._pauses = 0  # pauses in a row (each is twice as long as the one before)
+        self._paused_until = 0.0
 
     # -- for subclasses
 
@@ -64,6 +93,21 @@ class PoolWriter(Writer):
     def gate(self) -> float | None:
         """Seconds to wait before sending a call, or None to send now (the default)."""
         return None
+
+    def unless_paused(self, base: Acceptance) -> Acceptance:
+        """`base`, or "closed for now" while the route is paused for the provider's rate limit.
+
+        Subclasses return this from `accepting`, after their own checks, so the controller sends
+        no more calls to a route that is waiting out a rate limit and opens it again by itself.
+        """
+        if not base.ok or self.rate_limit_pause_left() <= 0:
+            return base
+        return Acceptance(False, RATE_LIMIT_REASON, later=True)
+
+    def rate_limit_pause_left(self) -> float:
+        """Seconds left of the pause after a run of rate-limited answers (0 when the route is not paused)."""
+        with self._lock:
+            return max(0.0, self._paused_until - self.clock())
 
     # -- the writer steps
 
@@ -121,21 +165,71 @@ class PoolWriter(Writer):
         for request in job.requests.values():
             executor.submit(self._work, job, request)
 
+    def _ready(self) -> bool:
+        """Wait until the gate is open and the route is not paused for a rate limit.
+
+        False when the pool is stopping: the call is then never sent. After a rate-limit pause each
+        worker waits a little longer, a different moment for each, so the workers do not all send at
+        the same instant and meet the limit again together.
+        """
+        paused = False
+        while not self._stop.is_set():
+            wait = self.gate()
+            pause = self.rate_limit_pause_left()
+            if wait is None and pause <= 0:
+                if paused and self.resume_jitter_seconds > 0:
+                    self._stop.wait(random.uniform(0.0, self.resume_jitter_seconds))
+                    return not self._stop.is_set()
+                return True
+            paused = paused or pause > 0
+            self._stop.wait(min(max(wait or 0.0, pause), self.gate_poll_seconds))
+        return False
+
     def _work(self, job: _Job, request: Request) -> None:
         began = time.monotonic()
-        try:
-            wait = self.gate()
-            while wait is not None and not self._stop.is_set():
-                self._stop.wait(min(wait, self.gate_poll_seconds))
-                wait = self.gate()
-            if self._stop.is_set():
+        tries = 0
+        while True:
+            if not self._ready():
                 return  # the run is ending; the call was never sent
-            result = self.send(request)
-        except Exception as error:  # a worker never dies; the failure becomes the call's result
-            result = failure_from_exception(request.call_id, error)
+            try:
+                result = self.send(request)
+            except Exception as error:  # a worker never dies; the failure becomes the call's result
+                result = failure_from_exception(request.call_id, error)
+            tries += 1
+            if result.rate_limited:
+                self._note_rate_limit()
+                if tries < RATE_LIMIT_CALL_TRIES:
+                    continue  # turned away, not run: after the pause the same call is sent again
+            elif result.error is None:
+                self._note_answer()
+            break
         if result.minutes is None:
             result = replace(result, minutes=(time.monotonic() - began) / 60.0)
         if self._stop.is_set():
             return
         with self._lock:
             job.results[request.call_id] = result
+
+    def _note_rate_limit(self) -> None:
+        """A call was turned away for the rate limit; a run of them pauses the whole route.
+
+        Calls that were already on the wire when the pause began come back turned away too; they
+        do not count, or one burst of them would double the pause again and again.
+        """
+        with self._lock:
+            now = self.clock()
+            if now < self._paused_until:
+                return
+            self._rate_streak += 1
+            if self._rate_streak < RATE_LIMIT_PARK_AFTER:
+                return
+            self._rate_streak = 0
+            self._pauses += 1
+            pause = min(RATE_LIMIT_PAUSE_SECONDS * 2 ** (self._pauses - 1), RATE_LIMIT_PAUSE_MAX_SECONDS)
+            self._paused_until = now + pause
+
+    def _note_answer(self) -> None:
+        """A call got an answer: the rate limit is not in the way, so the count and the pauses start over."""
+        with self._lock:
+            self._rate_streak = 0
+            self._pauses = 0

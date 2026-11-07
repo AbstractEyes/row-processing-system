@@ -69,9 +69,10 @@ def call(line: str = "001", attempt: int = 1, *, provider: str, model: str, kind
 class ApiError(Exception):
     """A stand-in for an SDK status error: it carries the HTTP status the way the SDKs' errors do."""
 
-    def __init__(self, status_code: int, message: str = "") -> None:
+    def __init__(self, status_code: int, message: str = "", code: str | None = None) -> None:
         super().__init__(message or f"HTTP {status_code}")
         self.status_code = status_code
+        self.code = code
 
 
 class Recorder:

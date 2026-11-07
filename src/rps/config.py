@@ -108,6 +108,14 @@ def _reject_secret_values(value: Any, where: str = "config") -> None:
 DISABLED_BY_DEFAULT: frozenset[str] = frozenset({"deepseek"})
 # The most calls a synchronous route may keep in flight at once.
 MAX_WORKERS = 2500
+# How many calls a synchronous (api) route sends at once unless its configuration says otherwise.
+# Sized for GPT at the entry tier of gpt-6-luna (5,000 requests and 2,000,000 tokens a minute). By estimate a
+# call of the rule pool counts at most about 12,000 tokens against the limit (its prompt plus the token limit it
+# asks for), so the token limit, not the request limit, is the one that binds: about 160 calls a minute. If a
+# call takes 20 to 40 seconds (assumed: the ledger's `minutes` per call shows the real figure), 32 workers send
+# 50 to 100 calls a minute and leave room for retries. Raise it for a higher tier or calls that take longer;
+# lower it when the run keeps pausing for rate limits.
+DEFAULT_WORKERS = 32
 # `tasks_file` of the form "store:<path>" names a file in the state store, not a local file.
 TASKS_STORE_PREFIX = "store:"
 
@@ -129,10 +137,11 @@ class RouteConfig:
     `enabled` turns a route on or off; left unset it is on, except for providers listed
     in `DISABLED_BY_DEFAULT`, which a configuration must turn on. `max_retries` and
     `timeout_seconds` go to the provider's client (its own retries with backoff handle
-    rate limits and server errors). `workers` is how many calls a synchronous route keeps
-    in flight. `truncation_factor` scales the token limit of the one retry that follows
-    an answer cut off at the limit. `options` holds settings that belong to one
-    provider (picture detail, media resolution, cache use); the adapter checks them.
+    rate limits and server errors). `workers` is how many calls a synchronous (api) route
+    sends at once (`DEFAULT_WORKERS`; a batch route ignores it). `truncation_factor` scales
+    the token limit of the one retry that follows an answer cut off at the limit. `options`
+    holds settings that belong to one provider (picture detail, media resolution, cache
+    use); the adapter checks them.
     """
 
     provider: str
@@ -146,7 +155,7 @@ class RouteConfig:
     enabled: bool | None = None
     max_retries: int = 2
     timeout_seconds: float | None = None
-    workers: int = 16
+    workers: int = DEFAULT_WORKERS
     truncation_factor: float = 2.0
     options: Mapping[str, Any] = field(default_factory=dict)
 
@@ -236,7 +245,7 @@ class RouteConfig:
             timeout_seconds=None
             if timeout is None
             else float(_number(timeout, f"{where}.timeout_seconds", minimum=1)),
-            workers=_number(data.get("workers", 16), f"{where}.workers", minimum=1, maximum=MAX_WORKERS, integer=True),
+            workers=_number(data.get("workers", DEFAULT_WORKERS), f"{where}.workers", minimum=1, maximum=MAX_WORKERS, integer=True),
             truncation_factor=float(
                 _number(data.get("truncation_factor", 2.0), f"{where}.truncation_factor", minimum=1, maximum=16)
             ),

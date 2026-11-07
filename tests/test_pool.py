@@ -85,7 +85,7 @@ def test_finished_calls_are_offered_as_partial_before_the_handle_ends():
 
 def test_an_error_in_send_becomes_that_calls_failed_result_and_the_others_go_on():
     class Boom(Exception):
-        status_code = 429
+        status_code = 503  # (a rate limit, 429, is not a failure: see test_pool_rate_limits)
 
     def send(r):
         if r.payload["line"] == "002":
