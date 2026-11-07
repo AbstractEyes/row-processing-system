@@ -3,7 +3,8 @@
 Every failed call is recorded with one of these kinds. The kind decides what happens
 next: a truncated answer is retried once with a larger token limit, a refusal or a
 safety block is recorded and not retried on the same route, a request the provider
-calls malformed or a key it rejects stops the route for the run, and everything else
+calls malformed or a key it rejects stops the route for the run, a prompt over the
+provider's long-prompt threshold is refused before it is sent, and everything else
 transient is retried as a rebound.
 """
 
@@ -19,6 +20,8 @@ KIND_PROVIDER = "provider_error"  # rate limit, server error, timeout, dropped c
 KIND_BAD_REQUEST = "bad_request"  # a bug in the request: stops the route
 KIND_AUTH = "auth"  # a key the provider rejects, or a spent balance: stops the route
 KIND_UNEXPECTED = "unexpected"  # a stop reason or state nothing here expects
+KIND_LONG_PROMPT = "long_prompt"  # the prompt is over the provider's long-prompt threshold; refused before sending
+KIND_MISMATCH = "batch_mismatch"  # a batch found again after a crash did not hold the call; sent again
 
 FAILURE_KINDS: tuple[str, ...] = (
     KIND_TRUNCATED,
@@ -31,6 +34,8 @@ FAILURE_KINDS: tuple[str, ...] = (
     KIND_BAD_REQUEST,
     KIND_AUTH,
     KIND_UNEXPECTED,
+    KIND_LONG_PROMPT,
+    KIND_MISMATCH,
 )
 
 # A failure of one of these kinds stops the route for the rest of the run.

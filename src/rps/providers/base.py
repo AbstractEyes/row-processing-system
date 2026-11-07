@@ -11,8 +11,9 @@ through these steps:
 
 `handle` is plain data that can be stored in an event and handed back after a
 restart, so a submitted batch is polled rather than submitted again. `recover`
-lets an adapter look for a batch it submitted just before a crash, using the
-deterministic custom ids; the default finds nothing.
+lets an adapter look for a batch it submitted just before a crash (by a digest of
+the calls kept with the batch, or, where the provider keeps nothing of the kind, by
+the batch's size and creation time); the default finds nothing.
 
 A writer whose work arrives piece by piece (calls sent one at a time) answers a poll
 with `partial` and hands over the results that are ready; the controller records
@@ -30,7 +31,8 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, ClassVar, Mapping, Sequence
+from datetime import datetime
+from typing import Any, Callable, ClassVar, Collection, Mapping, Sequence
 
 from ..config import RouteConfig
 from ..ids import custom_id as make_custom_id
@@ -221,6 +223,10 @@ class Writer(ABC):
     # True for writers that send the writing rules to a real model; the controller then
     # refuses to start without rules.
     needs_rules: ClassVar[bool] = False
+    # True for a writer that keeps the rules in a provider-side cache which is billed for
+    # storage by the hour; the controller then charges that storage to the ledger and
+    # refuses to start unless the price table has a storage rate for the route's model.
+    bills_cache_storage: bool = False
 
     def __init__(self, route_name: str, route: RouteConfig) -> None:
         self.route_name = route_name
@@ -242,10 +248,17 @@ class Writer(ABC):
     def results(self, handle: Handle) -> list[CallResult]:
         """Return the results that are ready. May be called again for the same handle."""
 
-    def recover(self, requests: Sequence[Request]) -> Handle | None:
+    def recover(
+        self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()
+    ) -> Handle | None:
         """Find work submitted for these requests by a run that crashed before recording it.
 
-        Returns a handle covering the requests that were found, or None.
+        Returns a handle covering the requests that were found, or None. `since` is the
+        earliest moment any of the requests was prepared, so nothing was sent for them
+        before it; a writer that looks through the provider's list of batches can stop there.
+        `recorded` holds the handle ids the controller already has: a batch with one of
+        those ids belongs to other calls and is never taken. The controller asks again with
+        the calls that are still unaccounted for until a writer finds nothing more.
         """
         return None
 
@@ -421,9 +434,13 @@ class FakeWriter(Writer):
             )
         return results
 
-    def recover(self, requests: Sequence[Request]) -> Handle | None:
+    def recover(
+        self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()
+    ) -> Handle | None:
         wanted = {request.call_id for request in requests}
         for handle_id, batch in self.provider.batches.items():
+            if handle_id in recorded:
+                continue
             found = [call_id for call_id, _custom, _payload in batch["requests"] if call_id in wanted]
             if found:
                 mode = "batch" if self.route.kind == "batch" else "per_call"

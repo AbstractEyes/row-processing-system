@@ -15,6 +15,7 @@ from rps import ids
 from rps.config import ConfigError
 from rps.ledger import Usage
 from rps.providers import GeminiBatchWriter, GeminiSyncWriter, Handle, RouteRejected
+from rps.providers.common import estimate_text_tokens
 from rps.providers.gemini_api import digest_of, parse_inlined, parse_response, usage_of
 from rps.routing import ImageRoutingError
 
@@ -346,6 +347,75 @@ def test_a_failure_to_create_the_cache_is_loud():
     with pytest.raises(RouteRejected, match="too small"):
         writer.submit(writer.prepare([make_call()]))
     assert client.batches.create.calls == []
+
+
+def sized_cache(tokens=12_345):
+    """A cache as the provider reports it after creating it: its size is in the usage metadata."""
+    return Namespace(
+        name="cachedContents/c1",
+        create_time=NOW,
+        expire_time=NOW + timedelta(hours=6),
+        usage_metadata=Namespace(total_token_count=tokens),
+    )
+
+
+def test_the_note_of_a_new_cache_carries_its_size_and_the_stretch_of_its_life_the_storage_fee_covers():
+    writer = cached_writer(fake_client(caches__create=Recorder(sized_cache())))
+    writer.submit(writer.prepare([make_call()]))
+    [(kind, note)] = writer.drain_notes()
+    assert kind == "cache_created" and note["tokens"] == 12_345
+    assert note["created"] == "2026-11-07T12:00:00Z" and note["expires"] == "2026-11-07T18:00:00Z"
+    assert "tokens_estimated" not in note and "extended_from" not in note
+
+
+def test_a_cache_whose_size_the_provider_did_not_report_is_charged_by_a_generous_estimate():
+    writer = cached_writer(fake_client())  # the default fake cache has no usage metadata
+    writer.submit(writer.prepare([make_call()]))
+    [(_kind, note)] = writer.drain_notes()
+    assert note["tokens_estimated"] is True and note["tokens"] == estimate_text_tokens(rules().system) > 0
+
+
+def test_keeping_a_cache_alive_notes_the_earlier_expiry_so_only_the_added_hours_are_charged():
+    client = fake_client(
+        caches__create=Recorder(sized_cache()),
+        caches__update=Recorder(Namespace(expire_time=NOW + timedelta(hours=10))),
+        batches__get=Recorder(job("JOB_STATE_RUNNING")),
+    )
+    clock = [NOW]
+    writer = GeminiBatchWriter("flash-batch", make_route(options={"cache": True}), client=client, now=lambda: clock[0])
+    handle = writer.submit(writer.prepare([make_call()]))
+    writer.drain_notes()
+    clock[0] = NOW + timedelta(hours=4)
+    writer.poll(handle)
+    [(kind, note)] = writer.drain_notes()
+    assert kind == "cache_created" and note["tokens"] == 12_345 and "created" not in note
+    assert note["extended_from"] == "2026-11-07T18:00:00Z" and note["expires"] == "2026-11-07T22:00:00Z"
+
+
+def test_a_restored_cache_keeps_its_size_for_the_charges_that_come_later():
+    recorded = {
+        "route": "flash-batch", "key": f"{MODEL}|rules-v1", "name": "cachedContents/old",
+        "expires": "2026-11-07T18:00:00Z", "tokens": 777,
+    }
+    client = fake_client(
+        caches__update=Recorder(Namespace(expire_time=NOW + timedelta(hours=8))),  # the update does not say how big it is
+        batches__get=Recorder(job("JOB_STATE_RUNNING")),
+    )
+    clock = [NOW]
+    writer = GeminiBatchWriter("flash-batch", make_route(options={"cache": True}), client=client, now=lambda: clock[0])
+    writer.restore([recorded])
+    handle = writer.submit(writer.prepare([make_call()]))
+    assert handle.data["cache_name"] == "cachedContents/old" and writer.drain_notes() == []  # reused: nothing new to charge
+    clock[0] = NOW + timedelta(hours=4)
+    writer.poll(handle)
+    [(_kind, note)] = writer.drain_notes()
+    assert note["tokens"] == 777 and note["extended_from"] == "2026-11-07T18:00:00Z"
+
+
+def test_only_a_batch_writer_with_the_cache_on_bills_for_storage():
+    assert GeminiBatchWriter("r", make_route(options={"cache": True})).bills_cache_storage is True
+    assert GeminiBatchWriter("r", make_route()).bills_cache_storage is False
+    assert GeminiSyncWriter("r", make_route("api", options={"cache": True})).bills_cache_storage is False
 
 
 # ---------------------------------------------------------------------------- the one-call flow

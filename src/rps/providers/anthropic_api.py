@@ -7,10 +7,16 @@ and a forced `tool_choice` are never sent.
 
 A batch is created with `messages.batches.create`; its id is returned in the handle and
 the controller records it before anything waits. Results come back in any order and are
-matched to calls by `custom_id`. A batch cannot be searched for what it holds, so a crash
-in the instant between the provider accepting a batch and the controller recording its id
-cannot be recovered from the provider's side (`recover` finds nothing); the budgets bound
-what such a gap can cost.
+matched to calls by `custom_id`.
+
+A batch cannot be searched for what it holds, so a crash in the instant between the
+provider accepting a batch and the controller recording its id is recovered by size and
+time: `recover` pages the provider's list of batches (newest first) back to the moment
+the calls were prepared, less a margin for clock difference, and takes the newest batch
+the controller has not recorded whose request counts add up to the size of the group. The
+batch is adopted with `adopted` set in its handle. Matching by size and time can take a
+stranger's batch of the same size, so when an adopted batch's results hold none of the
+group's calls, those calls fail as a batch mismatch (retryable) and are sent again.
 
 The key is read from ANTHROPIC_API_KEY and never logged. Route options: `cache_ttl`
 ("5m" or "1h", default "1h").
@@ -19,10 +25,11 @@ The key is read from ANTHROPIC_API_KEY and never logged. Route options: `cache_t
 from __future__ import annotations
 
 import threading
-from typing import Any, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Collection, Sequence
 
 from ..config import ConfigError, RouteConfig
-from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_CANCELED, KIND_EXPIRED, KIND_PROVIDER
+from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_CANCELED, KIND_EXPIRED, KIND_MISMATCH, KIND_PROVIDER
 from ..ids import canonical_json, custom_id
 from ..ledger import Usage
 from ..prompting import WriterRules
@@ -56,6 +63,13 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 BATCH_MAX_REQUESTS = 100_000
 BATCH_MAX_BYTES = 240 * 1024 * 1024  # the limit is 256 MB; stay clear of it
 DEFAULT_SYNC_TIMEOUT = 600.0
+# Finding a batch again after a crash: how far before the calls were prepared a batch may
+# have been created (the provider's clock against this one), how many batches are looked at
+# in one page, and the most that are looked at in all.
+RECOVER_SKEW = timedelta(minutes=2)
+RECOVER_PAGE = 100
+RECOVER_MAX_LISTED = 1000
+REQUEST_COUNT_FIELDS = ("processing", "succeeded", "errored", "canceled", "expired")
 
 _STOP_BY_REASON = {
     "end_turn": STOP_COMPLETE,
@@ -127,6 +141,24 @@ def parse_batch_item(item: Any, call_id: str) -> CallResult:
             call_id=call_id, output=None, error="the request expired before it ran (24 hours)", retryable=True, kind=KIND_EXPIRED
         )
     return CallResult(call_id=call_id, output=None, error=f"unknown batch result type {kind!r}", retryable=True, kind=KIND_PROVIDER)
+
+
+def _moment(value: Any) -> datetime | None:
+    """A timestamp from the SDK (a datetime) or from plain data (ISO text), in UTC; None when unreadable."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return value.astimezone(timezone.utc) if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def batch_size(batch: Any) -> int:
+    """How many requests a listed batch holds: its request counts added up."""
+    counts = lookup(batch, "request_counts")
+    return sum(count(lookup(counts, name)) for name in REQUEST_COUNT_FIELDS)
 
 
 # ---------------------------------------------------------------------------- shared by both writers
@@ -251,6 +283,65 @@ class AnthropicBatchWriter(_AnthropicCommon, Writer):
             call_id = call_of.get(str(lookup(item, "custom_id")))
             if call_id is not None:
                 found.append(parse_batch_item(item, call_id))
+        if not found and handle.data.get("adopted"):
+            # A batch taken up after a crash was matched by size and time alone, and this one
+            # holds none of the calls: somebody else's batch. The calls are sent again.
+            return [
+                CallResult(
+                    call_id=call_id,
+                    output=None,
+                    error="the adopted batch did not hold these calls",
+                    retryable=True,
+                    kind=KIND_MISMATCH,
+                )
+                for call_id in handle.call_ids
+            ]
+        return found
+
+    def recover(
+        self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()
+    ) -> Handle | None:
+        """Find a batch created just before a crash, by its size and when it was created.
+
+        Takes the newest batch the controller has not recorded whose request counts add up to
+        the size of one of the groups these requests split into (the last group first, since
+        the groups were sent in order). Without `since` only the newest page of batches is
+        looked at. The caller asks again with what is left until nothing more is found.
+        """
+        if not requests:
+            return None
+        candidates = self._unrecorded_batches(since, recorded)
+        for group in reversed(self.split(requests)):
+            for batch in candidates:
+                if batch_size(batch) != len(group):
+                    continue
+                batch_id = str(lookup(batch, "id"))
+                return Handle(
+                    handle_id=batch_id,
+                    call_ids=tuple(request.call_id for request in group),
+                    mode="batch",
+                    data={"batch_id": batch_id, "adopted": True},
+                )
+        return None
+
+    def _unrecorded_batches(self, since: datetime | None, recorded: Collection[str]) -> list[Any]:
+        """Listed batches newer than `since` (less the clock margin) that nobody has recorded, newest first."""
+        start = _moment(since)
+        bound = start - RECOVER_SKEW if start is not None else None
+        limit = RECOVER_MAX_LISTED if bound is not None else RECOVER_PAGE
+        found: list[Any] = []
+        listing = iter(self._client().messages.batches.list(limit=RECOVER_PAGE))
+        for _ in range(limit):  # never ask for one more than the limit: the next page would be fetched for nothing
+            batch = next(listing, None)
+            if batch is None:
+                break
+            created = _moment(lookup(batch, "created_at"))
+            if bound is not None and created is not None and created < bound:
+                break  # the list is newest first, so everything after this is older still
+            batch_id = lookup(batch, "id")
+            if not batch_id or str(batch_id) in recorded or lookup(batch, "processing_status") == "canceling":
+                continue
+            found.append(batch)
         return found
 
 

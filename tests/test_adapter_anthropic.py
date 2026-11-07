@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import typing
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from anthropic.types import Message
@@ -308,9 +309,168 @@ def test_batches_are_split_by_count_and_by_size():
     assert [len(group) for group in big.split(huge)] == [1, 1]
 
 
-def test_a_batch_that_was_sent_just_before_a_crash_cannot_be_found_again():
-    writer = AnthropicBatchWriter("haiku-batch", make_route(), client=fake_client())
-    assert writer.recover(writer.prepare([make_call()])) is None
+# ---------------------------------------------------------------------------- finding a batch again after a crash
+
+SINCE = datetime(2026, 11, 7, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def listed(batch_id, size, created=None, status="in_progress"):
+    """A batch as the provider's list shows it: its counts and its creation time say all there is to know."""
+    when = created or SINCE + timedelta(seconds=30)
+    stamp = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    done = status == "ended"
+    return MessageBatch.model_validate(
+        {
+            "id": batch_id,
+            "type": "message_batch",
+            "processing_status": status,
+            "request_counts": {
+                "processing": 0 if done else size,
+                "succeeded": size - 1 if done and size > 1 else 0,
+                "errored": 0,
+                "canceled": 0,
+                "expired": 1 if done and size > 1 else (size if done else 0),
+            },
+            "created_at": stamp,
+            "expires_at": stamp,
+            "ended_at": None,
+            "archived_at": None,
+            "cancel_initiated_at": None,
+            "results_url": None,
+        }
+    )
+
+
+class Pages:
+    """The provider's list of batches, newest first, counting how many it handed out."""
+
+    def __init__(self, batches):
+        self.batches = batches
+        self.handed = 0
+        self.calls = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+
+        def generate():
+            for batch in self.batches:
+                self.handed += 1
+                yield batch
+
+        return generate()
+
+
+def lister(*batches):
+    pages = Pages(list(batches))
+    return pages, AnthropicBatchWriter("haiku-batch", make_route(max_batch_calls=10), client=fake_client(list=pages))
+
+
+def requests_for(writer, *lines):
+    return writer.prepare([make_call(line) for line in lines])
+
+
+def test_a_lost_batch_is_found_again_by_its_size_and_when_it_was_created():
+    pages, writer = lister(listed("msgbatch_other", 5), listed("msgbatch_lost", 2))
+    requests = requests_for(writer, "001", "002")
+    handle = writer.recover(requests, since=SINCE)
+    assert handle is not None and handle.handle_id == "msgbatch_lost" and handle.mode == "batch"
+    assert handle.call_ids == tuple(r.call_id for r in requests)
+    assert handle.data == {"batch_id": "msgbatch_lost", "adopted": True}  # the marker makes the collection check
+    assert Handle.from_dict(json.loads(json.dumps(handle.to_dict()))) == handle  # plain data
+    assert pages.calls == [{"limit": 100}]
+
+
+def test_the_newest_unrecorded_batch_of_the_right_size_is_the_one_taken():
+    _pages, writer = lister(listed("msgbatch_new", 2), listed("msgbatch_old", 2))
+    requests = requests_for(writer, "001", "002")
+    assert writer.recover(requests, since=SINCE).handle_id == "msgbatch_new"
+    assert writer.recover(requests, since=SINCE, recorded={"msgbatch_new"}).handle_id == "msgbatch_old"
+    assert writer.recover(requests, since=SINCE, recorded=frozenset({"msgbatch_new", "msgbatch_old"})) is None
+
+
+def test_the_list_is_read_back_only_to_the_moment_the_calls_were_prepared_less_two_minutes():
+    inside = listed("msgbatch_inside", 2, SINCE - timedelta(minutes=1))  # created before the calls, within the margin
+    outside = listed("msgbatch_outside", 2, SINCE - timedelta(minutes=3))
+    pages, writer = lister(listed("msgbatch_other", 7), inside, outside, listed("msgbatch_older", 2, SINCE - timedelta(hours=9)))
+    requests = requests_for(writer, "001", "002")
+    assert writer.recover(requests, since=SINCE).handle_id == "msgbatch_inside"
+    pages, writer = lister(listed("msgbatch_other", 7), outside, listed("msgbatch_older", 2, SINCE - timedelta(hours=9)))
+    assert writer.recover(requests_for(writer, "001", "002"), since=SINCE) is None
+    assert pages.handed == 2  # it stopped at the first batch that was too old and read no further
+
+
+def test_without_a_send_moment_only_the_newest_page_is_looked_at():
+    pages, writer = lister(*[listed(f"msgbatch_{n:03d}", 7) for n in range(150)])
+    assert writer.recover(requests_for(writer, "001", "002")) is None
+    assert pages.handed == 100
+
+
+def test_two_groups_of_different_sizes_each_get_their_own_batch():
+    pages = Pages([listed("msgbatch_one", 1), listed("msgbatch_two", 2)])
+    writer = AnthropicBatchWriter("haiku-batch", make_route(max_batch_calls=2), client=fake_client(list=pages))
+    requests = requests_for(writer, "001", "002", "003")  # split into two calls and one
+    first = writer.recover(requests, since=SINCE)
+    assert first.handle_id == "msgbatch_one" and first.call_ids == (requests[2].call_id,)
+    # the caller asks again with what is left, and the batch it just recorded is no longer a candidate
+    second = writer.recover(requests[:2], since=SINCE, recorded={first.handle_id})
+    assert second.handle_id == "msgbatch_two" and second.call_ids == (requests[0].call_id, requests[1].call_id)
+    assert writer.recover([], since=SINCE) is None
+
+
+def test_groups_of_the_same_size_take_the_batches_in_the_order_they_were_sent():
+    pages = Pages([listed("msgbatch_second", 1), listed("msgbatch_first", 1)])  # newest first
+    writer = AnthropicBatchWriter("haiku-batch", make_route(max_batch_calls=1), client=fake_client(list=pages))
+    requests = requests_for(writer, "001", "002")
+    last = writer.recover(requests, since=SINCE)
+    assert last.handle_id == "msgbatch_second" and last.call_ids == (requests[1].call_id,)
+    earlier = writer.recover(requests[:1], since=SINCE, recorded={last.handle_id})
+    assert earlier.handle_id == "msgbatch_first" and earlier.call_ids == (requests[0].call_id,)
+
+
+def test_nothing_is_found_when_no_batch_has_the_right_size_or_state():
+    _pages, writer = lister(listed("msgbatch_big", 5), listed("msgbatch_canceling", 2, status="canceling"))
+    requests = requests_for(writer, "001", "002")
+    assert writer.recover(requests, since=SINCE) is None
+    _pages, empty = lister()
+    assert empty.recover(requests, since=SINCE) is None
+    untouched, idle = lister(listed("msgbatch_any", 1))
+    assert idle.recover([], since=SINCE) is None and untouched.calls == []  # nothing to look for, nothing listed
+
+
+def test_a_batch_with_no_creation_time_is_still_a_candidate():
+    plain = {"id": "msgbatch_plain", "created_at": None, "processing_status": "in_progress", "request_counts": {"processing": 2}}
+    _pages, writer = lister(plain)
+    assert writer.recover(requests_for(writer, "001", "002"), since=SINCE).handle_id == "msgbatch_plain"
+
+
+def test_an_adopted_batch_that_holds_none_of_the_calls_fails_them_as_a_mismatch():
+    first, second = make_call("001"), make_call("002")
+    strangers = [item(ids.call_id(ids.task_id("other", "9", {"x": "y"}), "001", 1), {"type": "succeeded", "message": message().model_dump()})]
+    client = fake_client(results=Recorder(strangers))
+    writer = AnthropicBatchWriter("haiku-batch", make_route(), client=client)
+    handle = Handle("msgbatch_stranger", (first.call_id, second.call_id), data={"batch_id": "msgbatch_stranger", "adopted": True})
+    results = writer.results(handle)
+    assert [r.call_id for r in results] == [first.call_id, second.call_id]
+    for result in results:
+        assert result.kind == "batch_mismatch" and result.retryable is True and result.output is None
+        assert result.error == "the adopted batch did not hold these calls" and result.usage == Usage()
+    client.messages.batches.results.result = []  # a batch with no results at all holds none of them either
+    assert [r.kind for r in writer.results(handle)] == ["batch_mismatch", "batch_mismatch"]
+
+
+def test_an_adopted_batch_that_holds_some_of_the_calls_is_taken_as_it_is():
+    first, second = make_call("001"), make_call("002")
+    client = fake_client(results=Recorder([succeeded(second.call_id)]))
+    writer = AnthropicBatchWriter("haiku-batch", make_route(), client=client)
+    handle = Handle("msgbatch_adopted", (first.call_id, second.call_id), data={"batch_id": "msgbatch_adopted", "adopted": True})
+    assert [(r.call_id, r.output) for r in writer.results(handle)] == [(second.call_id, ANSWER)]  # the other is left to the controller
+
+
+def test_a_batch_the_writer_sent_itself_is_never_checked_that_way():
+    client = fake_client(results=Recorder([]))
+    writer = AnthropicBatchWriter("haiku-batch", make_route(), client=client)
+    handle = Handle("msgbatch_01", (make_call("001").call_id,), data={"batch_id": "msgbatch_01"})
+    assert writer.results(handle) == []
 
 
 # ---------------------------------------------------------------------------- the one-call flow

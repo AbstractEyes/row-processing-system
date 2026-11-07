@@ -23,7 +23,8 @@ from __future__ import annotations
 import hashlib
 import json
 import threading
-from typing import Any, Sequence
+from datetime import datetime
+from typing import Any, Collection, Sequence
 
 from ..config import ConfigError, RouteConfig
 from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_BLOCKED, KIND_CANCELED, KIND_EXPIRED, KIND_PROVIDER, KIND_UNEXPECTED
@@ -368,7 +369,9 @@ class OpenAIBatchWriter(_OpenAICommon, Writer):
                     found[call_id] = result
         return list(found.values())
 
-    def recover(self, requests: Sequence[Request]) -> Handle | None:
+    def recover(
+        self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()
+    ) -> Handle | None:
         """Find a batch created just before a crash, by the digest of its custom ids in its metadata."""
         if not requests:
             return None
@@ -379,6 +382,8 @@ class OpenAIBatchWriter(_OpenAICommon, Writer):
             if group is None or lookup(batch, "status") in ("failed", "cancelled", "cancelling"):
                 continue
             batch_id = str(lookup(batch, "id"))
+            if batch_id in recorded:
+                continue
             return Handle(
                 handle_id=batch_id,
                 call_ids=tuple(r.call_id for r in group),

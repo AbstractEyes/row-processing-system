@@ -10,8 +10,10 @@ keep the writing rules in an explicit cache for batches; default false) and `cac
 (default 21600). With the cache on, a batch refers to the cache by name instead of repeating the
 rules in every request; the cache is created once per model and rules version, its name is
 recorded (a `cache_created` event) so a restart reuses it, and its lifetime is extended while a
-batch that refers to it is still running. The storage fee of a cache is not counted in the ledger
-(only tokens are).
+batch that refers to it is still running. The provider bills a cache for the hours it is kept,
+by the size of the cache: each note carries the size in tokens and the stretch of the cache's life
+it covers, and the controller charges that stretch to the ledger (a `cache_storage` event). The
+one-time cost of making the cache is not stated on the provider's page and is not counted.
 
 A batch carries a digest of its calls in its display name, so a batch created just before a crash
 can be found again. Results come back in the order of the requests, each with the metadata of its
@@ -25,7 +27,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from ..config import ConfigError, RouteConfig
 from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_PROVIDER
@@ -252,8 +254,13 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
         Writer.__init__(self, route_name, route)
         self._setup(client)
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self._caches: dict[str, dict[str, Any]] = {}  # "model|rules version" -> {name, expires}
+        self._caches: dict[str, dict[str, Any]] = {}  # "model|rules version" -> {name, expires, tokens}
         self._notes: list[tuple[str, dict[str, Any]]] = []
+
+    @property
+    def bills_cache_storage(self) -> bool:  # type: ignore[override]
+        """True with the explicit cache on: the provider bills the hours the cache is kept."""
+        return self._use_cache
 
     def split(self, requests: Sequence[Request]) -> list[list[Request]]:
         return split_requests(requests, self.route.max_batch_calls, BATCH_MAX_BYTES)
@@ -263,17 +270,51 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
     def restore(self, notes: Sequence[Any]) -> None:
         for note in notes:
             if note.get("route") == self.route_name and note.get("key") and note.get("name"):
-                self._caches[str(note["key"])] = {"name": str(note["name"]), "expires": str(note.get("expires", ""))}
+                self._caches[str(note["key"])] = {
+                    "name": str(note["name"]),
+                    "expires": str(note.get("expires", "")),
+                    "tokens": note.get("tokens"),
+                }
 
     def drain_notes(self) -> list[tuple[str, dict[str, Any]]]:
         notes, self._notes = self._notes, []
         return notes
 
-    def _remember(self, key: str, name: str, expires: datetime, model: str) -> None:
-        self._caches[key] = {"name": name, "expires": _iso(expires)}
-        self._notes.append(
-            ("cache_created", {"route": self.route_name, "key": key, "name": name, "expires": _iso(expires), "model": model})
-        )
+    def _remember(
+        self,
+        key: str,
+        name: str,
+        expires: datetime,
+        model: str,
+        *,
+        tokens: int | None,
+        estimated: bool = False,
+        created: datetime | None = None,
+        extended_from: str | None = None,
+    ) -> None:
+        """Keep a cache in memory and queue the note that records it.
+
+        The note carries what the storage fee needs: the cache's size in tokens and the stretch of
+        its life it covers (from `created`, for a new cache, or from the earlier expiry, for one
+        that was kept alive longer). `estimated` says the size is a guess because the provider
+        did not report it.
+        """
+        self._caches[key] = {"name": name, "expires": _iso(expires), "tokens": tokens}
+        note: dict[str, Any] = {
+            "route": self.route_name,
+            "key": key,
+            "name": name,
+            "expires": _iso(expires),
+            "model": model,
+            "tokens": tokens,
+        }
+        if estimated:
+            note["tokens_estimated"] = True
+        if created is not None:
+            note["created"] = _iso(created)
+        if extended_from:
+            note["extended_from"] = extended_from
+        self._notes.append(("cache_created", note))
 
     def _ensure_cache(self, model: str, rules_version: str, system: str) -> str:
         """The name of a live cache holding the rules for this model, created if none is known."""
@@ -291,8 +332,13 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
                 system_instruction=system, ttl=f"{self._cache_ttl}s", display_name=f"rps-{rules_version}"[:128]
             ),
         )
-        expires = lookup(cache, "expire_time") or (self._now() + timedelta(seconds=self._cache_ttl))
-        self._remember(key, str(lookup(cache, "name")), expires, model)
+        created = lookup(cache, "create_time") or self._now()
+        expires = lookup(cache, "expire_time") or (created + timedelta(seconds=self._cache_ttl))
+        tokens = count(lookup(cache, "usage_metadata", "total_token_count"))
+        estimated = tokens == 0
+        if estimated:
+            tokens = estimate_text_tokens(system)  # the provider reported no size; a generous guess
+        self._remember(key, str(lookup(cache, "name")), expires, model, tokens=tokens, estimated=estimated, created=created)
         return str(lookup(cache, "name"))
 
     def _extend_cache(self, name: str) -> None:
@@ -308,7 +354,8 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
             updated = self._client().caches.update(name=name, config=types.UpdateCachedContentConfig(ttl=f"{self._cache_ttl}s"))
             expires = lookup(updated, "expire_time") or (self._now() + timedelta(seconds=self._cache_ttl))
             model = key.split("|", 1)[0]
-            self._remember(key, name, expires, model)
+            tokens = count(lookup(updated, "usage_metadata", "total_token_count")) or known.get("tokens")
+            self._remember(key, name, expires, model, tokens=tokens, extended_from=known["expires"])
             return
 
     # -- the writer steps
@@ -382,7 +429,9 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
                 found.append(parse_inlined(item, call_id))
         return found
 
-    def recover(self, requests: Sequence[Request]) -> Handle | None:
+    def recover(
+        self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()
+    ) -> Handle | None:
         """Find a batch created just before a crash, by the digest of its custom ids in its display name."""
         from google.genai import types
 
@@ -397,6 +446,8 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
             if group is None or _name(lookup(job, "state")) in ("JOB_STATE_FAILED", "JOB_STATE_CANCELLED", "JOB_STATE_EXPIRED"):
                 continue
             name = str(lookup(job, "name"))
+            if name in recorded:
+                continue
             return Handle(handle_id=name, call_ids=tuple(r.call_id for r in group), mode="batch", data={"name": name})
         return None
 
