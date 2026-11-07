@@ -1,50 +1,56 @@
 {
  "name": "painting_deep",
- "note": "A drawn painting at deep: two lights as rivals, the critique naming one craft decision.",
+ "note": "A drawn painting at deep: a figure, a clock and a candle in cool light, the critique naming one craft decision.",
  "item": {
   "kind": "single",
-  "series": "s-00207",
+  "series": "s-00203",
   "ids": [
-   "art-002023"
+   "art-002011"
   ],
   "depth": "deep",
   "domain": "painting",
   "genre": "portrait",
   "spec": {
    "person": {
-    "gender": "woman",
-    "age": "50s",
+    "gender": "nonbinary",
+    "age": "30s",
     "count": "1"
    },
    "look": {
-    "hair": "windblown",
-    "expression": "calm"
+    "hair": "straight",
+    "expression": "sad"
    },
    "scene": {
-    "setting": "cathedral",
-    "time": "noon"
+    "setting": "river bank",
+    "time": "blue hour"
    },
    "wear": {
-    "clothing": "robe",
-    "colour": "lilac"
+    "clothing": "gown",
+    "colour": "green"
    },
    "shot": {
-    "framing": "portrait",
-    "light": "from below"
+    "framing": "waist up",
+    "light": "rim light"
    },
    "body": {
-    "pose": "resting"
+    "pose": "standing"
+   },
+   "form": {
+    "compose": "frame in frame"
+   },
+   "thing": {
+    "name": "clock"
    },
    "relation": [
     {
-     "a": "woman",
-     "rel": "holding",
-     "b": "candle"
+     "a": "person",
+     "rel": "under",
+     "b": "clock"
     },
     {
-     "a": "candle",
-     "rel": "below",
-     "b": "window"
+     "a": "clock",
+     "rel": "same colour as",
+     "b": "candle"
     }
    ]
   },
@@ -57,8 +63,8 @@
   "class": "",
   "rows": [
    {
-    "id": "art-002023",
-    "series": "s-00207",
+    "id": "art-002011",
+    "series": "s-00203",
     "depth": "deep",
     "rank": 3,
     "domain": "painting",
@@ -66,11 +72,11 @@
     "records": [
      {
       "key": "person gender",
-      "value": "woman"
+      "value": "nonbinary"
      },
      {
       "key": "person age",
-      "value": "50s"
+      "value": "30s"
      },
      {
       "key": "person count",
@@ -78,167 +84,175 @@
      },
      {
       "key": "look hair",
-      "value": "windblown"
+      "value": "straight"
      },
      {
       "key": "look expression",
-      "value": "calm"
+      "value": "sad"
      },
      {
       "key": "scene setting",
-      "value": "cathedral"
+      "value": "river bank"
      },
      {
       "key": "scene time",
-      "value": "noon"
+      "value": "blue hour"
      },
      {
       "key": "wear clothing",
-      "value": "robe"
+      "value": "gown"
      },
      {
       "key": "wear colour",
-      "value": "lilac"
+      "value": "green"
      },
      {
       "key": "shot framing",
-      "value": "portrait"
+      "value": "waist up"
      },
      {
       "key": "shot light",
-      "value": "from below"
+      "value": "rim light"
      },
      {
       "key": "body pose",
-      "value": "resting"
+      "value": "standing"
+     },
+     {
+      "key": "form compose",
+      "value": "frame in frame"
+     },
+     {
+      "key": "thing name",
+      "value": "clock"
      },
      {
       "key": "mood feeling",
-      "value": "awed"
+      "value": "mournful"
      },
      {
       "key": "mood from",
-      "value": "scene setting"
+      "value": "scene time"
      },
      {
       "key": "intent purpose",
-      "value": "devotional"
+      "value": "fine art"
      },
      {
       "key": "intent for",
-      "value": "the family"
+      "value": "a gallery"
      },
      {
       "key": "story moment",
-      "value": "a farewell"
+      "value": "a loss"
      },
      {
-      "key": "story before",
-      "value": "the last prayer"
+      "key": "story cause",
+      "value": "a letter came"
      }
     ],
     "relations": [
      {
-      "a": "woman",
-      "rel": "holding",
-      "b": "candle"
+      "a": "person",
+      "rel": "under",
+      "b": "clock"
      },
      {
-      "a": "candle",
-      "rel": "below",
-      "b": "window"
+      "a": "clock",
+      "rel": "same colour as",
+      "b": "candle"
      }
     ],
     "thoughts": [
      {
       "step": "see",
-      "text": "A woman in her fifties, calm, her hair windblown, in a lilac robe, resting."
+      "text": "A person in their thirties, hair straight, face sad, standing in a green gown."
      },
      {
       "step": "place",
-      "text": "A cathedral at noon. She holds a candle that sits below a window, so daylight and flame share the same stretch of wall."
+      "text": "A river bank at blue hour. A clock hangs over them, and the clock is the same color as a candle nearby."
      },
      {
       "step": "light",
-      "text": "Light comes from below, from the candle in her hands: it lifts the chin and the folds of the robe. Against noon at the window, the flame is a small, warm rival."
+      "text": "Rim light traces the edge of the figure, a thin bright outline against the darkening water. In paint, a single stroke of pale color would do it."
      },
      {
       "step": "colour",
-      "text": "The lilac robe, lit from below by flame, warms toward rose and becomes the picture's soft centre."
+      "text": "Green and blue dominate, cool on cool. The clock matching a candle adds one warm echo, so time and flame are tied by color."
      },
      {
       "step": "form",
-      "text": "Portrait framing, close and vertical, with the window above the candle drawing the eye up and the flame pulling it back down."
+      "text": "A frame inside the frame: the clock, or an arch, boxes the figure in and gives the layered depth of a stage set."
      },
      {
       "step": "mean",
-      "text": "Awed, but quietly: the calm face and the resting pose keep it from drama, and the cathedral does the work of scale."
+      "text": "Standing still beneath a clock, sad at the blue hour: the day, and something else, is ending. The mood is mournful."
      },
      {
       "step": "check",
-      "text": "Windblown hair indoors is the odd detail. It suggests an open door or a draught, so even the stone room is not entirely still."
+      "text": "A candle matching a clock is a quiet pairing of time and flame; it supports the mourning instead of fighting it."
      },
      {
       "step": "intend",
-      "text": "A devotional piece for a family: something to keep in a home, calm enough to live with, grand enough to feel sacred."
+      "text": "For a gallery wall: slow, low in energy, asking the viewer to wait with the figure. Fine art rather than illustration."
      },
      {
       "step": "story",
-      "text": "A farewell, with the last prayer already said: the candle is what she carries out of the room."
+      "text": "A loss, and its cause a letter that came this afternoon: the standing still is what comes after reading it."
      },
      {
       "step": "compare",
-      "text": "At night the window would go dark and the candle would be the only world. At noon it is one light among two, and she is choosing which to follow."
+      "text": "Put the figure in full sun and the clock becomes a timetable. In the blue hour it becomes a verdict."
      }
     ],
     "wordings": [
      {
       "kind": "caption",
-      "text": "A woman in her fifties with windblown hair and a calm face rests in a lilac robe, holding a candle below a cathedral window at noon, lit from below."
+      "text": "A person in their thirties with straight hair and a sad face stands in a green gown under a clock beside a candle of the same color, on a river bank at blue hour, rim-lit."
      },
      {
       "kind": "prompt",
-      "text": "devotional painting, woman in her 50s, windblown hair, calm expression, lilac robe, resting, holding a candle, candle below a window, cathedral at noon, light from below, portrait framing, awed mood"
+      "text": "painting, person in their 30s, straight hair, sad expression, green gown, standing, under a clock, clock the same color as a candle, river bank at blue hour, rim light, waist up, frame in frame, mournful mood"
      },
      {
       "kind": "tags",
-      "text": "1girl, solo, mature female, windblown hair, robe, purple robe, holding candle, candle, window, cathedral, from below, portrait"
+      "text": "1other, solo, straight hair, sad, green dress, standing, clock, candle, river, blue hour, rim lighting, upper body"
      },
      {
       "kind": "critique",
-      "text": "Lighting the face from the flame, in a room full of noon, is a lovely reversal, and the lilac holds the warmth well. The window above the candle is a little too bright; dim it so the flame, not the glass, gets the last word."
+      "text": "The thin rim of light and the cool greens give the figure a sorrow that never raises its voice. The candle matching the clock is a good idea executed too literally; let the match stay a whisper so the figure stays the subject."
      }
     ],
     "questions": [
      {
       "key": "person age",
-      "value": "50s",
+      "value": "30s",
       "needs": "record"
      },
      {
-      "key": "wear colour",
-      "value": "lilac",
+      "key": "thing name",
+      "value": "clock",
       "needs": "record"
      },
      {
-      "key": "shot light",
-      "value": "from below",
+      "key": "rel2 rel",
+      "value": "same colour as",
       "needs": "record"
      },
      {
-      "key": "mood temperature",
-      "value": "warm",
+      "key": "scene layout",
+      "value": "layered depth",
       "needs": "chain"
      },
      {
-      "key": "form medium",
-      "value": "unknown",
-      "needs": "unknown"
+      "key": "story moment",
+      "value": "a loss",
+      "needs": "record"
      },
      {
-      "key": "story before",
-      "value": "the last prayer",
-      "needs": "record"
+      "key": "form texture",
+      "value": "unknown",
+      "needs": "unknown"
      }
     ]
    }

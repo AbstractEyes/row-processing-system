@@ -147,3 +147,20 @@ def test_task_text_carries_ids_records_hint_and_assignment():
     assert "art-900001, art-900002, art-900003" in text
     assert "relation 1: woman | beside | table" in text
     assert "medium = caption, prompt, tags" in text
+
+
+def test_lists_offer_no_sealed_value():
+    text = rules.writer_system()
+    start = text.index("THE LISTS")
+    lists = text[start : text.index("EXAMPLE ROW")]
+    offered = {v.strip() for line in lists.splitlines()[1:] if ": " in line and not line.startswith("relation") for v in line.split(": ", 1)[1].split(",")}
+    assert not offered & set(tp.sealed_all(HELD))
+
+
+def test_a_missing_license_is_an_error():
+    with pytest.raises(form.FormError):
+        form.source_block({"seed_id": None}, "m")
+
+
+def test_hint_rule_is_in_the_prompt():
+    assert "never copy a sentence or phrase from it" in rules.writer_system()

@@ -21,6 +21,7 @@ THOUGHTS
 - Never open a thought with a label and a colon ("Count one:", "Colour:"). Say it as the picture: "A single finch, the only bird in view."
 - The "name" step names what a thing in THIS picture is ("The cloth wrapped from her shoulder to her ankles is a sari").
 - Every record appears in the text of a medium or deep row at least once. A simple row never pads: a second thought relates records to each other and never defines.
+- A hint is evidence, not text: never copy a sentence or phrase from it, never take a name from it, and use a fact from it only where several captions agree or it is stated outright.
 - Every fact is a record or is an inference marked as one in plain words with its evidence (likely, suggests, reads as, points to, would mean, as if; vary them). Never invent a detail, a color, a garment, a name, a date or a history that no record or hint supports.
 - Never talk about the records, the spec, inferences, "reading" a record, the hint, describing, or what anything "names", "gives" or "states". Never write "pixel", "the image file", "I can see", "looking at the image", jpeg, png. Never write advice in a thought ("A painter would crop"); advice belongs only in the critique.
 - A relation is read as the picture would show it. A size or order claim must agree with the relations. A relation end names a thing, never a direction or a part of the frame.

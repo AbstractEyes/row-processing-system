@@ -117,3 +117,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 63 | The relation question key cycles a, rel, b over the batch. | WRITER |
 | 64 | The unknown key rotates through a fixed list and skips keys the item's spec holds. | WRITER |
 | 65 | Wordings come from the depth. | WRITER |
+
+## Open
+
+Version 1 covers text items. Rows written with the picture attached (photo sources sent to routes that accept images) need their own grounding rules in a later pool version.

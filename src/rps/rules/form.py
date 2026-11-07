@@ -53,12 +53,14 @@ def records_from_spec(spec: Mapping[str, Any]) -> tuple[list[dict[str, str]], li
 def source_block(item: Mapping[str, Any], model: str) -> dict[str, Any]:
     """The source block of a stored row, from the spec item and the writer's model name."""
     seed_id = item.get("seed_id")
+    if not item.get("license"):
+        raise FormError("the spec item carries no license; a row's license is never guessed")
     return {
         "kind": "seeded" if seed_id else "synthetic",
         "model": model,
         "seed_dataset": str(seed_id).split(":", 1)[0] if seed_id else None,
         "seed_id": seed_id or None,
-        "license": item.get("license") or "Apache-2.0",
+        "license": item["license"],
     }
 
 

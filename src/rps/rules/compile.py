@@ -32,11 +32,13 @@ def _validator():
 def list_text(tp, held) -> str:
     """The closed value lists, one line per group of keys that share a list."""
     lists = tp.lists_for(held, "train")
+    sealed = tp.sealed_all(held)
     groups: dict[tuple[str, ...], list[str]] = {}
     for key, name in tp.KEY_LIST.items():
         if key == "intent genre":
             continue  # same as the genre list
-        groups.setdefault(tuple(lists.get(name, ())), []).append(key)
+        values = tuple(v for v in lists.get(name, ()) if v not in sealed)  # the prompt never offers a value it forbids
+        groups.setdefault(values, []).append(key)
     lines = []
     for values, keys in groups.items():
         lines.append(f"{', '.join(keys)}: {', '.join(values)}")

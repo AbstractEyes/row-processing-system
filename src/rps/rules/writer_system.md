@@ -21,6 +21,7 @@ THOUGHTS
 - Never open a thought with a label and a colon ("Count one:", "Colour:"). Say it as the picture: "A single finch, the only bird in view."
 - The "name" step names what a thing in THIS picture is ("The cloth wrapped from her shoulder to her ankles is a sari").
 - Every record appears in the text of a medium or deep row at least once. A simple row never pads: a second thought relates records to each other and never defines.
+- A hint is evidence, not text: never copy a sentence or phrase from it, never take a name from it, and use a fact from it only where several captions agree or it is stated outright.
 - Every fact is a record or is an inference marked as one in plain words with its evidence (likely, suggests, reads as, points to, would mean, as if; vary them). Never invent a detail, a color, a garment, a name, a date or a history that no record or hint supports.
 - Never talk about the records, the spec, inferences, "reading" a record, the hint, describing, or what anything "names", "gives" or "states". Never write "pixel", "the image file", "I can see", "looking at the image", jpeg, png. Never write advice in a thought ("A painter would crop"); advice belongs only in the critique.
 - A relation is read as the picture would show it. A size or order claim must agree with the relations. A relation end names a thing, never a direction or a part of the frame.
@@ -61,7 +62,7 @@ Put the reason in one sentence. Never adjust a record to make an item work.
 THE LISTS (closed; use only these where a list exists)
 look hair: short, long, curly, straight, wavy, braided, bob, bun, ponytail, buzzed, shaved, messy, slicked, afro, bangs, pigtails, undercut, windblown
 look eyes, wear colour, thing colour, upper colour, lower colour, outer colour, shoes colour: amber, auburn, black, blonde, blue, brown, colored, crimson, dark blue, dark brown, emerald, ginger, golden, gradient, green, grey, hazel, heterochromia, lavender, light blue, light brown, magenta, multicolored, orange, platinum blonde, purple, red, scarlet, silver, streaked, teal, turquoise, violet, white, yellow, cream, beige, tan, gold, navy, olive, maroon, lilac, rust, ivory, charcoal, indigo, peach, mint, mustard, plum, sand, slate, wine
-look expression: angry, annoyed, blush, closed eyes, closed mouth, crazy smile, crying, disgust, embarrassed, false smile, forced smile, frown, grimace, grin, happy, laughing, light smile, nervous, open mouth, parted lips, pout, sad, scared, scowl, serious, shy, sleepy, smile, smirk, smug, surprised, sweatdrop, tears, tongue out, wink, wry, stern, pensive, amused, weary, startled, proud, tender, bored, dreamy, wince, gaze, calm, fierce, mournful
+look expression: angry, annoyed, blush, closed eyes, closed mouth, crazy smile, crying, disgust, embarrassed, false smile, forced smile, frown, grimace, grin, happy, laughing, light smile, nervous, open mouth, parted lips, pout, sad, scared, scowl, serious, shy, sleepy, smile, smirk, smug, surprised, sweatdrop, tears, tongue out, wink, wry, stern, pensive, amused, startled, proud, tender, bored, dreamy, wince, gaze, fierce, mournful
 person gender: woman, man, girl, boy, nonbinary
 person age: child, teen, 20s, 30s, 40s, 50s, elderly, baby, young adult
 person role: worker, dancer, soldier, farmer, nurse, student, chef, rider, swimmer, painter, monk, vendor, guard, reader, mother, father, bride, athlete
@@ -73,7 +74,7 @@ scene setting: market street, forest, beach, kitchen, rooftop, subway, cathedral
 scene time: morning, noon, afternoon, golden hour, dusk, blue hour, night, midnight, late evening
 scene weather: rain, snow, fog, clear, overcast, storm, wind, drizzle, sleet, heat shimmer, frost
 scene layout: single subject, pair, crowd, empty, sparse, layered depth, flat, panoramic, tight
-scene mood, mood feeling: tense, amused, wistful, joyful, lonely, proud, anxious, serene, grim, hopeful, defiant, tender, eerie, triumphant, bored, curious, mournful, giddy, stern, cozy, restless, awed, bitter, gentle, fierce, shy, nostalgic
+scene mood, mood feeling: tense, amused, wistful, joyful, lonely, proud, anxious, grim, hopeful, tender, eerie, triumphant, bored, mournful, giddy, stern, cozy, restless, awed, bitter, gentle, fierce, shy, nostalgic
 shot light: soft window, hard sun, backlit, rim light, neon, candle, overcast, spotlight, golden, fluorescent, firelight, studio flash, dappled, silhouette, lantern, screen glow, street lamp, low key, high key, from the left, from the right, from below
 shot angle: eye level, high angle, overhead, worm's eye, dutch tilt, over the shoulder, profile, three quarter, frontal
 shot framing: close-up, extreme close, portrait, waist up, full body, wide, macro, detail, medium shot, two shot, establishing
@@ -81,16 +82,16 @@ shot lens: 24mm, 35mm, 50mm, 85mm, 135mm, fisheye, tilt-shift, pinhole, anamorph
 shot focus: on the eyes, deep, shallow, selective, on the hands, on the background, motion blur, tack sharp, bokeh
 form compose: rule of thirds, centred, symmetry, golden spiral, leading lines, frame in frame, diagonal, layered, negative space, right third, left third, horizon high, radial, grid, s-curve, fill the frame, off balance, mirrored
 form balance: balanced, left heavy, right heavy, top heavy, bottom heavy, tense
-form line: vertical, diagonal, curved, jagged, converging, broken, flowing
+form line: vertical, diagonal, curved, jagged, converging, broken
 form shape: round, angular, organic, geometric, blocky, spindly, massive
 form space: deep, flat, crowded, open, enclosed, vast, airless
-form rhythm: repeating, irregular, alternating, accelerating, still, staccato
+form rhythm: repeating, irregular, alternating, accelerating, staccato
 form contrast: high, low, medium, tonal, colour, gentle
-form texture: smooth, rough, grainy, glossy, matte, cracked, wet, dusty, woven, brushy, polished
+form texture: smooth, rough, grainy, glossy, matte, cracked, dusty, woven, brushy, polished
 form medium: photograph, oil painting, watercolour, ink, charcoal, gouache, acrylic, fresco, woodcut, digital painting, 3d render, pixel art, collage, bronze, clay, pastel, tempera, linocut, silver print, cyanotype, polaroid, film still, mosaic, tapestry, stained glass, vector art, lithograph
 form style: realism, impressionism, expressionism, cubism, surrealism, baroque, renaissance, ukiyo-e, art nouveau, art deco, minimalism, pop art, bauhaus, anime, comic, noir, fauvism, pointillism, brutalism, folk art, gothic, rococo, futurism, dada, street art, naive, symbolism
 form period: ancient, medieval, renaissance, baroque, 19th century, early 20th, mid century, 1980s, 1990s, contemporary, timeless
-mood tone: warm, cold, dry, ironic, solemn, brash, quiet, sweet, harsh
+mood tone: warm, cold, dry, ironic, solemn, brash, quiet, sweet
 mood energy: slow, steady, brisk, frantic, explosive, drifting, pulsing
 mood temperature: warm, neutral, mixed
 intent purpose: editorial, advertising, archival, fine art, illustration, concept art, album cover, poster, field record, fashion, product, documentary, devotional, picture book, game art, commission, study, protest
@@ -98,7 +99,7 @@ intent for: a travel feature, collectors, children, a gallery, the family, a fas
 story moment: instant before, instant after, a pause, a departure, an arrival, a discovery, a farewell, a wait, a celebration, a loss, plain afternoon
 wear pattern, upper pattern, lower pattern: plain, floral, striped, checked, plaid, polka dot, graphic, logo, text print, colour block, animal print, lace, paisley
 upper name: t-shirt, shirt, blouse, tank top, sweater, hoodie, cardigan, polo shirt, crop top, sweatshirt, camisole, turtleneck, halter top, bodysuit
-lower name: trousers, jeans, leggings, shorts, skirt, mini skirt, pencil skirt, pleated skirt, maxi skirt, joggers, cargo pants, culottes, sweatpants
+lower name: trousers, leggings, shorts, skirt, mini skirt, pencil skirt, pleated skirt, maxi skirt, joggers, cargo pants, culottes, sweatpants
 outer name: jacket, coat, blazer, denim jacket, leather jacket, parka, raincoat, trench coat, puffer jacket, windbreaker, fleece
 shoes name: sneakers, boots, ankle boots, sandals, heels, flats, loafers, slippers, oxfords, mules, flip-flops
 relation: left of, right of, below, behind, in front of, beside, holding, facing, looking at, larger than, smaller than, same colour as, inside, under, leaning on, reflected in
