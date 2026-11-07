@@ -1,4 +1,4 @@
-"""Wiring: build the stores a run needs from its configuration.
+"""Wiring: build the stores, writers and controller a run needs from its configuration.
 
 A run uses two stores:
 
@@ -13,7 +13,12 @@ reviewer client). Keys are read from environment variables only.
 
 from __future__ import annotations
 
+from typing import Any, Mapping
+
 from .config import Config
+from .controller import Controller
+from .providers import make_writer
+from .providers.base import Writer
 from .store.base import Store
 from .store.bucket import BucketStore
 from .store.hub import HubStore
@@ -54,3 +59,36 @@ def build_ship_store(config: Config, *, create: bool = False) -> Store:
             store.ensure_exists(private=True)
         return store
     return LocalStore(config.work_path("ship"))
+
+
+def build_writers(config: Config) -> dict[str, Writer]:
+    """One writer per route, chosen by each route's provider name."""
+    return {name: make_writer(name, route) for name, route in config.routes.items()}
+
+
+def build_controller(
+    config: Config,
+    *,
+    create: bool = False,
+    writers: Mapping[str, Writer] | None = None,
+    state_store: Store | None = None,
+    ship_store: Store | None = None,
+    **options: Any,
+) -> Controller:
+    """A controller wired to the stores and writers a configuration names.
+
+    `create` makes the bucket and the dataset repository (both private) when they
+    do not exist yet. Pass `writers`, `state_store` or `ship_store` to use your own
+    instead of the configured ones; every other keyword (`prices`, `assess`,
+    `printer`, ...) goes to `Controller`.
+
+    A provider that has no adapter yet raises ConfigError here; an adapter that is
+    still a stub raises NotImplementedError when the controller first uses it.
+    """
+    return Controller(
+        config,
+        state_store if state_store is not None else build_state_store(config, create=create),
+        dict(writers) if writers is not None else build_writers(config),
+        ship_store=ship_store if ship_store is not None else build_ship_store(config, create=create),
+        **options,
+    )
