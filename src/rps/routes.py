@@ -5,7 +5,8 @@
     luna-batch      openai      gpt-6-luna         Batch API (/v1/responses) public common, COCO, FFHQ
     flash-batch     gemini      gemini-3.8-flash   inline batch              public common, COCO, FFHQ
     deepseek-sync   deepseek    deepseek-flash     one call at a time        public common, COCO, FFHQ
-    haiku-sync, luna-sync, flash-sync              one call at a time, for small tests
+    luna-sync                                      one call at a time: the route GPT is used through, at any size
+    haiku-sync, flash-sync                         one call at a time, for small tests
 
 The effort of each route is the provider's own default for the model (medium); the probe phase
 compares levels. DeepSeek stays switched off until a configuration turns it on. A configuration

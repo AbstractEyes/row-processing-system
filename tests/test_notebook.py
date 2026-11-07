@@ -8,16 +8,20 @@ import sys
 import types
 from pathlib import Path
 
+import huggingface_hub
 import pytest
 
 from rps import runtime
+from rps.config import DEFAULT_WORKERS, Config, RouteConfig
 from rps.events import replay
 from rps.keys import SECRET_ENV_MAP, looks_like_secret
 from rps.store.local import LocalStore
 
+from fakes import FakeBucketApi
+
 NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "notebooks" / "controller_colab.ipynb"
 COLAB_URL = "https://colab.research.google.com/github/AbstractEyes/row-processing-system/blob/main/notebooks/controller_colab.ipynb"
-INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.1"'
+INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.2"'
 
 
 @pytest.fixture(scope="module")
@@ -156,8 +160,10 @@ def test_the_cells_run_as_a_dry_run_and_print_only_secret_names(notebook, tmp_pa
     controller = namespace["controller"]
     assert controller.state.counts()["packets_open"] == 2  # the six rows now wait for two reviewers
     assert controller.state.spend("demo", "test").calls == 6
-    assert (tmp_path / "work" / "tasks.json").exists()
-    assert json.loads((tmp_path / "work" / "tasks.json").read_text(encoding="utf-8"))[0]["purpose"] == "test"
+    tasks_file = tmp_path / "work" / "state" / "control" / "tasks.json"  # the tasks file is in the state store
+    assert tasks_file.exists() and not (tmp_path / "work" / "tasks.json").exists()
+    assert json.loads(tasks_file.read_text(encoding="utf-8"))[0]["purpose"] == "test"
+    assert "tasks file: store:control/tasks.json" in printed
 
 
 def test_the_dry_run_cell_sends_nothing_unless_a_route_is_named(notebook, tmp_path, monkeypatch):
@@ -169,9 +175,9 @@ def test_the_dry_run_cell_sends_nothing_unless_a_route_is_named(notebook, tmp_pa
     assert namespace["DRY_RUN_ROUTE"] is None and calls == []
     # naming a route runs the dry run, five calls, through the function (no argument parser)
     cell = next(cell for cell in code_cells(notebook) if cell["id"] == "dryrun")
-    text = runnable(source(cell)).replace("DRY_RUN_ROUTE = None", 'DRY_RUN_ROUTE = "luna-batch"')
+    text = runnable(source(cell)).replace("DRY_RUN_ROUTE = None", 'DRY_RUN_ROUTE = "luna-sync"')
     exec(compile(text, "dryrun", "exec"), {})
-    assert calls == [(("luna-batch",), {"calls": 5})]
+    assert calls == [(("luna-sync",), {"calls": 5})]
 
 
 def test_the_secrets_cell_reports_a_secret_that_is_not_shared_without_failing(notebook, tmp_path, monkeypatch):
@@ -189,3 +195,50 @@ def test_running_the_run_cell_again_resumes_without_repeating_a_call(notebook, t
     assert [event.kind for event in events].count("batch_submitted") == 1
     assert "run ended: idle" in printed
     assert again["controller"].state.spend("demo", "test").calls == 6
+
+
+# ------------------------------------------------------------------ what the notebook says about GPT, the tasks and the bucket
+
+
+def cell_named(notebook, cell_id):
+    return next(cell for cell in notebook["cells"] if cell["id"] == cell_id)
+
+
+def test_the_example_route_for_gpt_is_the_one_call_route_and_the_notebook_never_suggests_a_gpt_batch(notebook):
+    config_text = source(cell_named(notebook, "config"))
+    assert "GPT is used one call at a time in this project" in config_text
+    assert "GPT is used one call at a time in this project" in source(cell_named(notebook, "intro"))
+    assert "luna-batch" not in "\n".join(source(cell) for cell in notebook["cells"])
+    # The commented example is a real route: uncomment it and it loads.
+    start = config_text.index('# "luna-sync": {')
+    block = config_text[start : config_text.index("# },", start) + len("# },")]
+    uncommented = "\n".join(line.strip().removeprefix("# ") for line in block.splitlines())
+    ((name, spec),) = ast.literal_eval("{" + uncommented + "}").items()
+    route = RouteConfig.from_dict(name, spec)
+    assert (name, route.provider, route.model, route.kind) == ("luna-sync", "openai", "gpt-6-luna", "api")
+    assert route.workers == DEFAULT_WORKERS == 32 and '"workers": 32' in block
+
+
+def test_the_tasks_file_is_a_file_in_the_state_store_and_the_install_names_this_release(notebook, tmp_path, monkeypatch):
+    namespace, printed = execute(notebook, tmp_path, monkeypatch, {}, only=("config", "tasks"))
+    assert namespace["config"].tasks_file == "store:control/tasks.json" and namespace["config"].tasks_store_path() == "control/tasks.json"
+    assert "tasks file: store:control/tasks.json" in printed
+    assert "version 0.2.2" in source(cell_named(notebook, "intro")) and "@v0.2.2" in source(cell_named(notebook, "install"))
+
+
+def test_the_bucket_setting_can_name_a_folder_and_the_tasks_cell_writes_into_that_folder(notebook, tmp_path, monkeypatch):
+    config_text = source(cell_named(notebook, "config"))
+    assert "owner/rps-state/test" in config_text and "owner/rps-state/prod" in config_text
+    api = FakeBucketApi()
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda token=None: api)
+    monkeypatch.setenv("HF_TOKEN", "a-token-for-this-test")
+    namespace = {}
+    for cell_id in ("config", "tasks"):
+        text = runnable(source(cell_named(notebook, cell_id))).replace("/content/rps_work", (tmp_path / "work").as_posix())
+        if cell_id == "tasks":  # the person sets the bucket in the configuration, folder included
+            namespace["config"] = Config.from_dict({**namespace["CONFIG"], "bucket": "owner/rps-state/test"})
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(text, cell_id, "exec"), namespace)
+    assert list(api.files) == ["test/control/tasks.json"]
+    assert json.loads(api.files["test/control/tasks.json"])[0]["batch"] == "demo-1"
+    assert api.created == [{"bucket_id": "owner/rps-state", "private": True, "exist_ok": True}]  # the bucket, not the folder

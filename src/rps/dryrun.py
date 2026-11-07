@@ -2,12 +2,12 @@
 
 From a terminal:
 
-    python -m rps.dryrun --route luna-batch --calls 5
+    python -m rps.dryrun --route luna-sync --calls 5
 
 From a notebook (no argument parser needed):
 
     from rps.dryrun import dry_run
-    report = dry_run("luna-batch", calls=5)
+    report = dry_run("luna-sync", calls=5)
 
 The calls carry a tiny plumbing prompt and a tiny answer schema, never the writing rules, so a
 dry run says whether the route works (key, model name, request form, batch, answer, usage and
@@ -196,7 +196,7 @@ def _table(rows: Sequence[Sequence[str]]) -> list[str]:
 
 
 def dry_run(
-    route: str = "luna-batch",
+    route: str = "luna-sync",
     calls: int = DEFAULT_CALLS,
     *,
     cap_usd: float = DEFAULT_CAP_USD,
@@ -393,7 +393,7 @@ def render(report: DryRunReport, config: RouteConfig, call_ids: Sequence[str]) -
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m rps.dryrun", description="Send a few real calls through one route and show what came back.")
-    parser.add_argument("--route", default="luna-batch", help=f"one of {', '.join(sorted(STANDARD_ROUTES))}")
+    parser.add_argument("--route", default="luna-sync", help=f"one of {', '.join(sorted(STANDARD_ROUTES))}")
     parser.add_argument("--calls", type=int, default=DEFAULT_CALLS, help=f"how many calls (1 to {MAX_CALLS}; default {DEFAULT_CALLS})")
     parser.add_argument("--cap", type=float, default=DEFAULT_CAP_USD, help="the test cap in dollars for this route's dry runs")
     parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)

@@ -6,14 +6,25 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.1. It has real writers for Anthropic (Message Batches), OpenAI (Batch API), Gemini
-(inline batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the
-first three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a
-dry-run tool for trying one route with a handful of calls. Everything is tested offline: with a
-fake writer, and with each adapter against the SDKs' own types built from recorded-response-shaped
-data.
+Version 0.2.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+the Batch API adapter is in the package, but this project does not use it), Gemini (inline
+batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
+three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
+for trying one route with a handful of calls. Everything is tested offline: with a fake writer,
+and with each adapter against the SDKs' own types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.2
+
+| Change | What happens now |
+|---|---|
+| GPT goes one call at a time | The route for GPT is `luna-sync` (OpenAI `gpt-6-luna`, route kind `api`): GPT calls go one at a time, never as a batch. The dry-run tool, the notebook and this document start from `luna-sync`. The OpenAI Batch API adapter and the `luna-batch` route are still in the package, unused |
+| Production-size runs of one-call routes | A one-call route keeps up to `workers` calls in flight, 32 unless the route says otherwise (cap 2,500). The controller feeds it a window at a time, four calls per worker, so a list of hundreds of thousands of lines is never all in memory or all held in the budget's reserve, and a stop or crash loses at most one window. See "One-call routes at production size" |
+| Rate limits make a route wait | A call the provider's client could not get past a rate limit (HTTP 429) did not run and was not billed, so it no longer costs an attempt: it waits and goes again. Five such answers in a row, with no call answered between them, pause the whole route for a minute (twice as long each time in a row, up to 15 minutes). While it is paused the route is "closed for now", the run waits and nothing is stopped; the route opens again by itself |
+| Tasks from the state store | `tasks_file` may be `store:control/tasks.json` (or another state path). The controller reads the file through the state store on every pass, so tasks can be added from outside while a run goes on; a missing file means no tasks, and a file with a mistake is reported once while the run goes on with the tasks it already has. `rps.runtime.build_operator_store(config)` gives the writer's view of the store for putting the file there. A store behind a network is read at most every 15 seconds |
+| A folder inside the bucket | `bucket` may be `owner/name/folder`. Every state path (events, packets and pictures, verdicts, the hand files, the stop file and the tasks file) then lives under that folder, for the controller, the operator store and the reviewer commands alike. Test runs and production use two folders of one bucket, `owner/name/test` and `owner/name/prod`, and share no file. A bucket with no folder keeps the layout at its top |
+| Notebook | The install line names `v0.2.2`; the example real route is `luna-sync`; the tasks cell puts the tasks file into the state store; the bucket setting shows the folder form |
 
 ## What changed in 0.2.1
 
@@ -57,7 +68,7 @@ files alone.
       failures.py      the kinds of failed call and what each one means
       prompting.py     the writing rules as inputs, and the text of one call
       providers/       the Writer interface, FakeWriter, the worker pool, the four adapters
-      routes.py        the standard routes (haiku-batch, luna-batch, flash-batch, deepseek-sync, ...)
+      routes.py        the standard routes (haiku-batch, luna-sync, flash-batch, deepseek-sync, ...)
       dryrun.py        try one real route with a handful of calls
       assess.py        the assessment hooks
       rules/           the compiled rule pool: writer prompt, row schema, review brief, examples
@@ -67,7 +78,7 @@ files alone.
       runtime.py       build the stores, writers and controller from a Config
       keys.py          API keys from environment variables only; Colab secret mapping
       images.py        shrink a picture to a source's image size
-      tasks.py         task definitions and the tasks file
+      tasks.py         task definitions and the tasks file (a local file, or one in the state store)
       data/prices.json the dated price table
     notebooks/controller_colab.ipynb   run the controller on a Colab CPU runtime
     reviewers/                         the review agents' guide (AGENTS.md; CLAUDE.md imports it) and TASK.md
@@ -81,7 +92,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.1"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.2"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -114,8 +125,9 @@ runtime's disk.
 ### Stopping
 
 Create the file named by `stop_file` (default `STOP` inside the work folder) or, from another
-machine, the file `control/STOP` in the state store. The run finishes the step it is in and ends
-cleanly. Remove the file to run again.
+machine, the file `control/STOP` in the state store (under the bucket's folder when `bucket` names
+one, so a stop file in the `test` folder stops only the run that uses that folder). The run finishes
+the step it is in and ends cleanly. Remove the file to run again.
 
 ### The tasks file
 
@@ -125,7 +137,7 @@ purpose:
 ```json
 [
   {
-    "source": "photos", "batch": "batch-0001", "route": "luna-batch", "purpose": "production",
+    "source": "photos", "batch": "batch-0001", "route": "luna-sync", "purpose": "production",
     "lines": [
       {"line_id": "001", "spec": "what the writer is asked to do", "item_id": "img-001",
        "image": "img-001.jpg", "image_class": "coco"}
@@ -139,6 +151,27 @@ route are a different task when given a `variant` (use the route name). With the
 line's `spec` is the specs-file item (kind, series, ids, domain, genre, specs or spec, seed id,
 hint, license) and the controller turns it into the user text of the call.
 
+**Where the file lives.** `tasks_file` is a local path, or `store:<path>` for a file in the state
+store, such as `store:control/tasks.json`. A file in the state store is read through the store on
+every pass (at most every 15 seconds when the store is a bucket), so tasks can be added from outside
+while a run goes on. A missing file in the state store means no tasks (a missing local file is
+reported as a problem). A file that cannot be read, or a task that cannot be added (an unknown
+route, say), is reported once and the run goes on with what it already has.
+Only the operator writes under `control/`; `build_operator_store` gives that view of the store:
+
+```python
+import json
+from rps.runtime import build_operator_store
+
+operator = build_operator_store(config)            # the state store, as the operator sees it
+operator.write_text("control/tasks.json", json.dumps(tasks))
+operator.flush(force=True)                         # a bucket holds writes back until this
+```
+
+With a bucket folder (`owner/name/test`, say) the file is `test/control/tasks.json` in the bucket;
+the operator store, the controller and the reviewer commands all take the folder from the same
+`bucket` setting.
+
 ## Configuration
 
 `Config` is loaded from a JSON file or a dict. It holds no keys, and a value that looks like a key
@@ -146,7 +179,7 @@ is refused. Unknown keys are refused too.
 
 | Key | Meaning |
 |---|---|
-| `bucket` | The storage bucket for event logs, review packets, pictures and verdicts. When absent, the work folder is used |
+| `bucket` | The storage bucket for event logs, review packets, pictures and verdicts, written `owner/name`. It may carry a folder, `owner/name/folder` (one or more plain names after the bucket id, none of them named like a directory of the store: `events`, `packets`, `review`, `accepted`, `ledger`, `hand`, `control`). Every state path then lives under that folder, for the controller, the operator store and the reviewer commands alike, and nothing outside it is listed, read, written or deleted. Use `owner/name/test` for test runs and `owner/name/prod` for production and they share no file. The bucket is created (private) when missing; a folder needs no creating. The reviewer commands read the same setting from their config file, so it must name the same folder as the run. When absent, the work folder is used |
 | `data_repo` | The dataset repository for accepted rows and the ledger. When absent, the work folder is used |
 | `work_dir` | Local folder for dry runs, the stop file and the default pictures folder |
 | `routes` | One entry per way of getting rows written, see below |
@@ -158,21 +191,21 @@ is refused. Unknown keys are refused too.
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
 | `wait_for_review` | Keep a run going, polling for verdicts, while any packet is out with a reviewer (default: a run ends when the controller has nothing left to do itself) |
-| `tasks_file` | The tasks file the planner reads on every pass |
+| `tasks_file` | The tasks file the planner reads on every pass: a local path, or `store:<path>` for a file in the state store (for example `store:control/tasks.json`, under the bucket's folder when there is one). A missing file in the state store means no tasks. See "The tasks file" |
 
 A route has these keys:
 
 | Key | Meaning |
 |---|---|
 | `provider`, `model` | `anthropic`, `openai`, `gemini` or `deepseek` (or `fake` for tests), and the provider's model name |
-| `kind` | `batch` (the provider's batch service) or `api` (one call at a time). `claude-code`, `codex` and `gemini-cli` are accepted by the configuration but have no adapter yet |
+| `kind` | `batch` (the provider's batch service) or `api` (one call at a time; this is how GPT is used here). `claude-code`, `codex` and `gemini-cli` are accepted by the configuration but have no adapter yet |
 | `effort` | The provider's reasoning or thinking level (Anthropic `low` to `max`, OpenAI's `reasoning.effort`, Gemini `minimal`, `low`, `medium`, `high`); left out, the provider's default applies |
 | `budget_usd`, `purpose_caps` | The route total and one cap per purpose |
 | `max_output_tokens` | The token limit of a call (a call cut off at it is retried once with a larger limit, see `truncation_factor`) |
 | `max_batch_calls` | The most calls in one provider batch (each adapter also splits by its provider's size limits) |
 | `enabled` | `true` or `false`. Left out, a route is on, except DeepSeek, which stays off until a configuration says `true` |
 | `max_retries`, `timeout_seconds` | Passed to the provider's client, whose own retries handle rate limits and server errors |
-| `workers` | How many calls a one-call route keeps in flight (cap 2,500) |
+| `workers` | How many calls a one-call route (`kind` `api`) keeps in flight: 32 unless set, cap 2,500; a batch route ignores it. The controller prepares calls for the route four per worker at a time. See "One-call routes at production size" |
 | `truncation_factor` | How much larger the token limit is on the one retry that follows a cut-off answer (default 2) |
 | `options` | Settings of one provider (numbers, text or true/false), listed with each adapter; an unknown option is refused |
 
@@ -187,13 +220,19 @@ A run uses two stores. The state store holds what changes often and what must re
 | `packets/<reviewer>/<packet>/packet.json`, `images/` | the controller | state |
 | `review/<reviewer>/<packet>.jsonl` | the reviewer named in the path | state |
 | `hand/queue.jsonl` | the controller (rows waiting for the owner) | state |
-| `control/STOP`, `control/hand/*.jsonl` | the operator | state |
+| `control/STOP`, `control/hand/*.jsonl`, `control/tasks.json` (when `tasks_file` is `store:control/tasks.json`) | the operator | state |
 | `accepted/<route>/<task>.jsonl` | the controller | ship (dataset repo) |
 | `ledger/summary.json`, `ledger/tasks.jsonl` | the controller | ship |
 
 Every file has exactly one writer. The stores wrap every write in a check of this table, so a
 reviewer cannot write into the controller's files or another reviewer's, and each run gets its own
 event files. Run one controller at a time per state store.
+
+The paths above are the same whatever the bucket setting; with a folder (`bucket` as
+`owner/name/folder`) the bucket holds them under `folder/`, so `events/...` is `folder/events/...`
+in the bucket and two folders of one bucket are two separate state stores. A store's paths cannot
+lead out of its folder (a path with `..` is refused), and a listing is asked of the bucket under the
+folder only.
 
 The dataset repository store is deliberately slow: at most one commit per `ship_seconds_per_commit`
 (default 60 seconds), under 100 files per commit (default 99), at most 300 commit attempts an hour
@@ -208,10 +247,11 @@ delete, so repeating one is harmless.
 | Route | Provider and model | Path | Pictures |
 |---|---|---|---|
 | `haiku-batch` | Anthropic `claude-haiku-5-5` | Message Batches | never |
-| `luna-batch` | OpenAI `gpt-6-luna` | Batch API on `/v1/responses` | public common, COCO, FFHQ |
+| `luna-sync` | OpenAI `gpt-6-luna` | `/v1/responses`, one call at a time (route kind `api`): how GPT is used here, at any size | public common, COCO, FFHQ |
+| `luna-batch` | OpenAI `gpt-6-luna` | Batch API on `/v1/responses` (in the package; this project does not use it) | public common, COCO, FFHQ |
 | `flash-batch` | Gemini `gemini-3.8-flash` | batch mode, inline requests | public common, COCO, FFHQ |
 | `deepseek-sync` | DeepSeek `deepseek-flash` | chat completions, one call at a time, off-peak | public common, COCO, FFHQ |
-| `haiku-sync`, `luna-sync`, `flash-sync` | as above | one call at a time (route kind `api`), for small tests | as above |
+| `haiku-sync`, `flash-sync` | as above | one call at a time (route kind `api`), for small tests | as above |
 
 `rps.routes.standard_route(name)` gives the route configuration for any of these. Every adapter
 reads its key from its environment variable only and never prints it; a route whose key is missing
@@ -225,6 +265,20 @@ All four adapters send the same things: the writing rules as the system text, th
 text, the row schema as the answer format where the provider has one, and a picture only where the
 routing table allows it. None sends `temperature`, `top_p`, `top_k`, a prefill or a forced tool.
 
+### One-call routes at production size (`luna-sync` and the other `api` routes)
+
+A route of kind `api` sends one call at a time from a pool of worker threads, each result recorded
+as it lands. GPT is used this way here.
+
+| Part | What happens |
+|---|---|
+| Calls at once | `workers` calls are in flight at once: 32 unless the route says otherwise, at most 2,500 |
+| Why 32 | The entry tier of `gpt-6-luna` allows 5,000 requests and 2,000,000 tokens a minute. A call of the rule pool counts at most about 12,000 tokens against that (its prompt plus the output limit it asks for), so the token limit binds first, at about 160 calls a minute. If a call takes 20 to 40 seconds (an assumption), 32 workers send 50 to 100 calls a minute and leave room for retries. It is an estimate: the `minutes` of each call in the ledger shows the real time. Raise `workers` for a higher tier or for slower calls; lower it if the route keeps pausing |
+| The window | The controller prepares calls for such a route four per worker at a time (128 at 32 workers) and refills when a quarter of that is free. A list of hundreds of thousands of lines is never all in memory or all held in the budget's reserve, and a stop or crash loses at most one window, whose calls come back as rebounds |
+| A rate limit (HTTP 429) | The provider's own client retries first (`max_retries`, default 2), waiting as the provider asks. A call still turned away after that did not run and was not billed, so it is not a failed attempt: the worker waits and sends it again |
+| A run of rate limits | Five turned-away calls in a row, with no call answered between them, pause the whole route for 60 seconds. A pause that follows at once is twice as long, up to 15 minutes; one answered call starts over. While it is paused the route is "closed for now": nothing more is prepared for it, the run waits (the run is never stopped for this) and the route opens by itself, each worker starting again a few seconds apart so they do not meet the limit together. Calls already on the wire when a pause began do not count towards the next one |
+| One call that never gets through | A call turned away 8 times is handed up as a failed call (`provider_error`) and comes back as a rebound, so one call cannot hold the route for ever |
+
 ### Anthropic (`haiku-batch`, `haiku-sync`)
 
 | Part | Form |
@@ -237,12 +291,13 @@ routing table allows it. None sends `temperature`, `top_p`, `top_k`, a prefill o
 | After a crash | A batch cannot be searched for what it holds, so one the provider took just before the controller recorded its id is found by size and time. The provider's list of batches (newest first) is read back to the moment the calls were prepared, less 2 minutes for the difference between the two clocks (at most 1,000 batches), and the newest batch that no group has recorded whose request counts add up to the group's size is adopted; the last group of a split goes first, since the groups were sent in order. The adopted batch is marked in its handle. A stranger's batch of the same size can be taken by mistake, and it is found out only when it ends: if its results hold none of the group's calls, those calls fail as `batch_mismatch` (retryable, not billed) and are sent again, and the stranger's batch stays recorded so it is never taken twice. With no candidate the calls are sent again |
 | Options | `cache_ttl` (`5m` or `1h`, default `1h`) |
 
-### OpenAI (`luna-batch`, `luna-sync`)
+### OpenAI (`luna-sync`; the batch route `luna-batch` is in the package and not used here)
 
 | Part | Form |
 |---|---|
 | Request | A `/v1/responses` body: `instructions` (the rules), one user message of `input_text` and, where allowed, `input_image` (a data URL with `detail`), a strict JSON schema as the text format, `reasoning.effort`, `max_output_tokens`, `store: false`, and the rules version as `prompt_cache_key` |
-| Batch | A JSONL file uploaded with `purpose="batch"` and an expiry, then `batches.create`. Up to 50,000 lines and 190 MB per file (the schema's property order is kept in the file, because it shapes the answer) |
+| One call at a time | `luna-sync` sends each call with `responses.create` from a pool of workers (see "One-call routes at production size"). The answer, the usage and the failures are read as for a batch result. A rate-limited call (HTTP 429, or a response that failed with the code `rate_limit_exceeded`) is sent again after the wait, not recorded as a failed attempt |
+| Batch (`luna-batch`) | A JSONL file uploaded with `purpose="batch"` and an expiry, then `batches.create`. Up to 50,000 lines and 190 MB per file (the schema's property order is kept in the file, because it shapes the answer) |
 | Results | The output file and the error file, matched by `custom_id`; a request that expired appears in the error file as `batch_expired` and is sent again as a rebound; the finished requests of an expired batch are billed and returned |
 | Clean-up | After the results are durably recorded, the input, output and error files are deleted (the input holds the pictures); the expiry is the backstop |
 | Answer | `completed` is parsed; `incomplete` for `max_output_tokens` is a truncation, for a content filter a block; a `refusal` part is recorded and not retried; a failed response is retried unless the prompt itself was refused |
@@ -339,7 +394,7 @@ again while the line's attempts are under `max_attempts` (default 2, so one retr
 |---|---|---|
 | `truncated` | the answer stopped at the token limit | retried with the limit times `truncation_factor`, with no advice added |
 | `invalid_output` | blank, cut off or not the expected JSON | retried with the problem as advice |
-| `provider_error` | rate limit, server error, timeout, dropped connection, a batch that failed | retried as a rebound |
+| `provider_error` | rate limit, server error, timeout, dropped connection, a batch that failed | retried as a rebound. On a one-call route a call still rate-limited after the client's own retries is not recorded here: it waits and goes again (only one turned away 8 times in a row is) |
 | `expired`, `canceled` | the provider let the request lapse or canceled it | retried as a rebound |
 | `refused`, `blocked` | the model declined, or a safety filter stopped it | recorded; not retried on the same route |
 | `bad_request` | the request is malformed (HTTP 400, a schema the provider rejects) | not retried; stops the route for the run |
@@ -349,7 +404,8 @@ again while the line's attempts are under `max_attempts` (default 2, so one retr
 | `batch_mismatch` | a batch taken up again after a crash held none of the group's calls | retried as a rebound; not billed |
 
 The provider's own client already retries rate limits and server errors a few times
-(`max_retries`) with backoff; what comes back after that is recorded as above. A call that
+(`max_retries`) with backoff; what comes back after that is recorded as above, except that a
+one-call route waits out a rate limit instead (see "One-call routes at production size"). A call that
 failed after the provider billed for it (a cut-off or unusable answer) still has its usage recorded
 and priced.
 
@@ -362,7 +418,7 @@ dearest tier) must fit under both its (route, purpose) cap and the route total, 
 already spent and what calls in flight may still cost. A call that does not fit is refused, never
 sent, and recorded as `budget_refused` with the numbers:
 
-    {"route": "luna-batch", "purpose": "pricing", "est_usd": 0.002, "reason": "purpose_cap",
+    {"route": "luna-sync", "purpose": "pricing", "est_usd": 0.002, "reason": "purpose_cap",
      "purpose_spent": 0.004, "purpose_cap": 0.004, "route_spent": 0.004, "route_cap": 5.0, ...}
 
 A retry or re-submission after a failed or rejected call is always `rebound`, whatever the task's
@@ -478,16 +534,18 @@ verdicts (recorded as `packet_burned`). Reviewers delete their local copies when
 ## Dry run
 
 A dry run sends a few real calls through one route to show that it works: the key, the model name,
-the request form, the batch, the answer, the usage and the price.
+the request form, the batch (for a batch route), the answer, the usage and the price.
 
-    python -m rps.dryrun --route luna-batch --calls 5
+    python -m rps.dryrun --route luna-sync --calls 5
 
 or, in a notebook (no argument parser needed):
 
 ```python
 from rps.dryrun import dry_run
-report = dry_run("luna-batch", calls=5)        # report.ok, report.outputs, report.usage, report.cost_usd
+report = dry_run("luna-sync", calls=5)         # report.ok, report.outputs, report.usage, report.cost_usd
 ```
+
+Without a route name the tool tries `luna-sync`.
 
 The calls carry a tiny plumbing prompt and a tiny answer schema, never the writing rules, and are
 charged to purpose `test`. It prints the parsed answers, the token counts per bucket and the cost
@@ -509,7 +567,9 @@ did not work and 2 when the tool refused to start.
 | before a batch id was recorded | asks the provider for batches matching the prepared calls and adopts every one it finds (`Writer.recover`, told when the calls were prepared and which batches are already recorded), else submits. OpenAI and Gemini find a batch by a digest of its calls; Anthropic by the batch's size and creation time, with a check at collection that it held the calls (see above) |
 | after a submit that failed on the way back from the provider (same run) | looks for the batch the same way before it sends the calls again, so a batch the provider did take is adopted and not paid for twice |
 | after `batch_submitted` | polls that batch; it never submits the same calls again |
-| while a one-call route has calls in flight | records the calls that finished (they were recorded as they landed) and sends the ones that did not as rebounds |
+| while a one-call route has calls in flight | records the calls that finished (they were recorded as they landed) and sends the ones that did not as rebounds. At most one window (four calls per worker) was in flight; the rest of the list had not been prepared yet and is simply taken up in its turn |
+| while a one-call route is paused for a rate limit | starts with the route open again; the calls that were waiting out the pause come back as rebounds, like any call that was in flight, and the lines not yet prepared are taken up in their turn |
+| after the tasks file changed (or is gone) | reads the file again on the next pass; tasks already recorded are ignored, a missing file in the state store means no tasks |
 | between recording results and cleaning up | the results are durable first; a clean-up that did not happen (OpenAI's files) is left to the files' expiry |
 | between writing a packet's files and announcing it | writes the same packet again (the id comes from its rows) and announces it once |
 | while shipping | rebuilds the shipped files from the accepted rows; `shipped` is recorded only after the files are durable |
@@ -551,6 +611,13 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 
 ## Left for later
 
+- The calls in flight on a one-call route are fixed by `workers`. Nothing raises or lowers the number
+  by itself from the provider's rate-limit headers; the pause after a run of rate limits is the only
+  brake. The default of 32 comes from the entry tier's limits and an assumed call time, not from
+  a measurement: size it by the `minutes` of each call in the ledger once real runs exist.
+- The code `rate_limit_exceeded` marks a failed OpenAI response as a rate limit, and a 429 marks any
+  provider's error as one; a rate limit that a provider reports in some other form is recorded as an
+  ordinary provider error and retried as a rebound.
 - Routes of kind `claude-code`, `codex` and `gemini-cli` (the configuration accepts them; there is
   no adapter).
 - Gemini batches from a JSONL file (only inline requests are built).
