@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.2.3. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
@@ -14,6 +14,17 @@ for trying one route with a handful of calls. Everything is tested offline: with
 and with each adapter against the SDKs' own types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.3
+
+| Change | What happens now |
+|---|---|
+| A run that only waits for review now ends | With a dataset repository as the ship store, a run whose only work left was review never ended: it had nothing to do, yet it wrote the ledger again on every pass and a commit with nothing new in it went out every minute (the Hub skipped it). Now the run ends as idle within one commit interval (a minute) of its last change |
+| A file is shipped when the store has sent it | The same cycle meant accepted-row files were committed but never recorded as shipped, and were written and committed again every interval. A write to a store that sends in batches is not a shipment. A file now counts as shipped when the ship store has sent it, on whichever pass that turns out to be, and the `shipped` event is written then (and the ledger counts as written). A commit that falls due in the middle of a pass sends what is waiting and leaves the rest of that pass's files for the next commit; each is recorded when its own commit goes out. A local folder sends at once, so nothing changes there |
+| Each file is handed over once | The controller hands a file to the ship store once while its content stays the same, and each ledger file again only when its own text changes, so no commit carries content the repository already has. If a file is handed over again with new content while it waits, the new content replaces it. A row taken back by an audit before its file was sent is not sent. A run that starts again reads the two ledger files from the ship store and hands over only those that differ, so a restart with nothing changed ends at once and sends no commit |
+| The end of a run | A run that ends for another reason (the time budget, a stop file, an interrupt) sends what the ship store still holds before it stops and records it, so the next run does not send it again |
+| Stores say what they have not sent | `Store.is_pending(path)` is true while a write or delete of the path has not been sent. A local folder never has anything pending. The progress line shows `waiting: N files for the store's next commit` while files wait |
+| Notebook | The install line names `v0.2.3` |
 
 ## What changed in 0.2.2
 
@@ -46,7 +57,7 @@ Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 | poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
 | assess | The rule set's checker (or a function you give) checks the rows | `row_assessed`, `row_rejected`, `row_set_aside` |
 | review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows | `packet_published`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_accepted` |
-| ship | Accepted rows and the ledger are written to the dataset repository | `shipped` |
+| ship | Accepted rows and the ledger are handed to the dataset repository, which sends them in its next commit; a file counts as shipped when the repository has sent it | `shipped` |
 
 The events are one JSON object per line (`ts`, `actor`, `kind`, `payload`). The controller's
 in-memory state is nothing but a replay of those events, so any run can be rebuilt from the
@@ -92,7 +103,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.2"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.3"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -241,6 +252,12 @@ on HTTP 429. Each commit passes the head it last saw, and a commit by another co
 reported rather than overwritten. The bucket store batches by count and by age. It is not
 transactional, so a failed operation is retried on its own; every operation is an overwrite or a
 delete, so repeating one is harmless.
+
+A write to a store that batches returns when the change is buffered, not when it is sent. The
+controller therefore asks the ship store which of its files it still holds (`is_pending`): it hands
+each file over once, and records a file as shipped (and the ledger as written) on the pass that
+finds the store no longer holding it. A run whose only work left is review ends as idle once the
+last change has gone out, within one commit interval; `controller.is_idle()` is false until then.
 
 ## Routes and adapters
 
@@ -572,7 +589,7 @@ did not work and 2 when the tool refused to start.
 | after the tasks file changed (or is gone) | reads the file again on the next pass; tasks already recorded are ignored, a missing file in the state store means no tasks |
 | between recording results and cleaning up | the results are durable first; a clean-up that did not happen (OpenAI's files) is left to the files' expiry |
 | between writing a packet's files and announcing it | writes the same packet again (the id comes from its rows) and announces it once |
-| while shipping | rebuilds the shipped files from the accepted rows; `shipped` is recorded only after the files are durable |
+| while shipping | rebuilds the shipped files from the accepted rows and hands them over again; `shipped` is recorded only after the ship store has sent the files (for a dataset repository, after the commit has gone out). Files that were waiting for a commit when the run died are simply handed over again |
 | in the middle of an event line | skips the torn last line, reports it, and carries on |
 
 Replaying the same events twice gives the same state. The tests stop a run after every single event
