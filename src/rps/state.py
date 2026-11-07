@@ -114,6 +114,10 @@ class RowState:
     hand: dict[str, Any] | None = None
     replaced_by: str | None = None
     accepted_by: str | None = None
+    # How many rows from the same writer provider passed assessment before this one.
+    # Consecutive rows get consecutive first reviewers, and the number comes from the
+    # event history alone, so a restart picks the same reviewer for the same row.
+    ordinal: int | None = None
 
     @property
     def flagged(self) -> bool:
@@ -209,7 +213,7 @@ class State:
         self.packets: dict[str, PacketState] = {}
         self.refusals: dict[str, dict[str, Any]] = {}
         self.runs: list[dict[str, Any]] = []
-        self.rr_next: int = 0
+        self._passed_by_provider: dict[str, int] = {}
         self.shipped_files: dict[tuple[str, str], tuple[str, ...]] = {}
         self.unknown_kinds: dict[str, int] = {}
         self.bad_events: list[tuple[str, str]] = []
@@ -388,6 +392,10 @@ class State:
         row.flags = _unique(list(row.flags) + [str(flag) for flag in p.get("flags", [])])
         row.errors = [str(error) for error in p.get("errors", [])]
         row.status = "passed" if p["passed"] else "failed"
+        if p["passed"]:
+            provider = str(row.record.get("writer", {}).get("provider", ""))
+            row.ordinal = self._passed_by_provider.get(provider, 0)
+            self._passed_by_provider[provider] = row.ordinal + 1
 
     def _on_row_rejected(self, event: Event) -> None:
         p = event.payload
@@ -443,8 +451,6 @@ class State:
             )
             if not item.get("audit") and row.status in ("passed", "in_question"):
                 row.status = "in_review"
-        if "rr_next" in p:
-            self.rr_next = int(p["rr_next"])
 
     def _on_verdict_received(self, event: Event) -> None:
         p = event.payload
@@ -805,7 +811,7 @@ class State:
                         pid: {**asdict(packet), "burned": sorted(packet.burned)} for pid, packet in self.packets.items()
                     },
                     "refusals": self.refusals,
-                    "rr_next": self.rr_next,
+                    "passed_by_provider": self._passed_by_provider,
                     "shipped_files": {f"{t}|{r}": list(ids) for (t, r), ids in self.shipped_files.items()},
                     "spend": {f"{r}|{p}": [round(v, 9) for v in cell] for (r, p), cell in self._spend.items()},
                 }

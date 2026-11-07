@@ -23,7 +23,7 @@ def lifecycle() -> Builder:
         "packet_published",
         {
             "packet_id": "p0123456789ab", "reviewer_id": "rev-a", "family": "alpha", "brief_version": "1",
-            "items": [{"row_id": r1, "round": 1, "audit": False, "image": None}], "rr_next": 1,
+            "items": [{"row_id": r1, "round": 1, "audit": False, "image": None}],
         },
     )
     b.add(
@@ -50,6 +50,31 @@ def test_replay_is_the_same_whether_events_arrive_in_one_go_or_one_by_one():
         incremental.apply(event)
         incremental.apply(event)  # every event applied twice in a row
     assert incremental.snapshot() == State.from_events(events).snapshot()
+
+
+def test_rows_that_pass_assessment_are_numbered_per_writer_provider():
+    b = Builder()
+    task = b.task(lines={"001": "a", "002": "b", "003": "c", "004": "d", "005": "e"})
+    calls = [b.prepare(task, line) for line in ("001", "002", "003", "004", "005")]
+    b.submit(calls)
+    rows = [b.returned(call)[0] for call in calls[:4]]
+    other = b.row(calls[4], 0, provider="other-provider")
+    b.add(
+        "call_returned",
+        {
+            "call_id": calls[4], "handle_id": "batch-1", "usage": {}, "usd": 0.0, "price_table_date": "2026-11-06",
+            "minutes": 0.1, "rows": [other], "row_flags": {}, "skips": [],
+        },
+    )
+    b.assessed(rows[0], calls[0])
+    b.assessed(rows[1], calls[1], passed=False, errors=["bad"])  # a failed row takes no number
+    b.assessed(other["row_id"], calls[4])
+    b.assessed(rows[2], calls[2])
+    b.assessed(rows[3], calls[3])
+    state = State.from_events(b.events + b.events[-5:])  # the last assessments arrive twice
+    assert [state.rows[row].ordinal for row in rows] == [0, None, 1, 2]
+    assert state.rows[other["row_id"]].ordinal == 0  # another provider counts on its own
+    assert state.snapshot()["passed_by_provider"] == {"fake": 3, "other-provider": 1}
 
 
 def test_calls_prepared_but_not_submitted_are_pending():

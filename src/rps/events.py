@@ -23,7 +23,7 @@ Event kinds and their payloads:
     row_assessed         row_id, call_id, passed, flags, errors
     row_rejected         row_id, call_id, by (assessor or reviewers), reason, errors, retry
     row_set_aside        call_id, row_id (optional), class, reason
-    packet_published     packet_id, reviewer_id, family, brief_version, rr_next,
+    packet_published     packet_id, reviewer_id, family, brief_version,
                          items [{row_id, image, round, audit}]
     verdict_received     packet_id, row_id, reviewer_id, family, verdict, reasons, notes
     row_escalated        row_id, call_id, reason (in_question or audit_reject), round, families_used

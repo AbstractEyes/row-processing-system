@@ -1124,21 +1124,21 @@ class Controller:
             if ids.call_id(item[0].task_id, item[1].line_id, item[2].next_attempt) not in self._parked
         ]
 
-    def _plan_assignments(self) -> tuple[dict[str, list[tuple[RowState, int, bool]]], int, list[tuple[RowState, str]]]:
+    def _plan_assignments(self) -> tuple[dict[str, list[tuple[RowState, int, bool]]], list[tuple[RowState, str]]]:
         """Which rows go to which reviewer next. Pure: records nothing.
 
-        Returns (rows by reviewer id, the round-robin pointer after the plan, rows that
-        have no eligible reviewer and go to the hand queue).
+        Returns (rows by reviewer id, rows that have no eligible reviewer and go to the
+        hand queue). Every choice depends only on the row and the event history, so a
+        restart makes the same choices.
         """
         reviewers = self.config.review.enabled_reviewers()
         policy = self.config.review.policy
         plan: dict[str, list[tuple[RowState, int, bool]]] = {}
         to_hand: list[tuple[RowState, str]] = []
-        pointer = self.state.rr_next
         if not reviewers:
-            return plan, pointer, to_hand
+            return plan, to_hand
         for row in self.state.rows_awaiting_first_review():
-            reviewer, pointer = pick_first_reviewer(reviewers, self._writer_family(row), pointer)
+            reviewer = pick_first_reviewer(reviewers, self._writer_family(row), row.ordinal or 0)
             if reviewer is None:
                 to_hand.append((row, "no reviewer from another family than the writer is available"))
                 continue
@@ -1156,10 +1156,10 @@ class Controller:
             reviewer = pick_further_reviewer(reviewers, row.families_used(), self._writer_family(row), key)
             if reviewer is not None:
                 plan.setdefault(reviewer.id, []).append((row, len(row.assignments) + 1, True))
-        return plan, pointer, to_hand
+        return plan, to_hand
 
     def _assign_and_publish(self) -> None:
-        plan, pointer, to_hand = self._plan_assignments()
+        plan, to_hand = self._plan_assignments()
         for row, reason in to_hand:
             self._emit("row_to_hand", {"row_id": row.row_id, "call_id": row.call_id, "reason": reason, "verdicts": []})
         if not plan:
@@ -1170,9 +1170,9 @@ class Controller:
             items = plan.get(reviewer.id, [])
             while items and (len(items) >= packet_size or partial_ok):
                 chunk, items = items[:packet_size], items[packet_size:]
-                self._publish_packet(reviewer.id, reviewer.family, chunk, pointer)
+                self._publish_packet(reviewer.id, reviewer.family, chunk)
 
-    def _publish_packet(self, reviewer_id: str, family: str, chunk: Sequence[tuple[RowState, int, bool]], pointer: int) -> None:
+    def _publish_packet(self, reviewer_id: str, family: str, chunk: Sequence[tuple[RowState, int, bool]]) -> None:
         entries = []
         for row, _round, _audit in chunk:
             task = self.state.tasks[row.task_id]
@@ -1208,7 +1208,6 @@ class Controller:
                 "family": family,
                 "brief_version": self.config.review.brief_version,
                 "items": items,
-                "rr_next": pointer,
             },
         )
 
@@ -1275,7 +1274,7 @@ class Controller:
     def _actionable(self) -> int:
         """How much the controller could do right now without waiting for anyone else."""
         s = self.state
-        plan, _pointer, to_hand = self._plan_assignments()
+        plan, to_hand = self._plan_assignments()
         packet_size = self.config.review.packet_size
         publishable = sum(
             len(items) for items in plan.values() if len(items) >= packet_size or self._upstream_idle()

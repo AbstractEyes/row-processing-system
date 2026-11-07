@@ -85,28 +85,25 @@ def test_the_thresholds_come_from_the_policy():
 
 
 def test_first_reviewer_is_round_robin_across_all_reviewers():
-    picks = []
-    pointer = 0
-    for _ in range(6):
-        reviewer, pointer = pick_first_reviewer(REVIEWERS, "writer-family", pointer)
-        picks.append(reviewer.id)
+    picks = [pick_first_reviewer(REVIEWERS, "writer-family", ordinal).id for ordinal in range(6)]
     assert picks == ["r-alpha", "r-beta", "r-gamma", "r-alpha", "r-beta", "r-gamma"]
 
 
 def test_first_reviewer_is_never_from_the_writers_family():
-    picks = []
-    pointer = 0
-    for _ in range(6):
-        reviewer, pointer = pick_first_reviewer(REVIEWERS, "alpha", pointer)
-        picks.append(reviewer.id)
+    picks = [pick_first_reviewer(REVIEWERS, "alpha", ordinal).id for ordinal in range(6)]
     assert "r-alpha" not in picks
     assert picks == ["r-beta", "r-gamma", "r-beta", "r-gamma", "r-beta", "r-gamma"]
 
 
+def test_first_reviewer_depends_only_on_its_arguments():
+    assert pick_first_reviewer(REVIEWERS, "alpha", 7) is pick_first_reviewer(REVIEWERS, "alpha", 7)
+    assert [pick_first_reviewer(REVIEWERS, "alpha", n).id for n in (4, 5)] == ["r-beta", "r-gamma"]  # a restart picks the same
+
+
 def test_first_reviewer_is_none_when_every_reviewer_shares_the_writers_family():
     only = [ReviewerConfig("a1", "alpha"), ReviewerConfig("a2", "alpha")]
-    assert pick_first_reviewer(only, "alpha", 0) == (None, 0)
-    assert pick_first_reviewer([], "alpha", 0) == (None, 0)
+    assert pick_first_reviewer(only, "alpha", 0) is None
+    assert pick_first_reviewer([], "alpha", 0) is None
 
 
 def test_further_reviewer_comes_from_a_family_not_yet_used():

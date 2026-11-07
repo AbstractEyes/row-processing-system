@@ -72,23 +72,20 @@ def settle(policy: ReviewPolicy, *, flagged: bool, verdicts: Sequence[str], reop
 
 
 def pick_first_reviewer(
-    reviewers: Sequence[ReviewerConfig], writer_family: str, pointer: int
-) -> tuple[ReviewerConfig | None, int]:
-    """Choose the first reviewer: round-robin, skipping the writer's family.
+    reviewers: Sequence[ReviewerConfig], writer_family: str, ordinal: int
+) -> ReviewerConfig | None:
+    """Choose the first reviewer: round-robin over the reviewers outside the writer's family.
 
-    `reviewers` are the available reviewers in a fixed order and `pointer` says where
-    the rotation stands. Returns the reviewer (None if every reviewer is from the
-    writer's family) and the pointer to use next.
+    `reviewers` are the available reviewers in a fixed order. `ordinal` counts the
+    rows from the same writer that reached review before this one, so consecutive
+    rows go to consecutive reviewers. The answer depends only on its arguments, which
+    keeps the rotation exact across a restart. Returns None when every reviewer is
+    from the writer's family.
     """
-    count = len(reviewers)
-    if count == 0:
-        return None, pointer
-    start = pointer % count
-    for step in range(count):
-        position = (start + step) % count
-        if reviewers[position].family != writer_family:
-            return reviewers[position], (position + 1) % count
-    return None, pointer
+    eligible = [reviewer for reviewer in reviewers if reviewer.family != writer_family]
+    if not eligible:
+        return None
+    return eligible[ordinal % len(eligible)]
 
 
 def _spread(key: str) -> int:

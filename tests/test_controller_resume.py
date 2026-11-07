@@ -92,6 +92,65 @@ def reference_counts(world):
     return state.counts()["rows"]
 
 
+def judged_by_family(reviewer, item):
+    """The alpha reviewer rejects everything, so every row is escalated to the other families."""
+    if reviewer.family == "alpha":
+        return {"verdict": "reject", "reasons": ["needs_work"], "notes": "thought 1 is not about the picture"}
+    return {"verdict": "keep"}
+
+
+def outcome(world):
+    """What a finished run leaves behind, ignoring how packets happened to be grouped."""
+    state = State.from_events(world.events())
+    rows = {
+        row_id: (row.status, sorted((v["family"], v["verdict"], v["audit"]) for v in row.verdicts))
+        for row_id, row in state.rows.items()
+    }
+    shipped = sorted(row["row_id"] for row in world.shipped_rows())
+    return rows, shipped
+
+
+def test_a_whole_run_with_escalation_and_audit_killed_after_any_event_ends_in_the_same_place(tmp_path):
+    from helpers import make_config
+
+    config = make_config(
+        review={
+            "packet_size": 2,
+            "reviewers": [
+                {"id": "rev-a", "family": "alpha"},
+                {"id": "rev-b", "family": "beta"},
+                {"id": "rev-c", "family": "gamma"},
+            ],
+            "provider_families": {"fake": "writer-family"},
+            "policy": {"audit_fraction": 1.0},
+        }
+    )
+    lines = ("001", "002", "003", "004")
+    reference = World(tmp_path / "reference", config=config)
+    controller = reference.controller()
+    controller.add_task(task_spec(lines, image="picture.jpg"))
+    reference.drive(controller, judged_by_family)
+    expected = outcome(reference)
+    total = len(reference.events())
+    assert total > 40 and len(expected[1]) == 4  # every row is settled and shipped in the end
+    assert any(v[1] == "reject" for status, verdicts in expected[0].values() for v in verdicts)  # escalation happened
+    assert any(v[2] for status, verdicts in expected[0].values() for v in verdicts)  # and so did an audit
+
+    for count in range(1, total):
+        world = World(tmp_path / f"kill-{count}", config=config)
+        first = world.controller(on_event=crash_after(count))
+        with pytest.raises(SimulatedCrash):
+            first.add_task(task_spec(lines, image="picture.jpg"))
+            world.drive(first, judged_by_family)
+        second = world.controller()
+        second.add_task(task_spec(lines, image="picture.jpg"))
+        world.drive(second, judged_by_family)
+        check_no_repeats(world)
+        assert outcome(world) == expected, f"a run killed after event {count} ended differently"
+        assert second.state.snapshot() == State.from_events(replay(world.state_store).events).snapshot()
+        assert not [p for p in world.state_store.list("packets/") if "/images/" in p]
+
+
 def test_a_batch_id_recorded_before_a_crash_is_polled_not_resubmitted(tmp_path):
     world = World(tmp_path, polls_until_ended=2)
     first = world.controller(on_event=crash_on("batch_submitted"))
