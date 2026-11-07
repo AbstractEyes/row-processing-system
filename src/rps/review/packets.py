@@ -6,7 +6,9 @@ A packet is a folder addressed to one reviewer:
     packets/<reviewer>/<packet>/images/<row_id>.<ext>
 
 packet.json holds the rows to review, the review brief version and the verdict
-schema; the picture for a row (when it has one) is named by the row's id.
+schema; the picture for a row (when it has one) is named by the row's id. A row whose
+picture the reviewer's family may not see (the routing table) has no picture and
+`image_withheld` set, so the reviewer judges it from its text.
 
 Reviewers are blind to the writer. Each entry in packet.json carries a review view
 of the stored row, never the row itself: the writer label is removed and the row's
@@ -31,7 +33,7 @@ import copy
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from .. import layout
 from ..provenance import require_label
@@ -149,6 +151,7 @@ class PacketRow:
     view: dict[str, Any]
     image_ext: str | None = None
     image_bytes: bytes | None = field(default=None, repr=False)
+    image_withheld: bool = False
 
     @property
     def row_id(self) -> str:
@@ -182,11 +185,13 @@ def build_packet(
     brief_version: str,
     created: str,
     rows: Sequence[tuple[Mapping[str, Any], Mapping[str, Any] | None, bytes | None, str | None]],
+    withheld: Collection[str] = (),
 ) -> Packet:
     """Assemble a packet from (stored row, spec line, picture bytes, picture extension) tuples.
 
     Each stored row is turned into its blind review view (see `review_view`); a row
-    without a writer label is refused.
+    without a writer label is refused. `withheld` names the rows whose picture the
+    reviewer may not see; they must come without picture bytes.
     """
     if not rows:
         raise PacketError("a packet needs at least one row")
@@ -197,7 +202,17 @@ def build_packet(
         if view["row_id"] in seen:
             raise PacketError(f"row {view['row_id']!r} appears twice in the packet")
         seen.add(view["row_id"])
-        items.append(PacketRow(view=view, image_ext=ext if image_bytes is not None else None, image_bytes=image_bytes))
+        held = view["row_id"] in withheld
+        if held and image_bytes is not None:
+            raise PacketError(f"row {view['row_id']!r} has its picture withheld but carries picture bytes")
+        items.append(
+            PacketRow(
+                view=view,
+                image_ext=ext if image_bytes is not None else None,
+                image_bytes=image_bytes,
+                image_withheld=held,
+            )
+        )
     return Packet(packet_id=packet_id, reviewer_id=reviewer_id, brief_version=brief_version, created=created, rows=items)
 
 
@@ -216,6 +231,7 @@ def packet_document(packet: Packet) -> dict[str, Any]:
                 "row": item.view["row"],
                 "task": item.view["task"],
                 "image": f"images/{item.image_name}" if item.image_name else None,
+                "image_withheld": item.image_withheld,
             }
             for item in packet.rows
         ],

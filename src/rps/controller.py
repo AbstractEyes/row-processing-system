@@ -71,7 +71,7 @@ from .review.policy import (
     pick_further_reviewer,
     settle,
 )
-from .routing import ImageRoutingError, check_image_allowed
+from .routing import ImageRoutingError, allowed_image, check_image_allowed
 from .state import LineState, RowState, State, TaskState
 from .store.base import ActorStore, NotFound, RateLimitedError, Store, StoreError
 from .store.remote import describe_error
@@ -1510,11 +1510,15 @@ class Controller:
 
     def _publish_packet(self, reviewer_id: str, family: str, chunk: Sequence[tuple[RowState, int, bool]]) -> None:
         entries = []
+        withheld = []
         for row, _round, _audit in chunk:
             task = self.state.tasks[row.task_id]
             line = task.lines[row.line]
             image = ext = None
-            if line.image:
+            if line.image and not allowed_image(line.image_class, family):
+                # The routing table governs reviewers too: this family reviews the row from its text.
+                withheld.append(row.row_id)
+            elif line.image:
                 try:
                     image, ext, _size = self.image_loader(self.config.source(task.source), line)
                 except ImageError as error:
@@ -1529,6 +1533,7 @@ class Controller:
             brief_version=self.config.review.brief_version,
             created=self._timestamp(),
             rows=entries,
+            withheld=withheld,
         )
         publish_packet(self.state_store, packet)
         # The packet's files must be durable before any event announces it.

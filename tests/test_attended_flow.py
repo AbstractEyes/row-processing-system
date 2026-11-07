@@ -14,6 +14,17 @@ from harness import fake_image_loader, task_spec
 from helpers import make_config
 
 REVIEWERS = ("rev-a", "rev-b", "rev-c")
+# Families the routing table lets see public pictures, so the packets carry them.
+REVIEW = {
+    "packet_size": 3,
+    "reviewers": [
+        {"id": "rev-a", "family": "openai"},
+        {"id": "rev-b", "family": "google"},
+        {"id": "rev-c", "family": "deepseek"},
+    ],
+    "provider_families": {"fake": "writer-family"},
+    "policy": {"audit_fraction": 0.0},
+}
 
 
 def cli(*argv):
@@ -25,7 +36,7 @@ def cli(*argv):
 def build(tmp_path):
     """A controller on local folders, and the config file the reviewers' machines would load."""
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps(make_config(work_dir=str(tmp_path / "work")).to_dict()), encoding="utf-8")
+    config_path.write_text(json.dumps(make_config(work_dir=str(tmp_path / "work"), review=REVIEW).to_dict()), encoding="utf-8")
     config = Config.load(config_path)
     controller = runtime.build_controller(
         config, printer=lambda text: None, image_loader=fake_image_loader, sleep=lambda seconds: None

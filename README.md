@@ -284,6 +284,11 @@ paid for; the check is made again when each call is built and once more inside e
 picture reaches a provider by another path. A class that is not in the table, a route that is not
 recognized, and a picture with no class are all refused. Text is always allowed.
 
+Review packets follow the same table, by the reviewer's model family (`review.reviewers[].family`:
+`anthropic`, `openai`, `google`, `deepseek`). A row whose picture the reviewer's family may not see
+goes into the packet without it and with `image_withheld: true`, and the reviewer judges it from its
+text; a family the table does not know gets no pictures at all.
+
 ## The writing rules are inputs
 
 The system prompt, the row schema and a version are never part of an adapter. Name them in the
@@ -378,7 +383,8 @@ A row the owner writes or rewrites by hand carries `provider: "human"`, `model: 
 ## Review
 
 Reviewers are agents or people who work through packets. Each packet is a folder addressed to one
-reviewer: `packet.json` (the rows, the review brief version, the verdict schema) and the pictures.
+reviewer: `packet.json` (the rows, the review brief version, the verdict schema) and the pictures its
+reviewer's family may see (see "Which pictures go where").
 
 **Blind review.** A packet holds a review view of each row, never the stored row: the writer label is
 removed and the row's own `source.model` is blanked. Beside the view goes the task's spec line (the
@@ -516,7 +522,4 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 - The pricing test that settles whether batch discounts stack with cache prices, and the probe
   phase that compares effort and picture-resolution levels (the defaults are for dry runs).
 - A near-duplicate index kept across runs for the assessor (`Assessor(index=...)` takes one).
-- The routing table governs the writing routes only. A review packet still carries the pictures of
-  its rows whatever their class, so which reviewers may see which classes is for the person who
-  hands out the packets to decide.
 - The storage fee of a Gemini cache is not in the ledger (only tokens are).

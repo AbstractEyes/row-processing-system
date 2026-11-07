@@ -228,7 +228,22 @@ def test_each_run_writes_its_own_event_file(tmp_path):
     ],
 )
 def test_a_run_killed_during_review_or_shipping_finishes_after_a_restart(tmp_path, kind, nth):
-    world = World(tmp_path)
+    from helpers import make_config
+
+    # Reviewers from families the routing table lets see public pictures, so there is a burn to kill.
+    config = make_config(
+        review={
+            "packet_size": 3,
+            "reviewers": [
+                {"id": "rev-a", "family": "openai"},
+                {"id": "rev-b", "family": "google"},
+                {"id": "rev-c", "family": "deepseek"},
+            ],
+            "provider_families": {"fake": "writer-family"},
+            "policy": {"audit_fraction": 0.0},
+        }
+    )
+    world = World(tmp_path, config=config)
     first = world.controller(on_event=crash_on(kind, nth))
     first.add_task(task_spec(("001", "002", "003", "004", "005", "006"), image="picture.jpg"))
     with pytest.raises(SimulatedCrash):

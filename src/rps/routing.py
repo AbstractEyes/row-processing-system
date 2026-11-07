@@ -15,6 +15,11 @@ Images picture is public-common class.
 
 Text is always allowed. A class that is not in the table is refused, and so is a
 route that is not recognized: the answer for anything unknown is no.
+
+Review packets follow the same table, by the reviewer's model family: a packet carries
+a row's picture only when `allowed_image(class, family)` is true, so a reviewer from a
+family the table refuses (or one it does not know, such as the owner's own reviews)
+reviews that row from its text.
 """
 
 from __future__ import annotations

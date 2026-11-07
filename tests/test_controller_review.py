@@ -421,8 +421,15 @@ def test_packets_never_show_the_writer(tmp_path):
     assert {row["writer"]["model"] for row in world.shipped_rows()} == {"model-plugh-9"}
 
 
+PICTURE_REVIEWERS = [
+    {"id": "rev-o", "family": "openai"},
+    {"id": "rev-g", "family": "google"},
+    {"id": "rev-d", "family": "deepseek"},
+]
+
+
 def test_pictures_are_burned_in_the_shared_store_after_the_verdicts_are_read(tmp_path):
-    world = World(tmp_path, config=review_config())
+    world = World(tmp_path, config=review_config(reviewers=PICTURE_REVIEWERS))
     controller = world.controller()
     controller.add_task(task_spec(("001", "002", "003"), image="p.jpg"))
     controller.step()
@@ -438,6 +445,31 @@ def test_pictures_are_burned_in_the_shared_store_after_the_verdicts_are_read(tmp
     burned = world.events_of("packet_burned")
     assert sum(e.payload["deleted"] for e in burned) == 3
     assert {row_id for e in burned for row_id in e.payload["row_ids"]} == set(controller.state.rows)
+
+
+def test_a_packet_carries_a_picture_only_to_a_family_the_routing_table_allows(tmp_path):
+    # Claude reviewers take text only, and a family the table does not know gets no picture either.
+    reviewers = [
+        {"id": "rev-claude", "family": "anthropic"},
+        {"id": "rev-o", "family": "openai"},
+        {"id": "rev-x", "family": "alpha"},
+    ]
+    world = World(tmp_path, config=review_config(reviewers=reviewers, packet_size=1))
+    controller = world.controller()
+    controller.add_task(task_spec(("001", "002", "003", "004", "005", "006"), image="p.jpg"))
+    controller.step()
+    controller.step()
+    published = world.events_of("packet_published")
+    assert {e.payload["reviewer_id"] for e in published} == {"rev-claude", "rev-o", "rev-x"}
+    for event in published:
+        packet_id, reviewer_id = event.payload["packet_id"], event.payload["reviewer_id"]
+        document = json.loads(world.state_store.read_text(layout.packet_json_path(reviewer_id, packet_id)))
+        images = [p for p in world.state_store.list(f"{layout.packet_dir(reviewer_id, packet_id)}/") if "/images/" in p]
+        (entry,) = document["rows"]
+        if reviewer_id == "rev-o":
+            assert entry["image"] and not entry["image_withheld"] and len(images) == 1
+        else:
+            assert entry["image"] is None and entry["image_withheld"] and images == []
 
 
 def test_each_verdict_is_matched_back_by_row_id_and_keeps_reviewer_and_family(tmp_path):
