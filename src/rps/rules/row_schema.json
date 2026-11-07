@@ -1,0 +1,217 @@
+{
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "skip",
+  "reason",
+  "class",
+  "rows"
+ ],
+ "properties": {
+  "skip": {
+   "type": "boolean"
+  },
+  "reason": {
+   "type": "string"
+  },
+  "class": {
+   "type": "string",
+   "enum": [
+    "",
+    "person",
+    "contradiction",
+    "ungrounded",
+    "other"
+   ]
+  },
+  "rows": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+     "id",
+     "series",
+     "depth",
+     "rank",
+     "domain",
+     "genre",
+     "records",
+     "relations",
+     "thoughts",
+     "wordings",
+     "questions"
+    ],
+    "properties": {
+     "id": {
+      "type": "string"
+     },
+     "series": {
+      "type": "string"
+     },
+     "depth": {
+      "type": "string",
+      "enum": [
+       "simple",
+       "medium",
+       "deep"
+      ]
+     },
+     "rank": {
+      "type": "integer",
+      "enum": [
+       1,
+       2,
+       3
+      ]
+     },
+     "domain": {
+      "type": "string",
+      "enum": [
+       "photograph",
+       "painting",
+       "illustration",
+       "sculpture",
+       "design"
+      ]
+     },
+     "genre": {
+      "type": "string"
+     },
+     "records": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "key",
+        "value"
+       ],
+       "properties": {
+        "key": {
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "relations": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "a",
+        "rel",
+        "b"
+       ],
+       "properties": {
+        "a": {
+         "type": "string"
+        },
+        "rel": {
+         "type": "string"
+        },
+        "b": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "thoughts": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "step",
+        "text"
+       ],
+       "properties": {
+        "step": {
+         "type": "string",
+         "enum": [
+          "see",
+          "name",
+          "place",
+          "count",
+          "relate",
+          "form",
+          "light",
+          "colour",
+          "mood",
+          "mean",
+          "intend",
+          "story",
+          "compare",
+          "change",
+          "check",
+          "say"
+         ]
+        },
+        "text": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "wordings": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "kind",
+        "text"
+       ],
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "caption",
+          "prompt",
+          "tags",
+          "critique"
+         ]
+        },
+        "text": {
+         "type": "string"
+        }
+       }
+      }
+     },
+     "questions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "key",
+        "value",
+        "needs"
+       ],
+       "properties": {
+        "key": {
+         "type": "string"
+        },
+        "value": {
+         "type": "string"
+        },
+        "needs": {
+         "type": "string",
+         "enum": [
+          "record",
+          "chain",
+          "unknown"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

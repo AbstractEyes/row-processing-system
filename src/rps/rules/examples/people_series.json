@@ -1,0 +1,476 @@
+{
+ "name": "people_series",
+ "note": "A drawn series of three ranks about a person in separates: every garment named with its color and pattern, the caption naming the outfit as recorded.",
+ "item": {
+  "kind": "series",
+  "series": "s-90001",
+  "ids": [
+   "art-900001",
+   "art-900002",
+   "art-900003"
+  ],
+  "domain": "photograph",
+  "genre": "portrait",
+  "specs": {
+   "simple": {
+    "person": {
+     "gender": "woman"
+    },
+    "look": {
+     "hair": "bob"
+    },
+    "scene": {
+     "setting": "cafe"
+    },
+    "upper": {
+     "name": "sweater"
+    }
+   },
+   "medium": {
+    "person": {
+     "gender": "woman"
+    },
+    "look": {
+     "hair": "bob"
+    },
+    "scene": {
+     "setting": "cafe",
+     "time": "morning"
+    },
+    "upper": {
+     "name": "sweater",
+     "colour": "mustard",
+     "pattern": "striped"
+    },
+    "lower": {
+     "name": "pencil skirt",
+     "colour": "navy"
+    },
+    "shot": {
+     "framing": "full body"
+    }
+   },
+   "deep": {
+    "person": {
+     "gender": "woman",
+     "age": "30s"
+    },
+    "look": {
+     "hair": "bob",
+     "expression": "smirk"
+    },
+    "scene": {
+     "setting": "cafe",
+     "time": "morning"
+    },
+    "upper": {
+     "name": "sweater",
+     "colour": "mustard",
+     "pattern": "striped"
+    },
+    "lower": {
+     "name": "pencil skirt",
+     "colour": "navy",
+     "pattern": "plain"
+    },
+    "outer": {
+     "name": "coat",
+     "colour": "beige"
+    },
+    "shoes": {
+     "name": "ankle boots",
+     "colour": "brown"
+    },
+    "shot": {
+     "framing": "full body",
+     "light": "soft window",
+     "angle": "eye level"
+    },
+    "relation": [
+     {
+      "a": "woman",
+      "rel": "beside",
+      "b": "table"
+     },
+     {
+      "a": "woman",
+      "rel": "holding",
+      "b": "cup"
+     }
+    ]
+   }
+  },
+  "seed_id": null,
+  "license": "Apache-2.0"
+ },
+ "output": {
+  "skip": false,
+  "reason": "",
+  "class": "",
+  "rows": [
+   {
+    "id": "art-900001",
+    "series": "s-90001",
+    "depth": "simple",
+    "rank": 1,
+    "domain": "photograph",
+    "genre": "portrait",
+    "records": [
+     {
+      "key": "person gender",
+      "value": "woman"
+     },
+     {
+      "key": "look hair",
+      "value": "bob"
+     },
+     {
+      "key": "scene setting",
+      "value": "cafe"
+     },
+     {
+      "key": "upper name",
+      "value": "sweater"
+     }
+    ],
+    "relations": [],
+    "thoughts": [
+     {
+      "step": "see",
+      "text": "A woman with a bob, in a sweater, in a cafe."
+     }
+    ],
+    "wordings": [
+     {
+      "kind": "caption",
+      "text": "A woman with a bob haircut in a sweater, sitting in a cafe."
+     }
+    ],
+    "questions": [
+     {
+      "key": "scene setting",
+      "value": "cafe",
+      "needs": "record"
+     }
+    ]
+   },
+   {
+    "id": "art-900002",
+    "series": "s-90001",
+    "depth": "medium",
+    "rank": 2,
+    "domain": "photograph",
+    "genre": "portrait",
+    "records": [
+     {
+      "key": "person gender",
+      "value": "woman"
+     },
+     {
+      "key": "look hair",
+      "value": "bob"
+     },
+     {
+      "key": "scene setting",
+      "value": "cafe"
+     },
+     {
+      "key": "scene time",
+      "value": "morning"
+     },
+     {
+      "key": "upper name",
+      "value": "sweater"
+     },
+     {
+      "key": "upper colour",
+      "value": "mustard"
+     },
+     {
+      "key": "upper pattern",
+      "value": "striped"
+     },
+     {
+      "key": "lower name",
+      "value": "pencil skirt"
+     },
+     {
+      "key": "lower colour",
+      "value": "navy"
+     },
+     {
+      "key": "shot framing",
+      "value": "full body"
+     },
+     {
+      "key": "mood feeling",
+      "value": "cozy"
+     },
+     {
+      "key": "mood from",
+      "value": "scene setting"
+     }
+    ],
+    "relations": [],
+    "thoughts": [
+     {
+      "step": "see",
+      "text": "A woman with a bob, in a striped mustard sweater and a navy pencil skirt."
+     },
+     {
+      "step": "place",
+      "text": "A cafe in the morning, shown full length so the skirt is in the frame."
+     },
+     {
+      "step": "colour",
+      "text": "Mustard above, navy below: a warm block over a dark one, with the stripes carrying the only pattern."
+     },
+     {
+      "step": "mood",
+      "text": "The cafe setting and the warm sweater read as cozy, with the morning keeping it quiet."
+     }
+    ],
+    "wordings": [
+     {
+      "kind": "caption",
+      "text": "A woman with a bob haircut is in a cafe in the morning, wearing a mustard striped sweater and a navy pencil skirt."
+     },
+     {
+      "kind": "prompt",
+      "text": "portrait photograph, full body, woman, bob haircut, mustard striped sweater, navy pencil skirt, cafe, morning light"
+     },
+     {
+      "kind": "tags",
+      "text": "1girl, solo, bob cut, yellow sweater, striped sweater, blue skirt, pencil skirt, cafe, morning, full body, photograph"
+     }
+    ],
+    "questions": [
+     {
+      "key": "upper colour",
+      "value": "mustard",
+      "needs": "record"
+     },
+     {
+      "key": "lower name",
+      "value": "pencil skirt",
+      "needs": "record"
+     },
+     {
+      "key": "shot lens",
+      "value": "unknown",
+      "needs": "unknown"
+     }
+    ]
+   },
+   {
+    "id": "art-900003",
+    "series": "s-90001",
+    "depth": "deep",
+    "rank": 3,
+    "domain": "photograph",
+    "genre": "portrait",
+    "records": [
+     {
+      "key": "person gender",
+      "value": "woman"
+     },
+     {
+      "key": "person age",
+      "value": "30s"
+     },
+     {
+      "key": "look hair",
+      "value": "bob"
+     },
+     {
+      "key": "look expression",
+      "value": "smirk"
+     },
+     {
+      "key": "scene setting",
+      "value": "cafe"
+     },
+     {
+      "key": "scene time",
+      "value": "morning"
+     },
+     {
+      "key": "upper name",
+      "value": "sweater"
+     },
+     {
+      "key": "upper colour",
+      "value": "mustard"
+     },
+     {
+      "key": "upper pattern",
+      "value": "striped"
+     },
+     {
+      "key": "lower name",
+      "value": "pencil skirt"
+     },
+     {
+      "key": "lower colour",
+      "value": "navy"
+     },
+     {
+      "key": "lower pattern",
+      "value": "plain"
+     },
+     {
+      "key": "outer name",
+      "value": "coat"
+     },
+     {
+      "key": "outer colour",
+      "value": "beige"
+     },
+     {
+      "key": "shoes name",
+      "value": "ankle boots"
+     },
+     {
+      "key": "shoes colour",
+      "value": "brown"
+     },
+     {
+      "key": "shot framing",
+      "value": "full body"
+     },
+     {
+      "key": "shot light",
+      "value": "soft window"
+     },
+     {
+      "key": "shot angle",
+      "value": "eye level"
+     },
+     {
+      "key": "mood feeling",
+      "value": "cozy"
+     },
+     {
+      "key": "mood from",
+      "value": "scene setting"
+     },
+     {
+      "key": "intent purpose",
+      "value": "editorial"
+     },
+     {
+      "key": "intent for",
+      "value": "a magazine cover"
+     },
+     {
+      "key": "story moment",
+      "value": "a pause"
+     },
+     {
+      "key": "story before",
+      "value": "ordered coffee"
+     }
+    ],
+    "relations": [
+     {
+      "a": "woman",
+      "rel": "beside",
+      "b": "table"
+     },
+     {
+      "a": "woman",
+      "rel": "holding",
+      "b": "cup"
+     }
+    ],
+    "thoughts": [
+     {
+      "step": "see",
+      "text": "A woman in her thirties with a bob and a faint smirk, in a striped mustard sweater, a plain navy pencil skirt and a beige coat."
+     },
+     {
+      "step": "place",
+      "text": "A cafe in the morning, shown full length, so the brown ankle boots and the bob are both in the frame. She is beside a table and holding a cup."
+     },
+     {
+      "step": "colour",
+      "text": "Mustard, navy and beige set the palette: the warm sweater sits between the dark skirt and the pale coat, and the brown boots anchor the bottom edge."
+     },
+     {
+      "step": "light",
+      "text": "Soft window light at eye level keeps the stripes and the weave of the coat readable without hard shadows."
+     },
+     {
+      "step": "relate",
+      "text": "The table beside her and the cup in her hand tie her to the room; she is likely a regular, not a pose set against a backdrop."
+     },
+     {
+      "step": "mean",
+      "text": "The smirk, the warm sweater and the small cafe read as cozy, and the setting carries that mood more than the face does."
+     },
+     {
+      "step": "check",
+      "text": "A coat over a knit suggests a cool morning, so the warmth is chosen rather than given, which supports the reading."
+     },
+     {
+      "step": "intend",
+      "text": "Likely an editorial picture for a magazine cover: the full-length view shows the whole outfit, which a style story needs."
+     },
+     {
+      "step": "story",
+      "text": "A pause after she ordered coffee: the cup is already in her hand and the next move is hers."
+     },
+     {
+      "step": "compare",
+      "text": "In flat midday sun the stripes would glare and the room would lose its hush; the window light makes this a cafe morning."
+     }
+    ],
+    "wordings": [
+     {
+      "kind": "caption",
+      "text": "A woman in her thirties with a bob and a faint smirk is in a cafe in the morning, in a striped mustard sweater, a plain navy pencil skirt, a beige coat and brown ankle boots, beside a table with a cup in her hand."
+     },
+     {
+      "kind": "prompt",
+      "text": "editorial portrait photograph, full body, woman in her 30s, bob haircut, smirk, striped mustard sweater, plain navy pencil skirt, beige coat, brown ankle boots, holding a cup, beside a table, cafe in the morning, soft window light, eye level"
+     },
+     {
+      "kind": "tags",
+      "text": "1girl, solo, bob cut, smirk, yellow sweater, striped sweater, blue skirt, pencil skirt, beige coat, brown boots, ankle boots, cup, table, cafe, full body, window light, photograph"
+     },
+     {
+      "kind": "critique",
+      "text": "The three colors are well chosen and the window light is kind to the stripes. Let the cup catch a little more light so the hand and the face carry the story together."
+     }
+    ],
+    "questions": [
+     {
+      "key": "rel1 rel",
+      "value": "beside",
+      "needs": "record"
+     },
+     {
+      "key": "shoes colour",
+      "value": "brown",
+      "needs": "record"
+     },
+     {
+      "key": "upper pattern",
+      "value": "striped",
+      "needs": "record"
+     },
+     {
+      "key": "mood temperature",
+      "value": "warm",
+      "needs": "chain"
+     },
+     {
+      "key": "shot focus",
+      "value": "unknown",
+      "needs": "unknown"
+     }
+    ]
+   }
+  ]
+ }
+}

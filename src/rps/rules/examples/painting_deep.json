@@ -1,0 +1,247 @@
+{
+ "name": "painting_deep",
+ "note": "A drawn painting at deep: two lights as rivals, the critique naming one craft decision.",
+ "item": {
+  "kind": "single",
+  "series": "s-00207",
+  "ids": [
+   "art-002023"
+  ],
+  "depth": "deep",
+  "domain": "painting",
+  "genre": "portrait",
+  "spec": {
+   "person": {
+    "gender": "woman",
+    "age": "50s",
+    "count": "1"
+   },
+   "look": {
+    "hair": "windblown",
+    "expression": "calm"
+   },
+   "scene": {
+    "setting": "cathedral",
+    "time": "noon"
+   },
+   "wear": {
+    "clothing": "robe",
+    "colour": "lilac"
+   },
+   "shot": {
+    "framing": "portrait",
+    "light": "from below"
+   },
+   "body": {
+    "pose": "resting"
+   },
+   "relation": [
+    {
+     "a": "woman",
+     "rel": "holding",
+     "b": "candle"
+    },
+    {
+     "a": "candle",
+     "rel": "below",
+     "b": "window"
+    }
+   ]
+  },
+  "seed_id": null,
+  "license": "Apache-2.0"
+ },
+ "output": {
+  "skip": false,
+  "reason": "",
+  "class": "",
+  "rows": [
+   {
+    "id": "art-002023",
+    "series": "s-00207",
+    "depth": "deep",
+    "rank": 3,
+    "domain": "painting",
+    "genre": "portrait",
+    "records": [
+     {
+      "key": "person gender",
+      "value": "woman"
+     },
+     {
+      "key": "person age",
+      "value": "50s"
+     },
+     {
+      "key": "person count",
+      "value": "1"
+     },
+     {
+      "key": "look hair",
+      "value": "windblown"
+     },
+     {
+      "key": "look expression",
+      "value": "calm"
+     },
+     {
+      "key": "scene setting",
+      "value": "cathedral"
+     },
+     {
+      "key": "scene time",
+      "value": "noon"
+     },
+     {
+      "key": "wear clothing",
+      "value": "robe"
+     },
+     {
+      "key": "wear colour",
+      "value": "lilac"
+     },
+     {
+      "key": "shot framing",
+      "value": "portrait"
+     },
+     {
+      "key": "shot light",
+      "value": "from below"
+     },
+     {
+      "key": "body pose",
+      "value": "resting"
+     },
+     {
+      "key": "mood feeling",
+      "value": "awed"
+     },
+     {
+      "key": "mood from",
+      "value": "scene setting"
+     },
+     {
+      "key": "intent purpose",
+      "value": "devotional"
+     },
+     {
+      "key": "intent for",
+      "value": "the family"
+     },
+     {
+      "key": "story moment",
+      "value": "a farewell"
+     },
+     {
+      "key": "story before",
+      "value": "the last prayer"
+     }
+    ],
+    "relations": [
+     {
+      "a": "woman",
+      "rel": "holding",
+      "b": "candle"
+     },
+     {
+      "a": "candle",
+      "rel": "below",
+      "b": "window"
+     }
+    ],
+    "thoughts": [
+     {
+      "step": "see",
+      "text": "A woman in her fifties, calm, her hair windblown, in a lilac robe, resting."
+     },
+     {
+      "step": "place",
+      "text": "A cathedral at noon. She holds a candle that sits below a window, so daylight and flame share the same stretch of wall."
+     },
+     {
+      "step": "light",
+      "text": "Light comes from below, from the candle in her hands: it lifts the chin and the folds of the robe. Against noon at the window, the flame is a small, warm rival."
+     },
+     {
+      "step": "colour",
+      "text": "The lilac robe, lit from below by flame, warms toward rose and becomes the picture's soft centre."
+     },
+     {
+      "step": "form",
+      "text": "Portrait framing, close and vertical, with the window above the candle drawing the eye up and the flame pulling it back down."
+     },
+     {
+      "step": "mean",
+      "text": "Awed, but quietly: the calm face and the resting pose keep it from drama, and the cathedral does the work of scale."
+     },
+     {
+      "step": "check",
+      "text": "Windblown hair indoors is the odd detail. It suggests an open door or a draught, so even the stone room is not entirely still."
+     },
+     {
+      "step": "intend",
+      "text": "A devotional piece for a family: something to keep in a home, calm enough to live with, grand enough to feel sacred."
+     },
+     {
+      "step": "story",
+      "text": "A farewell, with the last prayer already said: the candle is what she carries out of the room."
+     },
+     {
+      "step": "compare",
+      "text": "At night the window would go dark and the candle would be the only world. At noon it is one light among two, and she is choosing which to follow."
+     }
+    ],
+    "wordings": [
+     {
+      "kind": "caption",
+      "text": "A woman in her fifties with windblown hair and a calm face rests in a lilac robe, holding a candle below a cathedral window at noon, lit from below."
+     },
+     {
+      "kind": "prompt",
+      "text": "devotional painting, woman in her 50s, windblown hair, calm expression, lilac robe, resting, holding a candle, candle below a window, cathedral at noon, light from below, portrait framing, awed mood"
+     },
+     {
+      "kind": "tags",
+      "text": "1girl, solo, mature female, windblown hair, robe, purple robe, holding candle, candle, window, cathedral, from below, portrait"
+     },
+     {
+      "kind": "critique",
+      "text": "Lighting the face from the flame, in a room full of noon, is a lovely reversal, and the lilac holds the warmth well. The window above the candle is a little too bright; dim it so the flame, not the glass, gets the last word."
+     }
+    ],
+    "questions": [
+     {
+      "key": "person age",
+      "value": "50s",
+      "needs": "record"
+     },
+     {
+      "key": "wear colour",
+      "value": "lilac",
+      "needs": "record"
+     },
+     {
+      "key": "shot light",
+      "value": "from below",
+      "needs": "record"
+     },
+     {
+      "key": "mood temperature",
+      "value": "warm",
+      "needs": "chain"
+     },
+     {
+      "key": "form medium",
+      "value": "unknown",
+      "needs": "unknown"
+     },
+     {
+      "key": "story before",
+      "value": "the last prayer",
+      "needs": "record"
+     }
+    ]
+   }
+  ]
+ }
+}
