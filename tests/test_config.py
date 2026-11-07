@@ -92,12 +92,51 @@ def test_values_that_look_like_keys_are_rejected_without_echoing_them():
 
 
 def test_review_settings_are_checked():
+    same = [{"id": "a", "family": "x"}, {"id": "a", "family": "y"}]
     with pytest.raises(ConfigError):
-        Config.from_dict(make(review={"reviewers": ["a", "a"]}))
+        Config.from_dict(make(review={"reviewers": same}))
     with pytest.raises(ConfigError):
-        Config.from_dict(make(review={"reviewers": ["a"], "required_verdicts": 2}))
-    config = Config.from_dict(make(review={"reviewers": ["desk", "mac"], "required_verdicts": 2, "packet_size": 5}))
-    assert config.review.reviewers == ("desk", "mac")
+        Config.from_dict(make(review={"reviewers": [{"id": "a"}]}))
+    with pytest.raises(ConfigError):
+        Config.from_dict(make(review={"reviewers": ["just-a-name"]}))
+    with pytest.raises(ConfigError):
+        Config.from_dict(make(review={"policy": {"audit_fraction": 2}}))
+    with pytest.raises(ConfigError):
+        Config.from_dict(make(review={"policy": {"max_reviewers": 1, "keeps_to_accept": 2, "rejects_to_discard": 2}}))
+    with pytest.raises(ConfigError):
+        Config.from_dict(make(review={"policy": {"unknown": 1}}))
+
+
+def test_review_policy_defaults_follow_the_owners_protocol():
+    policy = Config.from_dict(make()).review.policy
+    assert policy.keeps_to_accept == 2
+    assert policy.rejects_to_discard == 2
+    assert policy.max_reviewers == 3
+    assert policy.first_keep_accepts is True
+    assert policy.audit_fraction == pytest.approx(0.10)
+
+
+def test_reviewers_carry_families_and_can_be_disabled():
+    config = Config.from_dict(
+        make(
+            review={
+                "reviewers": [
+                    {"id": "desk", "family": "anthropic"},
+                    {"id": "mac", "family": "google", "enabled": False},
+                    {"id": "codex", "family": "openai"},
+                ],
+                "packet_size": 5,
+                "provider_families": {"acme": "acme-family"},
+            }
+        )
+    )
+    assert [r.id for r in config.review.enabled_reviewers()] == ["desk", "codex"]
+    assert config.review.reviewer("mac").family == "google"
+    assert config.review.reviewer("nobody") is None
+    assert config.review.family_of("gemini") == "google"
+    assert config.review.family_of("acme") == "acme-family"
+    assert config.review.family_of("unmapped") == "unmapped"
+    assert Config.from_dict(config.to_dict()) == config
 
 
 def test_stop_file_resolves_under_the_work_dir():

@@ -290,20 +290,136 @@ class CommitConfig:
 
 
 @dataclass(frozen=True)
+class ReviewerConfig:
+    """One reviewer: an id (used in paths) and the model family it belongs to."""
+
+    id: str
+    family: str
+    enabled: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "family": self.family, "enabled": self.enabled}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any], where: str) -> "ReviewerConfig":
+        if not isinstance(data, Mapping):
+            _fail(f"{where}: expected an object with 'id' and 'family'")
+        _check_keys(data, {"id", "family", "enabled"}, where)
+        for key in ("id", "family"):
+            value = data.get(key)
+            if not isinstance(value, str) or not NAME_PATTERN.match(value):
+                _fail(f"{where}.{key}: expected letters, digits, '.', '_' or '-', got {value!r}")
+        return cls(id=data["id"], family=data["family"], enabled=_flag(data.get("enabled", True), f"{where}.enabled"))
+
+
+@dataclass(frozen=True)
+class ReviewPolicy:
+    """How reviewers' verdicts settle a row.
+
+    A first review goes to a reviewer from a family other than the writer's. A row
+    with a "keep" verdict and no assessor flag is accepted at once (when
+    `first_keep_accepts` is on). A row with a "fix" or "reject" verdict, or an
+    assessor flag, is in question and goes to a further reviewer from a family not
+    yet used on it. `keeps_to_accept` keeps accept it and `rejects_to_discard`
+    rejects discard it. After `max_reviewers` reviewers with no settlement it goes
+    to the owner's hand queue. `audit_fraction` of accepted rows get one more review
+    from another family; the audit changes nothing unless it rejects the row.
+    """
+
+    keeps_to_accept: int = 2
+    rejects_to_discard: int = 2
+    max_reviewers: int = 3
+    first_keep_accepts: bool = True
+    audit_fraction: float = 0.10
+    audit_seed: str = "audit"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "keeps_to_accept": self.keeps_to_accept,
+            "rejects_to_discard": self.rejects_to_discard,
+            "max_reviewers": self.max_reviewers,
+            "first_keep_accepts": self.first_keep_accepts,
+            "audit_fraction": self.audit_fraction,
+            "audit_seed": self.audit_seed,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ReviewPolicy":
+        where = "review.policy"
+        if not isinstance(data, Mapping):
+            _fail(f"{where}: expected an object")
+        _check_keys(
+            data,
+            {"keeps_to_accept", "rejects_to_discard", "max_reviewers", "first_keep_accepts", "audit_fraction", "audit_seed"},
+            where,
+        )
+        default = cls()
+        policy = cls(
+            keeps_to_accept=_number(
+                data.get("keeps_to_accept", default.keeps_to_accept), f"{where}.keeps_to_accept", minimum=1, integer=True
+            ),
+            rejects_to_discard=_number(
+                data.get("rejects_to_discard", default.rejects_to_discard),
+                f"{where}.rejects_to_discard",
+                minimum=1,
+                integer=True,
+            ),
+            max_reviewers=_number(
+                data.get("max_reviewers", default.max_reviewers), f"{where}.max_reviewers", minimum=1, integer=True
+            ),
+            first_keep_accepts=_flag(data.get("first_keep_accepts", default.first_keep_accepts), f"{where}.first_keep_accepts"),
+            audit_fraction=float(
+                _number(data.get("audit_fraction", default.audit_fraction), f"{where}.audit_fraction", minimum=0, maximum=1)
+            ),
+            audit_seed=str(_text(str(data.get("audit_seed", default.audit_seed)), f"{where}.audit_seed")),
+        )
+        if policy.max_reviewers < min(policy.keeps_to_accept, policy.rejects_to_discard):
+            _fail(f"{where}.max_reviewers: too small to ever settle a row")
+        return policy
+
+
+# Which model family a provider's output belongs to, for choosing reviewers.
+DEFAULT_PROVIDER_FAMILIES: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "gemini": "google",
+    "google": "google",
+    "deepseek": "deepseek",
+    "human": "human",
+    "fake": "fake",
+}
+
+
+@dataclass(frozen=True)
 class ReviewConfig:
-    """How rows are grouped for review and when a row counts as decided."""
+    """Reviewers, their families, how rows are grouped into packets, and the policy."""
 
     packet_size: int = 20
     brief_version: str = "1"
-    reviewers: tuple[str, ...] = ()
-    required_verdicts: int = 1
+    reviewers: tuple[ReviewerConfig, ...] = ()
+    policy: ReviewPolicy = field(default_factory=ReviewPolicy)
+    provider_families: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_PROVIDER_FAMILIES))
+
+    def family_of(self, provider: str) -> str:
+        """The model family of a writer's provider (the provider itself if unmapped)."""
+        return self.provider_families.get(provider, provider)
+
+    def enabled_reviewers(self) -> tuple[ReviewerConfig, ...]:
+        return tuple(reviewer for reviewer in self.reviewers if reviewer.enabled)
+
+    def reviewer(self, reviewer_id: str) -> ReviewerConfig | None:
+        for reviewer in self.reviewers:
+            if reviewer.id == reviewer_id:
+                return reviewer
+        return None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "packet_size": self.packet_size,
             "brief_version": self.brief_version,
-            "reviewers": list(self.reviewers),
-            "required_verdicts": self.required_verdicts,
+            "reviewers": [reviewer.to_dict() for reviewer in self.reviewers],
+            "policy": self.policy.to_dict(),
+            "provider_families": {key: self.provider_families[key] for key in sorted(self.provider_families)},
         }
 
     @classmethod
@@ -311,23 +427,30 @@ class ReviewConfig:
         where = "review"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"packet_size", "brief_version", "reviewers", "required_verdicts"}, where)
-        reviewers = data.get("reviewers", [])
-        if not isinstance(reviewers, (list, tuple)):
+        _check_keys(data, {"packet_size", "brief_version", "reviewers", "policy", "provider_families"}, where)
+        reviewers_in = data.get("reviewers", [])
+        if not isinstance(reviewers_in, (list, tuple)):
             _fail(f"{where}.reviewers: expected a list")
-        for reviewer in reviewers:
-            if not isinstance(reviewer, str) or not NAME_PATTERN.match(reviewer):
-                _fail(f"{where}.reviewers: invalid reviewer id {reviewer!r}")
-        if len(set(reviewers)) != len(reviewers):
+        reviewers = tuple(
+            ReviewerConfig.from_dict(item, f"{where}.reviewers[{index}]") for index, item in enumerate(reviewers_in)
+        )
+        ids = [reviewer.id for reviewer in reviewers]
+        if len(set(ids)) != len(ids):
             _fail(f"{where}.reviewers: duplicate reviewer ids")
-        required = _number(data.get("required_verdicts", 1), f"{where}.required_verdicts", minimum=1, integer=True)
-        if reviewers and required > len(reviewers):
-            _fail(f"{where}.required_verdicts: {required} is more than the {len(reviewers)} reviewers")
+        families = dict(DEFAULT_PROVIDER_FAMILIES)
+        extra = data.get("provider_families", {})
+        if not isinstance(extra, Mapping):
+            _fail(f"{where}.provider_families: expected an object")
+        for provider, family in extra.items():
+            if not isinstance(family, str) or not NAME_PATTERN.match(family):
+                _fail(f"{where}.provider_families.{provider}: invalid family {family!r}")
+            families[str(provider)] = family
         return cls(
             packet_size=_number(data.get("packet_size", 20), f"{where}.packet_size", minimum=1, integer=True),
             brief_version=str(_text(str(data.get("brief_version", "1")), f"{where}.brief_version")),
-            reviewers=tuple(reviewers),
-            required_verdicts=required,
+            reviewers=reviewers,
+            policy=ReviewPolicy.from_dict(data.get("policy", {})),
+            provider_families=families,
         )
 
 

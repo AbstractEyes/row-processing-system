@@ -148,9 +148,13 @@ def parse_row_id(value: str) -> tuple[str, int]:
     return call_id_from_custom_id(head), int(tail)
 
 
-def packet_id(row_ids: Iterable[str]) -> str:
-    """Id of a review packet, from the set of its row ids."""
-    ordered = sorted(set(row_ids))
+def packet_id(keys: Iterable[str]) -> str:
+    """Id of a review packet, from the set of keys that identify its contents.
+
+    Callers pass one key per assignment (for example reviewer, row and round) so
+    that the same row sent to two reviewers makes two different packets.
+    """
+    ordered = sorted(set(keys))
     if not ordered:
         raise ValueError("a packet needs at least one row")
     return "p" + _digest(ordered)[:12]

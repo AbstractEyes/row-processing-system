@@ -2,13 +2,14 @@
 
 All stores share one path layout. Each file has exactly one writer:
 
-    events/controller-<run>.<part>.jsonl   the controller run named in the path
-    packets/<packet>/packet.json           the controller
-    packets/<packet>/images/<row>.<ext>    the controller
-    review/<reviewer>/<packet>.jsonl       the reviewer named in the path
-    accepted/<route>/<task>.jsonl          the controller
-    ledger/...                             the controller
-    control/...                            the operator (for example a stop file)
+    events/controller-<run>.<part>.jsonl            the controller run named in the path
+    packets/<reviewer>/<packet>/packet.json         the controller (addressed to that reviewer)
+    packets/<reviewer>/<packet>/images/<row>.<ext>  the controller
+    review/<reviewer>/<packet>.jsonl                the reviewer named in the path
+    accepted/<route>/<task>.jsonl                   the controller
+    ledger/...                                      the controller
+    hand/queue.jsonl                                the controller (rows waiting for the owner)
+    control/...                                     the operator (a stop file, hand decisions)
 
 No actor edits a file it does not own. `ActorStore` (in `rps.store.base`) applies
 these rules to every write and delete.
@@ -32,8 +33,12 @@ CONTROL_DIR = "control"
 NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _INSTANCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 _EVENT_FILE = re.compile(r"^events/controller-(?P<instance>[A-Za-z0-9][A-Za-z0-9-]{0,63})\.(?P<part>\d{4})\.jsonl$")
+_PACKET_JSON = re.compile(r"^packets/(?P<reviewer>[A-Za-z0-9][A-Za-z0-9._-]{0,63})/(?P<packet>p[0-9a-f]{12})/packet\.json$")
 
+HAND_DIR = "hand"
+HAND_QUEUE_PATH = f"{HAND_DIR}/queue.jsonl"
 CONTROL_STOP_PATH = f"{CONTROL_DIR}/STOP"
+CONTROL_HAND_PREFIX = f"{CONTROL_DIR}/hand/"
 LEDGER_SUMMARY_PATH = f"{LEDGER_DIR}/summary.json"
 LEDGER_TASKS_PATH = f"{LEDGER_DIR}/tasks.jsonl"
 
@@ -94,23 +99,36 @@ def sort_event_paths(paths: Iterable[str]) -> list[str]:
     return [path for _, path in parsed]
 
 
-def packet_dir(packet: str) -> str:
-    return f"{PACKETS_DIR}/{check_packet_id(packet)}"
+def packets_prefix(reviewer: str) -> str:
+    """Everything the controller has published for one reviewer."""
+    return f"{PACKETS_DIR}/{check_name(reviewer, 'reviewer id')}/"
 
 
-def packet_json_path(packet: str) -> str:
-    return f"{packet_dir(packet)}/packet.json"
+def packet_dir(reviewer: str, packet: str) -> str:
+    return f"{PACKETS_DIR}/{check_name(reviewer, 'reviewer id')}/{check_packet_id(packet)}"
 
 
-def packet_images_prefix(packet: str) -> str:
-    return f"{packet_dir(packet)}/images/"
+def packet_json_path(reviewer: str, packet: str) -> str:
+    return f"{packet_dir(reviewer, packet)}/packet.json"
 
 
-def packet_image_path(packet: str, row: str, ext: str) -> str:
+def packet_images_prefix(reviewer: str, packet: str) -> str:
+    return f"{packet_dir(reviewer, packet)}/images/"
+
+
+def packet_image_path(reviewer: str, packet: str, row: str, ext: str) -> str:
     check_name(row, "row id")
     if not re.match(r"^[a-z0-9]{2,5}$", ext):
         raise PathError(f"invalid image extension: {ext!r}")
-    return f"{packet_dir(packet)}/images/{row}.{ext}"
+    return f"{packet_dir(reviewer, packet)}/images/{row}.{ext}"
+
+
+def parse_packet_json_path(path: str) -> tuple[str, str] | None:
+    """Return (reviewer id, packet id) for a packet.json path, or None for any other path."""
+    match = _PACKET_JSON.match(path)
+    if not match:
+        return None
+    return match.group("reviewer"), match.group("packet")
 
 
 def verdicts_path(reviewer: str, packet: str) -> str:
@@ -183,7 +201,7 @@ def owner_of(path: str) -> Owner | None:
     if parsed is not None:
         return Owner("controller", parsed[0])
     top, _, rest = path.partition("/")
-    if top in (PACKETS_DIR, ACCEPTED_DIR, LEDGER_DIR) and rest:
+    if top in (PACKETS_DIR, ACCEPTED_DIR, LEDGER_DIR, HAND_DIR) and rest:
         return Owner("controller")
     if top == REVIEW_DIR and rest:
         reviewer, _, tail = rest.partition("/")

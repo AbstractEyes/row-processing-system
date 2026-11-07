@@ -128,8 +128,8 @@ def test_controller_may_write_its_files_but_not_reviewer_files(local_store):
     run = controller_actor("20261107T090000Z-aaaa")
     store = ActorStore(local_store, run)
     store.append_lines(layout.events_path(run.name), ["e1"])
-    store.write_text(layout.packet_json_path(PACKET), "{}")
-    store.write_bytes(layout.packet_image_path(PACKET, "row1", "jpg"), b"img")
+    store.write_text(layout.packet_json_path("desk", PACKET), "{}")
+    store.write_bytes(layout.packet_image_path("desk", PACKET, "row1", "jpg"), b"img")
     store.write_text(layout.accepted_path("route-a", TASK), "{}\n")
     store.write_text(layout.LEDGER_SUMMARY_PATH, "{}")
     with pytest.raises(OwnershipError):
@@ -154,7 +154,7 @@ def test_a_reviewer_writes_only_under_its_own_folder(local_store):
     with pytest.raises(OwnershipError):
         store.write_text(layout.events_path("20261107T090000Z-aaaa"), "x")
     with pytest.raises(OwnershipError):
-        store.delete(layout.packet_json_path(PACKET))
+        store.delete(layout.packet_json_path("desk", PACKET))
     with pytest.raises(OwnershipError):
         store.write_text("review/desk", "x")  # no file name under the reviewer folder
     with pytest.raises(PathError):
@@ -162,11 +162,11 @@ def test_a_reviewer_writes_only_under_its_own_folder(local_store):
 
 
 def test_reads_are_open_to_every_actor(local_store):
-    ActorStore(local_store, controller_actor("20261107T090000Z-aaaa")).write_text(layout.packet_json_path(PACKET), "rows")
+    ActorStore(local_store, controller_actor("20261107T090000Z-aaaa")).write_text(layout.packet_json_path("desk", PACKET), "rows")
     reader = ActorStore(local_store, reviewer_actor("desk"))
-    assert reader.read_text(layout.packet_json_path(PACKET)) == "rows"
-    assert reader.list("packets/") == [layout.packet_json_path(PACKET)]
-    assert reader.exists(layout.packet_json_path(PACKET))
+    assert reader.read_text(layout.packet_json_path("desk", PACKET)) == "rows"
+    assert reader.list("packets/") == [layout.packet_json_path("desk", PACKET)]
+    assert reader.exists(layout.packet_json_path("desk", PACKET))
 
 
 def test_the_operator_owns_the_control_folder(local_store):
@@ -178,8 +178,26 @@ def test_the_operator_owns_the_control_folder(local_store):
 
 def test_delete_prefix_respects_ownership(local_store):
     controller = ActorStore(local_store, controller_actor("20261107T090000Z-aaaa"))
-    controller.write_bytes(layout.packet_image_path(PACKET, "r1", "jpg"), b"1")
-    controller.write_bytes(layout.packet_image_path(PACKET, "r2", "png"), b"2")
-    controller.write_text(layout.packet_json_path(PACKET), "{}")
-    assert controller.delete_prefix(layout.packet_images_prefix(PACKET)) == 2
-    assert controller.list(layout.packet_dir(PACKET) + "/") == [layout.packet_json_path(PACKET)]
+    controller.write_bytes(layout.packet_image_path("desk", PACKET, "r1", "jpg"), b"1")
+    controller.write_bytes(layout.packet_image_path("desk", PACKET, "r2", "png"), b"2")
+    controller.write_text(layout.packet_json_path("desk", PACKET), "{}")
+    assert controller.delete_prefix(layout.packet_images_prefix("desk", PACKET)) == 2
+    assert controller.list(layout.packet_dir("desk", PACKET) + "/") == [layout.packet_json_path("desk", PACKET)]
+
+
+def test_packets_are_addressed_to_a_reviewer_in_the_path():
+    path = layout.packet_json_path("desk", PACKET)
+    assert path == f"packets/desk/{PACKET}/packet.json"
+    assert layout.parse_packet_json_path(path) == ("desk", PACKET)
+    assert layout.parse_packet_json_path("packets/desk/nope/packet.json") is None
+    assert layout.packets_prefix("desk") == "packets/desk/"
+
+
+def test_the_hand_queue_belongs_to_the_controller_and_decisions_to_the_operator(local_store):
+    controller = ActorStore(local_store, controller_actor("20261107T090000Z-aaaa"))
+    controller.write_text(layout.HAND_QUEUE_PATH, "{}\n")
+    with pytest.raises(OwnershipError):
+        controller.write_text(layout.CONTROL_HAND_PREFIX + "decisions.jsonl", "x")
+    ActorStore(local_store, operator_actor()).write_text(layout.CONTROL_HAND_PREFIX + "decisions.jsonl", "x")
+    with pytest.raises(OwnershipError):
+        ActorStore(local_store, reviewer_actor("desk")).write_text(layout.HAND_QUEUE_PATH, "x")
