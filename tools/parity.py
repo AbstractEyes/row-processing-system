@@ -1,6 +1,6 @@
 """Parity of the assessor against the original check scripts on a range of written batches.
 
-    python tools/parity.py --prod X:/thought_seeds/rows/prod --legacy <folder with the original scripts> 145 146 ... 162
+    python tools/parity.py --prod <folder with the written batches> --legacy <folder with the original scripts> 145 146 ... 162
 
 Reads batch_NNN.rows.jsonl and batch_NNN.specs.jsonl for each batch. The legacy side is the
 dataset's batch checker (called from its package) plus each original script run as a
