@@ -70,6 +70,7 @@ files alone.
       tasks.py         task definitions and the tasks file
       data/prices.json the dated price table
     notebooks/controller_colab.ipynb   run the controller on a Colab CPU runtime
+    reviewers/                         the review agents' guide (AGENTS.md; CLAUDE.md imports it) and TASK.md
     tools/                             helper scripts (the assessor's parity check)
     tests/                             offline tests (no network, no keys)
 
