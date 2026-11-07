@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 HERE = Path(__file__).resolve().parent
-EXAMPLE_FOR_PROMPT = "people_series"  # the example row that sits inside the system prompt
+EXAMPLE_FOR_PROMPT: str | None = None  # name of the example file whose medium row sits inside the system prompt; None: no example
 VERSIONED = ("pool.md", "writer_system.md", "row_schema.json", "review_brief.md")
 SKIP_CLASSES = ("person", "contradiction", "ungrounded", "other")
 
@@ -55,14 +55,15 @@ def sealed_text(tp, held) -> str:
     return ", ".join(sorted(tp.sealed_all(held)))
 
 
-def example_text(name: str = EXAMPLE_FOR_PROMPT) -> str:
+def example_text(name: str) -> str:
     """One medium row of the named example, as the writer returns it."""
     data = json.loads((HERE / "examples" / f"{name}.json").read_text(encoding="utf-8"))
     row = next(r for r in data["output"]["rows"] if r["depth"] == "medium")
     return json.dumps({"skip": False, "reason": "", "class": "", "rows": [row]}, ensure_ascii=False)
 
 
-def writer_system() -> str:
+def writer_system(example: str | None = EXAMPLE_FOR_PROMPT) -> str:
+    """The compiled writer prompt; `example` names an example file whose medium row ends it (None: no example)."""
     tp, held = _validator()
     template = (HERE / "templates" / "writer_system.tpl.md").read_text(encoding="utf-8")
     text = (
@@ -70,8 +71,13 @@ def writer_system() -> str:
         .replace("{{STEPS}}", ", ".join(tp.STEPS))
         .replace("{{GENRES}}", genres(tp, held))
         .replace("{{LISTS}}", list_text(tp, held))
-        .replace("{{EXAMPLE}}", example_text())
     )
+    if example is None:
+        text = text.replace("{{EXAMPLE_NOTE}}\n", "").replace("{{EXAMPLE_BLOCK}}", "")
+    else:
+        text = text.replace("{{EXAMPLE_NOTE}}", "One example row is at the end.").replace(
+            "{{EXAMPLE_BLOCK}}", "EXAMPLE ROW (one medium row of a series)\n" + example_text(example)
+        )
     return text.rstrip() + "\n"
 
 

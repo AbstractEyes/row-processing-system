@@ -4,7 +4,7 @@ OUTPUT (json)
 {"skip": false, "reason": "", "class": "", "rows": [ROW, ...]}
 A series asks for three rows (rank 1 simple, rank 2 medium, rank 3 deep) of one picture; a single asks for one. Use the ids and series id you are given. To decline an item write {"skip": true, "reason": "...", "class": "...", "rows": []} (see SKIP).
 ROW = {"id", "series", "depth", "rank", "domain", "genre", "records": [{"key", "value"}], "relations": [{"a", "rel", "b"}], "thoughts": [{"step", "text"}], "wordings": [{"kind", "text"}], "questions": [{"key", "value", "needs"}]}
-One example row is at the end.
+{{EXAMPLE_NOTE}}
 
 RECORDS
 - Keep every record you are given, word for word. Never change, drop or reorder one. A key is "system attribute" (person gender). A relation is a, rel, b; keep the order of relations.
@@ -62,5 +62,4 @@ Put the reason in one sentence. Never adjust a record to make an item work.
 THE LISTS (closed; use only these where a list exists)
 {{LISTS}}
 
-EXAMPLE ROW (one medium row of a series)
-{{EXAMPLE}}
+{{EXAMPLE_BLOCK}}

@@ -146,8 +146,7 @@ def test_task_text_carries_ids_records_hint_and_assignment():
 
 def test_lists_offer_no_sealed_value():
     text = rules.writer_system()
-    start = text.index("THE LISTS")
-    lists = text[start : text.index("EXAMPLE ROW")]
+    lists = text[text.index("THE LISTS") :]
     offered = {v.strip() for line in lists.splitlines()[1:] if ": " in line and not line.startswith("relation") for v in line.split(": ", 1)[1].split(",")}
     assert not offered & set(tp.sealed_all(HELD))
 
@@ -159,3 +158,22 @@ def test_a_missing_license_is_an_error():
 
 def test_hint_rule_is_in_the_prompt():
     assert "never copy a sentence or phrase from it" in rules.writer_system()
+
+
+def test_the_prompt_holds_no_example_row_by_default():
+    assert rules_compile.EXAMPLE_FOR_PROMPT is None
+    text = rules.writer_system()
+    assert "EXAMPLE ROW" not in text and "example row" not in text
+    assert text.endswith("\n") and not text.endswith("\n\n")
+    for example in rules.examples():
+        for row in example["output"]["rows"]:
+            assert row["id"] not in text
+            assert all(t["text"] not in text for t in row["thoughts"])
+
+
+def test_naming_an_example_puts_its_row_back():
+    text = rules_compile.writer_system("people_series")
+    assert "One example row is at the end." in text and "EXAMPLE ROW" in text
+    medium = next(r for r in next(e for e in rules.examples() if e["name"] == "people_series")["output"]["rows"] if r["depth"] == "medium")
+    assert text.endswith("\n") and not text.endswith("\n\n")
+    assert medium["thoughts"][0]["text"] in text
