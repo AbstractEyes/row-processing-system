@@ -10,6 +10,8 @@ Version 0.1.0. The provider adapters (`anthropic_api`, `openai_api`, `gemini_api
 that raise `NotImplementedError`; everything else works and is tested offline with a fake
 writer.
 
+Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
 ## How a row travels
 
 | Step | What happens | Recorded as |
