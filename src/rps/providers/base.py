@@ -253,6 +253,13 @@ class Writer(ABC):
         """Whether this route can take calls now. The default is always."""
         return Acceptance(True)
 
+    def check_rules(self, rules: WriterRules) -> None:
+        """Raise ConfigError when these writing rules cannot be sent through this route.
+
+        Called once before a run starts, so a schema the provider would reject fails there
+        and not on every request.
+        """
+
     def split(self, requests: Sequence[Request]) -> list[list[Request]]:
         """Cut requests into the groups that become one handle each."""
         return split_requests(requests, self.route.max_batch_calls)
@@ -284,6 +291,7 @@ class FakeOutcome:
     usage: Usage | None = None
     minutes: float | None = None
     kind: str | None = None
+    tier: str | None = None
 
 
 class FakeProvider:
@@ -408,6 +416,7 @@ class FakeWriter(Writer):
                     retryable=outcome.retryable,
                     minutes=outcome.minutes,
                     kind=outcome.kind,
+                    tier=outcome.tier,
                 )
             )
         return results

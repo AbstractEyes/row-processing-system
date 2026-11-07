@@ -280,6 +280,8 @@ class Controller:
                     f"route {name!r} sends the writing rules to a model, but no rules are set "
                     "(pass `rules`, or add a `rules` section to the configuration)"
                 )
+            if self.rules is not None and route.is_enabled:
+                self.writers[name].check_rules(self.rules)
         replayed = replay(self.state_store)
         self.state = State.from_events(replayed.events)
         if replayed.problems:
@@ -894,6 +896,10 @@ class Controller:
 
     # ------------------------------------------------------------------ poll and collect
 
+    def _calls_waiting(self, call_ids: Sequence[str]) -> bool:
+        """True while any of these calls has been submitted and has no result yet."""
+        return any(self.state.calls[call_id].status == "submitted" for call_id in call_ids if call_id in self.state.calls)
+
     def _warn_changed(self, key: str, message: str) -> None:
         """Print a warning unless the same one was the last printed for this key."""
         if self._last_warning.get(key) != message:
@@ -959,10 +965,13 @@ class Controller:
                 if status.state == "partial":
                     if returned or failed:
                         self._flush_state()  # results already paid for are made durable as they land
-                    continue
-                failed += self._fail_unfinished(
-                    batch.handle_id, batch.call_ids, "the call is missing from the batch results", KIND_UNEXPECTED
-                )
+                    if self._calls_waiting(batch.call_ids):
+                        continue
+                    # Every call is in, so the batch is done even though the writer has not said so.
+                else:
+                    failed += self._fail_unfinished(
+                        batch.handle_id, batch.call_ids, "the call is missing from the batch results", KIND_UNEXPECTED
+                    )
             else:
                 note = f": {status.note}" if status.note else ""
                 kind = {"expired": KIND_EXPIRED, "canceled": KIND_CANCELED}.get(status.state, KIND_PROVIDER)
