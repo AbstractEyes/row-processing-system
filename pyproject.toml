@@ -17,6 +17,7 @@ dependencies = [
     "huggingface_hub>=2.4,<3",
     "Pillow>=13.0,<14",
     "datasketch>=2.0,<3",
+    "thought-image-seeds @ git+https://github.com/AbstractEyes/thought-image-seeds@v0.4.0",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,7 @@ test = ["pytest>=9.2,<10"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-rps = ["data/*.json"]
+rps = ["data/*.json", "rules/*.md", "rules/*.json", "rules/VERSION", "rules/examples/*.json", "rules/templates/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

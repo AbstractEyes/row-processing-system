@@ -1,0 +1,123 @@
+# Rule pool
+
+The one list every compiled file is built from. Each rule is numbered once. Every rule binds the writer; the tag says who can check it:
+
+- ASSESSOR: a script checks it (the code names what the check reports). A failing row is rejected with the error line, and the writer gets one retry.
+- READER: only a reader can judge it. Reviewers see the rule in the review brief.
+- WRITER: nothing checks it; the writer must simply do it (and the runner assigns what a single call cannot see).
+
+"validator" is the dataset's row validator, called as a library. Its codes are `rule_N` (the validator's own rule numbers 0-8), `ids`, `specs`, `license`, `spec_kept`, `source`, `series` and `missing`.
+
+## A. Shape of a row
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 1 | The writer's output is one json object: skip, reason, class, rows. A series is three rows (rank 1 simple, 2 medium, 3 deep) of one picture; a single is one row. Ids and series id are the ones given. | ASSESSOR | ids, series, missing |
+| 2 | A row has id, series, depth, rank, domain, genre, records, relations, thoughts, wordings, questions. The runner adds held and source; a model never writes them. | ASSESSOR | rule_0 |
+| 3 | A record value is plain lower-case words of at most 20 bytes; key and value together at most 27 bytes. | ASSESSOR | rule_2 |
+| 4 | Record counts, a relation counting as one record: simple 1-4, medium 6-14, deep 14-30. | ASSESSOR | rule_3 |
+| 5 | Thought counts: simple 1-2, medium 3-5, deep 6-10. Question counts: simple 1-2, medium 3-5, deep 5-8. | ASSESSOR | rule_3 |
+| 6 | Thoughts fit the depth's frame in 32-byte slices (simple 8, medium 16, deep 64); a thought costs ceil((7 + len(step) + len(text)) / 29) slices. | ASSESSOR | rule_3 |
+| 7 | A thought's step is one of the step kinds; its text is not empty. | ASSESSOR | rule_1 |
+| 8 | Medium rows carry caption, prompt and tags; deep rows add the critique; a simple row carries one wording (the caption). | ASSESSOR | rule_5, wording_missing |
+| 9 | Banned in thoughts and wordings: pixel(s), "the image file", "I can see", "as seen in the image", "in this photo I", "looking at the image", "the jpeg", "the png". | ASSESSOR | rule_1 |
+| 10 | The row's license, source kind and seed id follow the item; the runner stamps them. | ASSESSOR | license, source |
+| 11 | A series' ranks are simple, medium, deep, nested: each lower rank's records appear word for word in the next, relations keep their order (a relation counts as three records here), and interpretive records repeat verbatim upward. | ASSESSOR | rule_7, series |
+| 12 | Every record of the given spec stays in the row, unchanged. A seeded spec is never adjusted. | ASSESSOR | spec_kept |
+
+## B. Records and the closed lists
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 13 | Values come from the closed lists wherever a list exists. | WRITER | |
+| 14 | Sealed values never appear in a record, a relation end, a question value or a tag item. Prose may use any word. | ASSESSOR | rule_7 |
+| 15 | Simple rows add no interpretive records; medium adds mood (feeling, from); deep adds mood, intent (purpose, for) and story (moment plus one of before, after, cause). | ASSESSOR | rule_3, rule_6 |
+| 16 | "mood from" is the key of a record of the same row. | ASSESSOR | rule_6 |
+| 17 | A seeded mood needs evidence in the records or the hint; with none, take the plainest honest reading (gentle, cozy, hopeful, wistful) and hedge it. | READER | |
+| 18 | Mood evidence varies: light, time, palette, pose, gesture, setting, weather or a relation as often as the face. | WRITER | |
+| 19 | Facts without a key go in only as a relation end when a true relation carries it (within 6 relations); otherwise they stay out of the records and the text. | READER | |
+| 20 | A key the hint never mentions is still written; silence is not contradiction. | READER | |
+
+## C. Thoughts
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 21 | Every thought looks at this picture. No gloss: no sentence that would read the same for any picture holding the word. | ASSESSOR | gloss (flag) |
+| 22 | No thought opens with a label formula ("Count one:", "Colour:"). | ASSESSOR | label_opener |
+| 23 | The name step names what a thing in this picture is. | READER | |
+| 24 | A simple row never pads; a second thought relates records to each other. | READER | |
+| 25 | Every record surfaces in the text of a medium or deep row at least once. | READER | |
+| 26 | Every fact is a record or an inference marked in plain words with its evidence; no invented detail. | READER | |
+| 27 | No meta-language: record, spec, inference, "read from", "an inference from the", "the mood is read from". | ASSESSOR | formula_word |
+| 28 | The text never says what something "names", "gives" or "states", never "the spec" or "the records", never talks about describing or the headline word, never names spec categories. | ASSESSOR | spec_language |
+| 29 | No advice in a thought ("A painter would ..."); advice only in the critique. | ASSESSOR | advice |
+| 30 | A relation is read as the picture would show it; size and order claims agree with the relations. | READER | |
+| 31 | A relation end names a thing, never a direction or a part of the frame. | ASSESSOR | relation_direction |
+| 32 | Step kinds spread: color where colors matter, count where a count matters, a check in each deep row, compare or change in deep rows. | WRITER | |
+| 33 | Deep length 1,100-1,450 bytes when the records are full; never pad. | WRITER | |
+| 34 | In a row with no person an imagined passer-by stays conditional. | ASSESSOR | passerby_present (flag) |
+| 35 | A recorded role names the person by the role. | READER | |
+
+## D. Wordings and spelling
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 36 | Caption: one natural sentence. Prompt: comma-separated phrases that would recreate the picture. Tags: lower-case booru tags with colors as booru color words; 1girl, 1boy, 1other, solo only where the person records agree; "high angle", never "from above". | READER | |
+| 37 | Critique: one or two specific, craft-based sentences. | READER | |
+| 38 | American spelling in prose and tags (color, gray, center, favorite, jewelry, harbor, armor, theater, cozy). Record values and step kinds keep the lists' spellings. | ASSESSOR | us_spelling |
+| 39 | Style, period and nationality names are capitalized in prose, caption, prompt and critique, lower-case in tags. | ASSESSOR | style_lowercase |
+| 40 | No stock sentence repeated across rows; vary openings and critics. | ASSESSOR | near_duplicate (flag) |
+
+## E. Outfits
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 41 | Every garment record is named in the thoughts and the tags with its color and pattern. | ASSESSOR | garment_missing_text, garment_missing_tags |
+| 42 | The caption names the outfit as recorded; separates are never called a dress. | ASSESSOR | dress_caption |
+| 43 | "jeans" is not a tag item; write denim or blue pants. | ASSESSOR | jeans_tag, rule_7 |
+| 44 | Prints, logos and words on clothes are named when recorded. | READER | |
+| 45 | A person wears separates or a one-piece garment, never both; a lower garment only where the framing reaches the legs, shoes only where it reaches the feet. | WRITER | |
+| 46 | No color or garment appears in the text that no record holds. | ASSESSOR | unrecorded_color, unrecorded_garment (flag) |
+
+## F. Questions
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 47 | A "record" question's value is the record's own value under that key. | ASSESSOR | rule_4 |
+| 48 | A "chain" question's value is stated word for word in the thoughts and is not a record of that key. | ASSESSOR | rule_4 |
+| 49 | An "unknown" question has the value "unknown" and a key the row's records do not hold. A deep row asks one chain and one unknown question. | ASSESSOR | rule_4 |
+| 50 | The relation question uses the key the runner assigns ("rel1 a", "rel1 rel", "rel1 b"), only on a relation the spec holds; the second thing is asked on at most half of a batch's relation questions. | ASSESSOR | relation_key |
+| 51 | The unknown key is the one the runner assigns; no unknown key is repeated within a series. | ASSESSOR | rule_4 |
+
+## G. Genre and domain
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 52 | Genre is on the list (or two listed genres together), never food or underwater, never a setting, time or place word. | ASSESSOR | genre_off_list |
+| 53 | One genre per series. | ASSESSOR | series_genre |
+| 54 | A given genre stays unless it contradicts the picture or is off the list. | READER | |
+| 55 | A seeded row's domain agrees with its medium record (a painting medium is not a photograph). | ASSESSOR | domain_medium (flag) |
+
+## H. Sources, people and names
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 56 | Hints are evidence, never text to copy; no names from a hint; facts only where captions agree or a narration says it outright. | ASSESSOR | hint_copy (flag) |
+| 57 | Voice: photographs get a photo critic's voice; museum works a gallery looker's; generated or written-prompt sources are written as about any picture. | READER | |
+| 58 | Real people's names stay out; a capitalized word is a place, a style or a period. | ASSESSOR | names (flag) |
+| 59 | Nothing romantic, sexual or suggestive about anyone under 18; plain clothes and bodies. | READER | |
+| 60 | No people in a seeded row whose records hold none: when the hint implies a person (human, figure, portrait, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, a person's job) the item is skipped, class person. A drawn series may hold a person. | ASSESSOR | person_in_hint |
+| 61 | Skip when the hint contradicts a record (class contradiction) or never names the main thing (class ungrounded). | READER | |
+| 62 | An object whose decoration is a depicted person stays an object; a tree with a painted face is not a person. | READER | |
+
+## I. Balance (assigned by the runner, never left to the model)
+
+| # | Rule | Tag |
+|---|---|---|
+| 63 | The relation question key cycles a, rel, b over the batch. | WRITER |
+| 64 | The unknown key rotates through a fixed list and skips keys the item's spec holds. | WRITER |
+| 65 | Wordings come from the depth. | WRITER |
+
+## Open
+
+Version 1 covers text items. Rows written with the picture attached (photo sources sent to routes that accept images) need their own grounding rules in a later pool version.

@@ -1,0 +1,219 @@
+{
+ "name": "seeded_single",
+ "note": "A real picture: the records are kept, the hint supplies a few plain facts in the writer's own words, nothing is copied from it.",
+ "item": {
+  "kind": "single",
+  "series": "s-09601",
+  "ids": [
+   "art-096005"
+  ],
+  "depth": "deep",
+  "domain": "photograph",
+  "genre": "documentary",
+  "spec": {
+   "thing": {
+    "name": "grasshopper",
+    "count": "1",
+    "colour": "green"
+   },
+   "scene": {
+    "weather": "clear"
+   },
+   "form": {
+    "medium": "photograph"
+   }
+  },
+  "seed_id": "docci:train_00019",
+  "hint": "A medium-close-up view of a green grasshopper sitting on a glass window makes the underside of the bug easier to see. The rear legs of the bug are longer than the rest, while the front four legs are smaller but just as thin. The body of the bug is ovular, and on top of the body there are wings like objects, while the head of the bug is more like a circle, and sticking out of the top portion of its head are two thin antennae. The underside of the bug is slightly white, while the rest of its body is green. To the right of the bug, multiple small gold circles can be seen, as well as white sheets.",
+  "license": "CC BY 4.0"
+ },
+ "output": {
+  "skip": false,
+  "reason": "",
+  "class": "",
+  "rows": [
+   {
+    "id": "art-096005",
+    "series": "s-09601",
+    "depth": "deep",
+    "rank": 3,
+    "domain": "photograph",
+    "genre": "documentary",
+    "records": [
+     {
+      "key": "thing name",
+      "value": "grasshopper"
+     },
+     {
+      "key": "thing count",
+      "value": "1"
+     },
+     {
+      "key": "thing colour",
+      "value": "green"
+     },
+     {
+      "key": "thing state",
+      "value": "sitting"
+     },
+     {
+      "key": "thing position",
+      "value": "on glass"
+     },
+     {
+      "key": "scene weather",
+      "value": "clear"
+     },
+     {
+      "key": "scene layout",
+      "value": "single subject"
+     },
+     {
+      "key": "shot framing",
+      "value": "close-up"
+     },
+     {
+      "key": "form medium",
+      "value": "photograph"
+     },
+     {
+      "key": "form palette",
+      "value": "green and white"
+     },
+     {
+      "key": "form shape",
+      "value": "round"
+     },
+     {
+      "key": "mood feeling",
+      "value": "gentle"
+     },
+     {
+      "key": "mood from",
+      "value": "thing state"
+     },
+     {
+      "key": "intent purpose",
+      "value": "field record"
+     },
+     {
+      "key": "intent for",
+      "value": "students"
+     },
+     {
+      "key": "story moment",
+      "value": "a discovery"
+     },
+     {
+      "key": "story before",
+      "value": "it landed"
+     }
+    ],
+    "relations": [
+     {
+      "a": "grasshopper",
+      "rel": "left of",
+      "b": "gold circles"
+     },
+     {
+      "a": "grasshopper",
+      "rel": "left of",
+      "b": "white sheets"
+     }
+    ],
+    "thoughts": [
+     {
+      "step": "see",
+      "text": "A single green grasshopper sits on a pane of glass in a close-up, and the glass shows its pale underside."
+     },
+     {
+      "step": "name",
+      "text": "The hind legs are much longer than the four thin legs in front, and that length is what makes it a grasshopper."
+     },
+     {
+      "step": "form",
+      "text": "The body is an oval with wing-like layers on top, the head a rounder form with two fine antennae; round shapes run through the picture, from the head to the gold circles beside it."
+     },
+     {
+      "step": "colour",
+      "text": "Green covers the back and head, the belly turns slightly white, so the palette is green and white and the color changes from the top of the insect to the glass side."
+     },
+     {
+      "step": "relate",
+      "text": "Small gold circles sit to the right of the insect, with white sheets near them. The grasshopper is left of both, so the eye moves from the bug outward."
+     },
+     {
+      "step": "count",
+      "text": "One insect on one pane, with clear weather and nothing else competing: a single subject."
+     },
+     {
+      "step": "mean",
+      "text": "Sitting still with its thin legs held in, it reads as gentle, a small body at rest on the glass."
+     },
+     {
+      "step": "check",
+      "text": "The pale belly and the leg joints are legible only because the camera meets the underside through the pane."
+     },
+     {
+      "step": "compare",
+      "text": "On a leaf the underside would stay hidden; the glass turns an ordinary insect into a clear diagram of color contrast, the green back against the white belly."
+     },
+     {
+      "step": "story",
+      "text": "Likely a field record that could serve students: the legs, wings, head and antennae are all easy to find. A discovery, perhaps, with the insect just landed and someone stopping to look."
+     }
+    ],
+    "wordings": [
+     {
+      "kind": "caption",
+      "text": "A close-up photograph of a green grasshopper sitting on a glass window, its slightly white underside showing, with small gold circles and white sheets to its right."
+     },
+     {
+      "kind": "prompt",
+      "text": "documentary photograph, close-up, green grasshopper sitting on glass, pale white underside, long rear legs, thin front legs, oval body, wings on top, round head, two thin antennae, small gold circles to the right, white sheets, clear weather, green and white palette, gentle mood"
+     },
+     {
+      "kind": "tags",
+      "text": "no humans, grasshopper, insect, green, glass, window, antennae, legs, gold circles, white sheet, close-up"
+     },
+     {
+      "kind": "critique",
+      "text": "The pale belly against the green back is the picture's best information, and the long hind legs read at once. The gold circles on the right drift into the frame and compete with the insect, so a tighter crop would serve the study better."
+     }
+    ],
+    "questions": [
+     {
+      "key": "thing position",
+      "value": "on glass",
+      "needs": "record"
+     },
+     {
+      "key": "form shape",
+      "value": "round",
+      "needs": "record"
+     },
+     {
+      "key": "scene layout",
+      "value": "single subject",
+      "needs": "record"
+     },
+     {
+      "key": "form contrast",
+      "value": "color",
+      "needs": "chain"
+     },
+     {
+      "key": "shot light",
+      "value": "unknown",
+      "needs": "unknown"
+     },
+     {
+      "key": "rel2 b",
+      "value": "white sheets",
+      "needs": "record"
+     }
+    ]
+   }
+  ]
+ }
+}
