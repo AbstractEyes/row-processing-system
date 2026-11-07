@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from .events import Event
 from .failures import KIND_TRUNCATED
@@ -801,11 +801,20 @@ class State:
             rows.sort(key=lambda row: row.row_id)
         return groups
 
-    def files_to_ship(self) -> list[tuple[str, str]]:
-        """(task id, route) pairs whose accepted rows differ from what was last shipped."""
+    def files_to_ship(
+        self, staged: Mapping[tuple[str, str], tuple[str, ...]] | None = None
+    ) -> list[tuple[str, str]]:
+        """(task id, route) pairs whose accepted rows differ from what was last shipped.
+
+        `staged` holds the row ids of files already handed to the ship store and not yet sent. While a
+        file waits there it is compared with those ids instead: a file waiting for the store's next
+        commit is not handed over again, and one whose waiting content is out of date is.
+        """
+        staged = staged or {}
         wanted = {key: tuple(row.row_id for row in rows) for key, rows in self.accepted_rows_by_file().items()}
-        keys = set(wanted) | {key for key, ids in self.shipped_files.items() if ids}
-        return sorted(key for key in keys if wanted.get(key, ()) != self.shipped_files.get(key, ()))
+        held = {**self.shipped_files, **staged}
+        keys = set(wanted) | {key for key, ids in held.items() if ids} | set(staged)
+        return sorted(key for key in keys if wanted.get(key, ()) != held.get(key, ()))
 
     def rows_to_ship(self) -> list[RowState]:
         """Accepted rows not in the file last shipped for their task."""

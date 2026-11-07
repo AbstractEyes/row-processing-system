@@ -3,7 +3,10 @@
 Remote writes are slow and rate limited, so these stores buffer them. A write, an
 append or a delete goes into a pending set (the last operation on a path wins) and a
 later `flush` sends many operations in one call. Reads see pending changes first, so
-a writer always reads what it wrote.
+a writer always reads what it wrote. A write returns as soon as the change is buffered;
+`is_pending(path)` says whether it has not been sent yet, which is how a caller learns
+that a file has really gone out (a write can also send what was pending before it, and
+leave the rest of a pass's writes for the next commit).
 
 When a flush is due:
 
@@ -261,6 +264,10 @@ class RemoteStore(Store):
     @property
     def pending_count(self) -> int:
         return len(self._pending)
+
+    def is_pending(self, path: str) -> bool:
+        """True while a write or delete of the path waits for the next commit (see `Store.is_pending`)."""
+        return path in self._pending
 
     def _due(self, now: float) -> bool:
         if not self._pending:

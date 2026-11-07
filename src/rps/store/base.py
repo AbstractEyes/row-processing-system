@@ -77,6 +77,16 @@ class Store(ABC):
         """
         return True
 
+    def is_pending(self, path: str) -> bool:
+        """True while the store holds a write or delete of the path that it has not sent yet.
+
+        A store that writes through (a local folder) never does. A remote store holds changes back and
+        sends them together when a commit is due, which can be many passes after the call that handed a
+        file over, and it may send part of what a pass wrote and keep the rest. This is how a caller
+        learns that a file has really been sent: it is no longer pending.
+        """
+        return False
+
     def close(self) -> None:
         self.flush(force=True)
 
@@ -147,6 +157,9 @@ class ActorStore(Store):
 
     def flush(self, force: bool = False) -> bool:
         return self._inner.flush(force=force)
+
+    def is_pending(self, path: str) -> bool:
+        return self._inner.is_pending(path)
 
     def close(self) -> None:
         self._inner.close()

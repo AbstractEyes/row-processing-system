@@ -17,7 +17,8 @@ interrupted and run again repeats only the unfinished part.
 budget runs out or the run is interrupted. It never ends a run by crashing in the
 middle of a write that matters: a batch id is made durable before the controller
 waits for it, packet files are durable before the event that announces them, and
-shipped events are written only after the files they describe are durable.
+shipped events are written only after the files they describe are durable (for a ship
+store that sends in batches, after the store has sent them).
 
 Reviewers see a blind view of each row; the controller keeps the row to writer
 mapping in its events and matches verdicts back by row id.
@@ -76,7 +77,7 @@ from .review.policy import (
 )
 from .routing import ImageRoutingError, allowed_image, check_image_allowed
 from .state import LineState, RowState, State, TaskState
-from .store.base import ActorStore, NotFound, RateLimitedError, Store, StoreError
+from .store.base import ActorStore, NotFound, OwnershipError, RateLimitedError, Store, StoreError
 from .store.local import LocalStore
 from .store.remote import describe_error
 from .tasks import FilePlanner, Planner, StorePlanner, TaskSpec
@@ -288,7 +289,13 @@ class Controller:
         self._last_warning: dict[str, str] = {}
         self._stop_reason: str | None = None
         self._last_stop_check = float("-inf")
-        self._ledger_written: tuple[str, str] | None = None
+        # What the ship store has been handed and what it has sent (see `_stage_ship`). The ledger files
+        # by path, as text: sent, and handed over but not yet sent. The accepted-row files handed over
+        # and not yet sent: (task id, route) -> (path, row ids).
+        self._ledger_written: dict[str, str] = {}
+        self._ledger_staged: dict[str, str] = {}
+        self._ledger_probed = False
+        self._staged_shipments: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {}
         self._hand_written: str | None = None
 
     # ------------------------------------------------------------------ setup
@@ -445,6 +452,7 @@ class Controller:
 
     def _finish(self, reason: str, steps: int, started: float, budget: float | None) -> RunSummary:
         self._wind_down(collect=reason != "interrupt")
+        self._send_shipments_at_the_end()
         elapsed = self._clock() - started
         counts = self.state.counts()
         self._emit("controller_stopped", {"run": self.instance, "reason": reason, "steps": steps, "seconds": round(elapsed, 3), "counts": counts})
@@ -1784,49 +1792,114 @@ class Controller:
     # ------------------------------------------------------------------ ship
 
     def _stage_ship(self) -> None:
-        dirty = self.state.files_to_ship()
-        ledger_files = self._ledger_files()
-        if not dirty and ledger_files is None:
-            return
-        shipments = []
-        groups = self.state.accepted_rows_by_file()
-        for task_id, route in dirty:
-            path = layout.accepted_path(route, task_id)
-            rows = groups.get((task_id, route), [])
-            if rows:
-                self.ship_store.write_text(path, "".join(line + "\n" for line in rows_to_lines([row.record for row in rows])))
-            else:
-                self.ship_store.delete(path)
-            shipments.append((task_id, route, path, [row.row_id for row in rows]))
-        if ledger_files is not None:
-            summary, tasks = ledger_files
-            self.ship_store.write_text(layout.LEDGER_SUMMARY_PATH, summary)
-            self.ship_store.write_text(layout.LEDGER_TASKS_PATH, tasks)
+        """Hand the accepted-row files and the ledger to the ship store, and record what it has sent.
+
+        A write to a store that sends in batches (the dataset repository takes one commit a minute) is
+        not a shipment: the store holds it until its commit is due, which may be many passes later, and a
+        commit that falls due inside a write sends what is pending at that moment and leaves the rest of
+        the pass's writes for the next one. So a file is handed over once, for as long as its content
+        stays the same, and it counts as shipped when the store no longer holds it, on whichever pass
+        that turns out to be: an accepted-row file then gets its `shipped` event and the ledger files
+        are marked as written. Handing the same content over again on every pass would never get it
+        recorded, and would put a commit with nothing new in it out every interval.
+        """
+        self._settle_shipments()
         try:
-            done = self.ship_store.flush(force=False)
+            self._hand_over_files()
+            if not self._staged_shipments and not self._ledger_staged:
+                return
+            self.ship_store.flush(force=False)
+        except OwnershipError:
+            raise  # a bug, not a failing store
         except RateLimitedError as error:
             self._warn(str(error))
             return
         except StoreError as error:
+            # A commit can fall due inside a write as well as in the flush; either way the files stay handed over.
             self._ship_failures += 1
             self._warn(f"shipping failed ({self._ship_failures}): {error}")
             if self._ship_failures >= self._max_failures:
                 self._stop_reason = "ship_failing"
             return
         self._ship_failures = 0
-        if ledger_files is not None and done:
-            self._ledger_written = ledger_files
-        if not done:
-            return
-        for task_id, route, path, row_ids in shipments:
-            self._emit("shipped", {"task_id": task_id, "route": route, "row_ids": row_ids, "path": path, "count": len(row_ids)})
+        self._settle_shipments()
 
-    def _ledger_files(self) -> tuple[str, str] | None:
-        """The ledger files as text, or None when they have not changed since they were written."""
+    def _learn_what_the_store_holds(self) -> None:
+        """Once a run, note which ledger files the ship store already holds exactly as they are now.
+
+        A run that starts again knows nothing of what an earlier run sent. Without this it would hand the
+        ledger over once more and wait a commit interval to send a commit with nothing new in it.
+        """
+        if self._ledger_probed:
+            return
+        self._ledger_probed = True
+        for path, text in self._ledger_text().items():
+            try:
+                if self.ship_store.read_text(path) == text:
+                    self._ledger_written[path] = text
+            except (StoreError, ValueError):
+                pass  # no such file yet, or it cannot be read now: the file is handed over as usual
+
+    def _hand_over_files(self) -> None:
+        """Write to the ship store what it has not been handed yet: changed accepted-row files and ledger files."""
+        self._learn_what_the_store_holds()
+        groups = self.state.accepted_rows_by_file()
+        staged_ids = {key: row_ids for key, (_path, row_ids) in self._staged_shipments.items()}
+        for task_id, route in self.state.files_to_ship(staged_ids):
+            path = layout.accepted_path(route, task_id)
+            rows = groups.get((task_id, route), [])
+            if rows:
+                self.ship_store.write_text(path, "".join(line + "\n" for line in rows_to_lines([row.record for row in rows])))
+            else:
+                self.ship_store.delete(path)
+            self._staged_shipments[(task_id, route)] = (path, tuple(row.row_id for row in rows))
+        for path, text in self._ledger_text().items():
+            if text != self._ledger_staged.get(path, self._ledger_written.get(path)):
+                self.ship_store.write_text(path, text)
+                self._ledger_staged[path] = text
+
+    def _settle_shipments(self) -> None:
+        """Record what the ship store has sent of the files handed to it, by asking the store.
+
+        The ledger files count as written, and an accepted-row file gets its `shipped` event, once the
+        store no longer holds them. What a call returned is not evidence of that: the call that handed a
+        file over returns long before a store that sends in batches sends it.
+        """
+        store = self.ship_store
+        for path in sorted(self._ledger_staged):
+            if not store.is_pending(path):
+                self._ledger_written[path] = self._ledger_staged.pop(path)
+        for key in sorted(self._staged_shipments):
+            path, row_ids = self._staged_shipments[key]
+            if store.is_pending(path):
+                continue
+            task_id, route = key
+            self._emit("shipped", {"task_id": task_id, "route": route, "row_ids": list(row_ids), "path": path, "count": len(row_ids)})
+            del self._staged_shipments[key]
+
+    def _send_shipments_at_the_end(self) -> None:
+        """At the end of a run, send what the ship store still holds and record it, so the next run need not."""
+        if not self._staged_shipments and not self._ledger_staged:
+            return
+        try:
+            self.ship_store.flush(force=True)
+        except RateLimitedError as error:
+            self._warn(str(error))
+            return
+        except StoreError as error:
+            self._warn(f"could not flush a store: {error}")
+            return
+        self._settle_shipments()
+
+    def _ledger_text(self) -> dict[str, str]:
+        """The ledger files as text by path: the summary, and one line a task."""
         summary = json.dumps(self.ledger.summary(self.state), indent=1, sort_keys=True) + "\n"
         tasks = "".join(json.dumps(line, sort_keys=True, allow_nan=False) + "\n" for line in self.ledger.task_lines(self.state))
-        current = (summary, tasks)
-        return None if current == self._ledger_written else current
+        return {layout.LEDGER_SUMMARY_PATH: summary, layout.LEDGER_TASKS_PATH: tasks}
+
+    def _ledger_is_sent(self) -> bool:
+        """True when the ship store has sent the ledger files as they are now."""
+        return self._ledger_text() == self._ledger_written
 
     # ------------------------------------------------------------------ idle detection
 
@@ -1854,12 +1927,16 @@ class Controller:
         )
 
     def is_idle(self) -> bool:
-        """True when nothing is left to do now (and, if the run waits for review, nothing is out for review)."""
+        """True when nothing is left to do now (and, if the run waits for review, nothing is out for review).
+
+        Files waiting for the ship store's next commit are work still to be done: a run is idle once the
+        store has sent the last change, which with a dataset repository is within one commit interval.
+        """
         if self._actionable():
             return False
         if self.config.wait_for_review and self.state.open_packets():
             return False
-        return self._ledger_files() is None
+        return self._ledger_is_sent()
 
     # ------------------------------------------------------------------ reporting
 
@@ -1870,6 +1947,7 @@ class Controller:
             "packets with the reviewers": len(s.open_packets()),
             "rows in the hand queue": len(s.hand_queue()),
             "calls refused by a budget": len(self._parked),
+            "files for the store's next commit": len(self._staged_shipments) + len(self._ledger_staged),
         }
 
     def _progress_line(self, elapsed: float | None, budget: float | None) -> str:
