@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.0. It has real writers for Anthropic (Message Batches), OpenAI (Batch API), Gemini
+Version 0.2.1. It has real writers for Anthropic (Message Batches), OpenAI (Batch API), Gemini
 (inline batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the
 first three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a
 dry-run tool for trying one route with a handful of calls. Everything is tested offline: with a
@@ -14,6 +14,16 @@ fake writer, and with each adapter against the SDKs' own types built from record
 data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.1
+
+| Change | What happens now |
+|---|---|
+| Anthropic batches found again after a crash | A batch the provider took just before a crash is found by its size and creation time and adopted instead of being sent twice. A batch that turns out to hold none of the group's calls is found out when it ends, and the calls are sent again (failure kind `batch_mismatch`). The same search runs after a submit that failed on the way back from the provider, in the same run. See "Anthropic" below |
+| Cache storage in the ledger | With Gemini's `cache: true`, the hours a cache is kept are charged: cached tokens times hours times the storage rate per million tokens per hour. It is a `cache_storage` event and a line of its own in `ledger/summary.json`, under the route and purpose, and it counts against the caps. The Gemini cache read rates in the price table are now the page's own |
+| Long prompts | A call whose estimated prompt passes the provider's long-prompt threshold (Anthropic Haiku 5.5: 100,000 tokens; OpenAI Luna and Sol: 272,000) is refused before it is sent, as failure kind `long_prompt`. The thresholds are in `prices.json` |
+| Packets carry the rules version | When rules are loaded (the rule pool, say) a packet's `brief_version` is their version, the one in `src/rps/rules/VERSION`, for reviewers to compare. `review.brief_version` applies only when no rules are loaded |
+| Notebook | After the install cell Colab may ask to restart the session; the notebook now says to restart and go on from cell 2 |
 
 ## How a row travels
 
@@ -70,7 +80,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.0"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.1"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -142,7 +152,7 @@ is refused. Unknown keys are refused too.
 | `sources` | Per source: `image_size`, `license`, `dataset`, `images_dir`, `image_class`. A spec line with no license (its own or its source's) is refused |
 | `rules` | The writing rules, see "The writing rules are inputs" |
 | `commit` | How writes are batched, see below |
-| `review` | Reviewers, families, packet size, brief version and the review policy |
+| `review` | Reviewers, families, packet size, brief version and the review policy. `brief_version` applies only when no writing rules are loaded; with rules, a packet carries their version |
 | `price_table` | Path to a price table file (default: the dated table in the package) |
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
@@ -223,7 +233,7 @@ routing table allows it. None sends `temperature`, `top_p`, `top_k`, a prefill o
 | Batch | `messages.batches.create`; results from `messages.batches.results`, matched by `custom_id` in any order. At most 100,000 requests and 240 MB per batch (the limit is 256 MB). A batch can expire after 24 hours; its unfinished calls come back as `expired` and are sent again as rebounds |
 | Answer | `end_turn` (and `stop_sequence`) is parsed; `max_tokens` is a truncation; `refusal` is recorded and not retried on the route; any other stop is a failure that is not retried |
 | Usage | input, cache write and cache read tokens as given; output minus thinking tokens, thinking apart |
-| After a crash | A batch cannot be searched for what it holds, so a crash in the instant between the provider accepting a batch and the controller recording its id cannot be recovered from the provider's side (the budgets bound what that costs) |
+| After a crash | A batch cannot be searched for what it holds, so one the provider took just before the controller recorded its id is found by size and time. The provider's list of batches (newest first) is read back to the moment the calls were prepared, less 2 minutes for the difference between the two clocks (at most 1,000 batches), and the newest batch that no group has recorded whose request counts add up to the group's size is adopted; the last group of a split goes first, since the groups were sent in order. The adopted batch is marked in its handle. A stranger's batch of the same size can be taken by mistake, and it is found out only when it ends: if its results hold none of the group's calls, those calls fail as `batch_mismatch` (retryable, not billed) and are sent again, and the stranger's batch stays recorded so it is never taken twice. With no candidate the calls are sent again |
 | Options | `cache_ttl` (`5m` or `1h`, default `1h`) |
 
 ### OpenAI (`luna-batch`, `luna-sync`)
@@ -248,7 +258,7 @@ routing table allows it. None sends `temperature`, `top_p`, `top_k`, a prefill o
 | Results | `dest.inlined_responses`, matched by the `custom_id` in each response's metadata |
 | Answer | `STOP` is parsed; `MAX_TOKENS` is a truncation; the filter stops (`SAFETY`, `PROHIBITED_CONTENT`, `SPII`, `RECITATION`, `BLOCKLIST`, the picture ones) and a blocked prompt are recorded and not retried; thought parts are left out of the text |
 | Usage | the prompt count minus cached tokens, cached tokens, candidates' tokens, thinking tokens (billed as output) |
-| The explicit cache | With `cache: true` (batches only), the rules are cached once per model and rules version and the batch's requests refer to the cache by name instead of repeating the rules. The cache name is recorded (`cache_created`) so a restart reuses it, and its life is extended while a batch that uses it is running. A failure to create the cache is an error, not a silent fallback. The storage fee of a cache is not counted in the ledger |
+| The explicit cache | With `cache: true` (batches only), the rules are cached once per model and rules version and the batch's requests refer to the cache by name instead of repeating the rules. The cache name is recorded (`cache_created`) so a restart reuses it, and its life is extended while a batch that uses it is running. A failure to create the cache is an error, not a silent fallback. The storage is charged to the ledger: each note carries the cache's size in tokens (the provider's report, or a generous estimate marked `tokens_estimated` when it gives none) and the stretch of the cache's life it covers, and the controller writes a `cache_storage` event for it, tokens times hours times the storage rate per million tokens per hour (`cache_storage` in the price table: $0.50 through 2026-12-31, $1.00 from 2027-01-01). A new cache is charged from its creation to its expiry and one kept alive longer from its earlier expiry to the new one, since the provider bills the time-to-live. The charge goes to the purpose most of the calls that use the cache carry and counts against that purpose's cap and the route total. A route with `cache: true` refuses to start unless the price table has a `cache_storage` rate for its model. The one-time cost of making the cache is not stated on the provider's page and is not counted |
 | After a crash | The batch's display name carries a digest of its calls, so a batch created just before a crash is found again |
 | Options | `media_resolution` (`low`, `medium`, `high`; default `medium`), `cache` (default false), `cache_ttl_seconds` (default 21600) |
 
@@ -300,8 +310,10 @@ configuration, with two files or a package:
 ```
 
 or pass `rules=make_rules(system, schema, version)` to `build_controller`. The version is recorded
-on every row (`writer.rules_version`) and is the key of the providers' prompt caches; left out it is
-a hash of the two files, so changed rules always have a new version. A route that sends the rules
+on every row (`writer.rules_version`), is the key of the providers' prompt caches and is the
+`brief_version` of every review packet (a reviewer compares it with the version in
+`src/rps/rules/VERSION`); left out it is a hash of the two files, so changed rules always have a new
+version. A route that sends the rules
 to a model refuses to start without them, and each switched-on route checks the rules before the
 run starts (a schema the provider would reject fails there, not on every request).
 
@@ -332,6 +344,8 @@ again while the line's attempts are under `max_attempts` (default 2, so one retr
 | `bad_request` | the request is malformed (HTTP 400, a schema the provider rejects) | not retried; stops the route for the run |
 | `auth` | the key is rejected or the balance is spent | not retried; stops the route for the run |
 | `unexpected` | a stop reason nothing here expects | not retried (an error line an adapter cannot classify is retried as a rebound) |
+| `long_prompt` | the call's estimated prompt is over the provider's long-prompt threshold (`long_prompt_tokens` in the price table), where higher rates apply that the table does not model | refused before it is sent, recorded as failed with no cost; not retried |
+| `batch_mismatch` | a batch taken up again after a crash held none of the group's calls | retried as a rebound; not billed |
 
 The provider's own client already retries rate limits and server errors a few times
 (`max_retries`) with backoff; what comes back after that is recorded as above. A call that
@@ -355,7 +369,12 @@ purpose was, and draws only from the `rebound` cap. A purpose with no cap counts
 calls are refused. A refused call is left alone for the rest of the run and asked again by the next
 one, so raising a cap takes effect on the next run. `controller.format_status()` prints spend per
 (route, purpose) against its cap and the state of each route, and `ledger/summary.json` and
-`ledger/tasks.jsonl` record the same with token counts, attempts and minutes.
+`ledger/tasks.jsonl` record the same with token counts, attempts and minutes. A provider-side cache
+that is billed for the time it is kept (Gemini's, with `cache: true`) adds lines of its own: every
+`cache_storage` charge is listed under its route in `ledger/summary.json` (`storage`, with the purpose,
+cache name, tokens, hours, rate and dollars of each) and the route and each purpose show their
+`storage_usd`. Storage is part of `spent_usd`, so it counts against the caps like any other spend,
+and `format_status()` adds a line for it under the table.
 
 ### Prices
 
@@ -367,6 +386,13 @@ hours). Where a provider's pages do not say whether the batch discount and a cac
 table carries the higher rate until the pricing test settles it. Cache rates left out are taken as
 the plain input rate. Each usage record keeps the date of the table
 it was priced with, and the controller notes a table that is old or a price that is about to change.
+
+Two prices sit beside the token rates:
+
+| Key | Meaning | In the packaged table |
+|---|---|---|
+| `cache_storage` (in a rate card) | Dollars per million cached tokens per hour, for a provider that keeps a cache for you and bills the time it is kept. A batch discount does not apply to it. It follows the card's dates like the other rates | `gemini-3.8-flash`: 0.50 through 2026-12-31, 1.00 from 2027-01-01, on the sync and the batch card (read from the page on 2026-11-07); no other model has one |
+| `long_prompt_tokens` (in a model entry) | Input tokens above which the provider bills higher long-prompt rates that the table does not model. A call whose estimated input passes it is refused before it is sent (`long_prompt`) | `claude-haiku-5-5`: 100,000 (cache reads and writes count); `gpt-6-luna` and `gpt-6.1-sol`: 272,000 input tokens. The pages list none for Sonnet 5.5, Gemini 3.8 Flash or DeepSeek |
 
 ## Labels
 
@@ -384,7 +410,10 @@ A row the owner writes or rewrites by hand carries `provider: "human"`, `model: 
 
 Reviewers are agents or people who work through packets. Each packet is a folder addressed to one
 reviewer: `packet.json` (the rows, the review brief version, the verdict schema) and the pictures its
-reviewer's family may see (see "Which pictures go where").
+reviewer's family may see (see "Which pictures go where"). The brief version is the version of the
+writing rules when rules are loaded (with the rule pool, the version in `src/rps/rules/VERSION`, which
+a reviewer compares with the brief it holds); only without rules does the configured
+`review.brief_version` apply.
 
 **Blind review.** A packet holds a review view of each row, never the stored row: the writer label is
 removed and the row's own `source.model` is blanked. Beside the view goes the task's spec line (the
@@ -476,7 +505,8 @@ did not work and 2 when the tool refused to start.
 
 | If the run stops here | Then the next run |
 |---|---|
-| before a batch id was recorded | asks the provider for batches matching the prepared calls and adopts every one it finds (`Writer.recover`; OpenAI and Gemini can be searched, Anthropic's cannot, see above), else submits |
+| before a batch id was recorded | asks the provider for batches matching the prepared calls and adopts every one it finds (`Writer.recover`, told when the calls were prepared and which batches are already recorded), else submits. OpenAI and Gemini find a batch by a digest of its calls; Anthropic by the batch's size and creation time, with a check at collection that it held the calls (see above) |
+| after a submit that failed on the way back from the provider (same run) | looks for the batch the same way before it sends the calls again, so a batch the provider did take is adopted and not paid for twice |
 | after `batch_submitted` | polls that batch; it never submits the same calls again |
 | while a one-call route has calls in flight | records the calls that finished (they were recorded as they landed) and sends the ones that did not as rebounds |
 | between recording results and cleaning up | the results are durable first; a clean-up that did not happen (OpenAI's files) is left to the files' expiry |
@@ -502,9 +532,13 @@ and check that the resumed run ends in the same place with no repeated call or r
   `{"relation_part", "unknown_keys", "wordings"}`, the same values the task text told the writer).
 - **Writers.** `rps.providers.base.Writer` has `prepare`, `submit`, `poll`, `results` and `recover`,
   and optional `accepting`, `split`, `release`, `close`, `check_rules`, `restore` and `drain_notes`.
-  A writer that sends one call at a time can build on `rps.providers.pool.PoolWriter`. Register an
-  adapter in `rps/providers/__init__.py`. `FakeWriter` needs no network and can be told what to
-  return, which is how the tests run.
+  `recover(requests, *, since, recorded)` is told the earliest moment the requests were prepared and the
+  handle ids the controller already holds. A writer that keeps a provider-side cache that is billed by
+  the hour sets `bills_cache_storage` and notes each cache (`drain_notes`, kind `cache_created`) with
+  its `tokens` and the stretch of its life it covers (`created` or `extended_from`, and `expires`); the
+  controller charges the storage. A writer that sends one call at a time can build on
+  `rps.providers.pool.PoolWriter`. Register an adapter in `rps/providers/__init__.py`. `FakeWriter`
+  needs no network and can be told what to return, which is how the tests run.
 - **Planner.** `build_controller(config, planner=fn)`, where `fn(state)` returns a list of
   `TaskSpec`, replaces the tasks file.
 
@@ -522,4 +556,11 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 - The pricing test that settles whether batch discounts stack with cache prices, and the probe
   phase that compares effort and picture-resolution levels (the defaults are for dry runs).
 - A near-duplicate index kept across runs for the assessor (`Assessor(index=...)` takes one).
-- The storage fee of a Gemini cache is not in the ledger (only tokens are).
+- The one-time cost of making a Gemini cache is not stated on the provider's page and is not counted.
+  A cache made just before a crash, before its note was recorded, is not found again: it is made
+  anew, and the first one is paid for until it expires.
+- An Anthropic batch found again by size and time that turns out to be a stranger's is found out
+  only when it ends (up to 24 hours), because the provider shows what a batch holds only then.
+- Two lost Anthropic batches of the same size are matched to their groups in the order the groups
+  were sent; if that guess is wrong the check at collection sends the calls again.
+- The prices of a prompt over a long-prompt threshold are not modeled: such a call is refused.

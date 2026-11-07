@@ -17,7 +17,7 @@ from rps.store.local import LocalStore
 
 NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "notebooks" / "controller_colab.ipynb"
 COLAB_URL = "https://colab.research.google.com/github/AbstractEyes/row-processing-system/blob/main/notebooks/controller_colab.ipynb"
-INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.0"'
+INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.1"'
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +60,16 @@ def test_the_first_cell_is_the_open_in_colab_badge(notebook):
 
 def test_the_install_cell_installs_the_tagged_release_from_github(notebook):
     assert INSTALL_COMMAND in source(code_cells(notebook)[0])
+
+
+def test_the_install_step_says_colab_may_ask_for_a_restart_and_where_to_go_on(notebook):
+    intro = source(next(cell for cell in notebook["cells"] if cell["id"] == "intro"))
+    step_one = next(line for line in intro.splitlines() if line.startswith("1. "))
+    assert "Colab may ask to restart the session" in step_one and "go on from cell 2" in step_one
+    install = source(code_cells(notebook)[0])
+    comment = " ".join(line.lstrip("# ") for line in install.splitlines() if line.startswith("#"))
+    assert "Colab may ask to restart the session" in comment and "Restart, then go on from cell 2" in comment
+    assert "replaces packages Colab" in step_one and "replaces packages Colab" in comment  # and says why
 
 
 def test_the_code_cells_come_in_the_documented_order(notebook):
