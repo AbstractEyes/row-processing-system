@@ -125,3 +125,90 @@ def test_the_legacy_flat_entries_still_load():
     prices = PriceTable.from_dict(json.loads('{"date": "2026-11-01", "models": {"old": {"input": 1.0, "output": 2.0, "valid_until": "2026-11-05"}}}'))
     assert prices.price("old").output == 2.0 and prices.price("old").valid_until == "2026-11-05"
     assert prices.warnings(today=date(2026, 11, 7)) == ["price for old was valid until 2026-11-05"]
+
+
+# ---------------------------------------------------------------------------- cache storage
+
+
+def test_the_storage_of_a_cache_costs_its_tokens_times_the_hours_times_the_rate_per_million_tokens_per_hour():
+    prices = table({"m": {"sync": {"input": 1.0, "output": 2.0, "cache_storage": 0.5}}})
+    assert prices.storage_rate("m") == 0.5
+    assert prices.storage_cost("m", 2_000_000, 3.0) == pytest.approx(3.0)  # 2 million tokens, 3 hours, 0.50 each
+    assert prices.storage_cost("m", 12_000, 6.0) == pytest.approx(0.036)
+    assert prices.storage_cost("m", 0, 6.0) == 0.0 and prices.storage_cost("m", 1_000, 0.0) == 0.0
+
+
+def test_a_model_with_no_storage_price_has_none_and_charging_for_it_is_an_error():
+    prices = table({"m": {"input": 1.0, "output": 2.0}})
+    assert prices.storage_rate("m") is None
+    with pytest.raises(PriceError, match="no cache storage price"):
+        prices.storage_cost("m", 1_000, 1.0)
+
+
+def test_a_batch_discount_does_not_halve_the_storage_rate():
+    prices = table({"m": {"sync": {"input": 2.0, "output": 8.0, "cache_storage": 1.0}}})  # no batch card of its own
+    assert prices.cost("m", MILLION, batch=True) == pytest.approx(5.0)  # the discount reaches the tokens ...
+    assert prices.storage_rate("m", batch=True) == 1.0  # ... but not the hours a cache is kept
+
+
+def test_the_storage_rate_changes_with_the_day_like_the_other_rates():
+    prices = table(
+        {
+            "m": {
+                "until": "2026-12-31",
+                "sync": {"input": 1.0, "output": 2.0, "cache_storage": 0.5},
+                "then": {"sync": {"input": 2.0, "output": 4.0, "cache_storage": 1.0}},
+            }
+        }
+    )
+    assert prices.storage_rate("m", on=date(2026, 12, 31)) == 0.5 and prices.storage_rate("m", on=date(2027, 1, 1)) == 1.0
+    assert prices.storage_cost("m", 1_000_000, 2.0, on=date(2027, 1, 1)) == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("rate", [-0.5, "a lot", True])
+def test_a_malformed_storage_rate_is_refused(rate):
+    with pytest.raises(PriceError):
+        table({"m": {"sync": {"input": 1.0, "output": 2.0, "cache_storage": rate}}})
+
+
+def test_the_packaged_flash_prices_carry_the_storage_rate_read_from_the_page_by_period():
+    prices = PriceTable.default()
+    flash = prices.price("gemini-3.8-flash")
+    assert flash.source == "https://aistudio.google.com/docs/pricing" and flash.checked == "2026-11-07"
+    for batch in (False, True):
+        assert prices.storage_rate("gemini-3.8-flash", batch=batch, on=date(2026, 12, 31)) == 0.50  # through the introductory period
+        assert prices.storage_rate("gemini-3.8-flash", batch=batch, on=date(2027, 1, 1)) == 1.00
+    # the cache read rates are the page's own: a tenth of the input rate, and half of that on the batch tab
+    now = date(2026, 11, 7)
+    assert prices.rates("gemini-3.8-flash", on=now).cache_read == 0.075
+    assert prices.rates("gemini-3.8-flash", batch=True, on=now).cache_read == 0.0375
+    assert prices.rates("gemini-3.8-flash", on=date(2027, 1, 1)).cache_read == 0.15
+    assert prices.storage_cost("gemini-3.8-flash", 12_000, 6.0, batch=True, on=now) == pytest.approx(0.036)
+
+
+def test_only_a_model_with_explicit_caching_has_a_storage_rate_in_the_packaged_table():
+    prices = PriceTable.default()
+    with_rate = [name for name in prices.models if prices.storage_rate(name) is not None]
+    assert with_rate == ["gemini-3.8-flash"]
+
+
+# ---------------------------------------------------------------------------- long-prompt thresholds
+
+
+def test_the_packaged_table_carries_the_long_prompt_thresholds_of_the_pages_it_cites():
+    prices = PriceTable.default()
+    assert prices.long_prompt_limit("claude-haiku-5-5") == 100_000
+    assert prices.long_prompt_limit("gpt-6-luna") == 272_000 and prices.long_prompt_limit("gpt-6.1-sol") == 272_000
+    for name in ("claude-sonnet-5-5", "gemini-3.8-flash", "gemini-4-argon", "deepseek-flash", "deepseek-v4-pro", "fake-model"):
+        assert prices.long_prompt_limit(name) is None, name  # no such tier on the page
+
+
+def test_a_long_prompt_threshold_is_read_from_the_model_entry():
+    prices = table({"m": {"input": 1.0, "output": 2.0, "long_prompt_tokens": 50_000}, "n": {"input": 1.0, "output": 2.0}})
+    assert prices.long_prompt_limit("m") == 50_000 and prices.long_prompt_limit("n") is None
+
+
+@pytest.mark.parametrize("threshold", [0, -1, "many", 1.5, True])
+def test_a_malformed_long_prompt_threshold_is_refused(threshold):
+    with pytest.raises(PriceError, match="long_prompt_tokens"):
+        table({"m": {"input": 1.0, "output": 2.0, "long_prompt_tokens": threshold}})

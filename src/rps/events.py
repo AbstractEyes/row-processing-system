@@ -24,8 +24,12 @@ Event kinds and their payloads:
     batch_collected      handle_id, returned, failed
     route_halted         route, kind, reason, call_id (a rejected request or key stops the route
                          for the rest of the run)
-    cache_created        route, key, name, expires (a provider-side prompt cache a writer made,
-                         remembered so a restart reuses it)
+    cache_created        route, key, name, expires, model, tokens, created or extended_from (a
+                         provider-side prompt cache a writer made or kept alive, remembered so a
+                         restart reuses it)
+    cache_storage        route, purpose, key, name, model, tokens, hours, rate, usd, from, to,
+                         price_table_date (the storage fee for the hours a cache was kept, a
+                         ledger line of its own)
     row_assessed         row_id, call_id, passed, flags, errors
     row_rejected         row_id, call_id, by (assessor or reviewers), reason, errors, retry
     row_set_aside        call_id, row_id (optional), class, reason
@@ -62,6 +66,7 @@ EVENT_KINDS: tuple[str, ...] = (
     "batch_collected",
     "route_halted",
     "cache_created",
+    "cache_storage",
     "row_assessed",
     "row_rejected",
     "row_set_aside",

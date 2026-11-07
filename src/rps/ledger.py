@@ -16,6 +16,12 @@ the date it was checked; batch and synchronous rates are separate; a model can h
 rates that change on a known date, and rates that depend on a tier (DeepSeek's peak
 and off-peak hours). Where a provider's pages do not say whether two discounts stack
 (a batch discount and a cache price), the table carries the higher rate.
+
+Two prices live beside the token rates. A provider that keeps a cache for you may bill the
+time it is kept (`cache_storage`, dollars per million cached tokens per hour); the
+controller charges that to the route and purpose as a line of its own. A model whose
+provider charges more for prompts past a length (`long_prompt_tokens`) is never sent a
+longer prompt, because the table does not model the higher rates.
 """
 
 from __future__ import annotations
@@ -104,33 +110,47 @@ def _rate(value: Any, where: str) -> float:
 
 @dataclass(frozen=True)
 class Rates:
-    """US dollars per million tokens."""
+    """US dollars per million tokens.
+
+    `cache_storage` is dollars per million cached tokens per hour, for a provider that keeps a
+    cache for you and bills the time it is kept (None where the model has no such price).
+    """
 
     input: float
     output: float
     cache_write: float
     cache_read: float
+    cache_storage: float | None = None
 
     @classmethod
     def from_dict(cls, data: Any, where: str) -> "Rates":
         if not isinstance(data, Mapping):
             raise PriceError(f"{where}: expected an object with input and output rates")
-        unknown = sorted(set(data) - {"input", "output", "cache_write", "cache_read", "note"})
+        unknown = sorted(set(data) - {"input", "output", "cache_write", "cache_read", "cache_storage", "note"})
         if unknown:
             raise PriceError(f"{where}: unknown key(s) {unknown}")
         if "input" not in data or "output" not in data:
             raise PriceError(f"{where}: needs input and output rates")
         input_rate = _rate(data["input"], f"{where}.input")
+        storage = data.get("cache_storage")
         # A cache rate left out is taken as the plain input rate, which can only overstate a cost.
         return cls(
             input=input_rate,
             output=_rate(data["output"], f"{where}.output"),
             cache_write=_rate(data.get("cache_write", input_rate), f"{where}.cache_write"),
             cache_read=_rate(data.get("cache_read", input_rate), f"{where}.cache_read"),
+            cache_storage=None if storage is None else _rate(storage, f"{where}.cache_storage"),
         )
 
     def scaled(self, factor: float) -> "Rates":
-        return Rates(self.input * factor, self.output * factor, self.cache_write * factor, self.cache_read * factor)
+        # A batch discount does not apply to the time a cache is kept.
+        return Rates(
+            self.input * factor,
+            self.output * factor,
+            self.cache_write * factor,
+            self.cache_read * factor,
+            self.cache_storage,
+        )
 
     @property
     def input_ceiling(self) -> float:
@@ -163,7 +183,7 @@ class ModeRates:
         )
 
 
-_RATE_KEYS = {"input", "output", "cache_write", "cache_read"}
+_RATE_KEYS = {"input", "output", "cache_write", "cache_read", "cache_storage"}
 # `valid_until` is the older spelling of `until`.
 _PERIOD_KEYS = {"sync", "batch", "tiers", "until", "valid_until", "note", "then"} | _RATE_KEYS
 
@@ -199,6 +219,8 @@ class ModelPrice:
     source: str | None = None
     checked: str | None = None
     note: str | None = None
+    # Input tokens above which the provider charges higher long-prompt rates (None: no such tier).
+    long_prompt_tokens: int | None = None
 
     @property
     def input(self) -> float:
@@ -231,9 +253,12 @@ class ModelPrice:
     def from_dict(cls, data: Mapping[str, Any], where: str) -> "ModelPrice":
         if not isinstance(data, Mapping):
             raise PriceError(f"{where}: expected an object")
-        unknown = sorted(set(data) - (_PERIOD_KEYS | {"provider", "source", "checked"}))
+        unknown = sorted(set(data) - (_PERIOD_KEYS | {"provider", "source", "checked", "long_prompt_tokens"}))
         if unknown:
             raise PriceError(f"{where}: unknown key(s) {unknown}")
+        threshold = data.get("long_prompt_tokens")
+        if threshold is not None and (isinstance(threshold, bool) or not isinstance(threshold, int) or threshold < 1):
+            raise PriceError(f"{where}.long_prompt_tokens: expected a whole number of tokens of at least 1, got {threshold!r}")
         periods: list[Period] = []
         node: Mapping[str, Any] | None = data
         level = 0
@@ -263,6 +288,7 @@ class ModelPrice:
             source=data.get("source"),
             checked=None if checked is None else str(checked),
             note=periods[0].note,
+            long_prompt_tokens=threshold,
         )
 
 
@@ -347,6 +373,23 @@ class PriceTable:
             + (usage.output_tokens + usage.reasoning_tokens) * rates.output
         ) / MILLION
         return round(dollars, 8)
+
+    def long_prompt_limit(self, model: str) -> int | None:
+        """Input tokens above which the provider charges long-prompt rates this table does not model, or None."""
+        return self.price(model).long_prompt_tokens
+
+    def storage_rate(self, model: str, *, batch: bool = False, on: Date | None = None) -> float | None:
+        """Dollars per million cached tokens per hour for a model on a day, or None when it has no such price."""
+        return self.rates(model, batch=batch, on=on).cache_storage
+
+    def storage_cost(
+        self, model: str, tokens: int, hours: float, *, batch: bool = False, on: Date | None = None
+    ) -> float:
+        """Dollar cost of keeping `tokens` cached tokens for `hours` hours."""
+        rate = self.storage_rate(model, batch=batch, on=on)
+        if rate is None:
+            raise PriceError(f"no cache storage price for model {model!r} in the price table dated {self.date}")
+        return round(max(0, tokens) * max(0.0, hours) * rate / MILLION, 8)
 
     def estimate(
         self, model: str, input_tokens: int, max_output_tokens: int, *, batch: bool = False, on: Date | None = None
@@ -459,6 +502,16 @@ class Ledger:
         route_config = self.config.route(route)
         return self.prices.cost(route_config.model, usage, batch=route_config.kind == "batch", tier=tier, on=on)
 
+    def storage_rate(self, route: str, *, on: Date | None = None) -> float | None:
+        """Dollars per million cached tokens per hour on a route, or None when its model has no such price."""
+        route_config = self.config.route(route)
+        return self.prices.storage_rate(route_config.model, batch=route_config.kind == "batch", on=on)
+
+    def storage_cost(self, route: str, tokens: int, hours: float, *, on: Date | None = None) -> float:
+        """Dollar cost of keeping `tokens` cached tokens for `hours` hours on a route."""
+        route_config = self.config.route(route)
+        return self.prices.storage_cost(route_config.model, tokens, hours, batch=route_config.kind == "batch", on=on)
+
     def validate_prices(self) -> None:
         """Raise PriceError unless every route's model has a price."""
         for name, route in self.config.routes.items():
@@ -541,6 +594,11 @@ class Ledger:
                 f"{_money(row['spent']):>10}{_money(row['reserved']):>11}{_money(row['cap']):>10}"
                 f"{_money(row['remaining']):>10}{row['calls']:>7}"
             )
+        for name in sorted(self.config.routes):
+            charges = [line for line in state.storage if line["route"] == name]
+            if charges:
+                total = sum(float(line["usd"]) for line in charges)
+                lines.append(f"cache storage on {name}: {_money(total)} in {len(charges)} charge(s), counted in the spend above")
         lines.append(f"prices dated {self.prices.date}")
         return "\n".join(lines)
 
@@ -604,8 +662,17 @@ class Ledger:
             result.append(entry)
         return result
 
+    def storage_lines(self, state: "State", route: str) -> list[dict[str, Any]]:
+        """The cache storage charges of a route, one line each, oldest first."""
+        keys = ("purpose", "name", "model", "tokens", "tokens_estimated", "hours", "rate", "usd", "from", "to", "price_table_date")
+        return [{key: line[key] for key in keys if key in line} for line in state.storage if line["route"] == route]
+
     def summary(self, state: "State") -> dict[str, Any]:
-        """Spend per route and purpose against caps, with the price table's date."""
+        """Spend per route and purpose against caps, with the price table's date.
+
+        `spent_usd` counts everything paid, cache storage included; `storage_usd` shows how much
+        of it was storage, and `storage` lists each charge as a line of its own.
+        """
         return {
             "price_table_date": self.prices.date,
             "routes": {
@@ -613,10 +680,13 @@ class Ledger:
                     "budget_usd": route.budget_usd,
                     "spent_usd": round(state.spend(name).actual, 8),
                     "in_flight_usd": round(state.spend(name).reserved, 8),
+                    "storage_usd": round(state.storage_usd(name), 8),
+                    "storage": self.storage_lines(state, name),
                     "purposes": {
                         purpose: {
                             "cap_usd": route.cap_for(purpose),
                             "spent_usd": round(state.spend(name, purpose).actual, 8),
+                            "storage_usd": round(state.storage_usd(name, purpose), 8),
                             "calls": state.spend(name, purpose).calls,
                         }
                         for purpose in PURPOSES

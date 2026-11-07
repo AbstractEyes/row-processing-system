@@ -3,15 +3,16 @@
   "currency": "USD",
   "unit": "per million tokens",
   "batch_discount": 0.5,
-  "notes": "Rates come from each provider's pricing page on the date each model was checked; check them before spending. Batch and synchronous rates are separate. Where a provider's pages do not say whether the batch discount and the cache prices stack, the batch card carries the higher (unstacked) cache rate until the pricing test against the billed figure settles it. Prompts above a provider's long-prompt threshold (Anthropic 100K, OpenAI 272K input tokens) are billed at higher rates that this table does not model.",
+  "notes": "Rates come from each provider's pricing page on the date each model was checked; check them before spending. Batch and synchronous rates are separate. Where a provider's pages do not say whether the batch discount and the cache prices stack, the batch card carries the higher (unstacked) cache rate until the pricing test against the billed figure settles it. cache_storage is dollars per million cached tokens per hour. A model whose provider bills prompts past a length at higher rates carries that length as long_prompt_tokens (Anthropic Haiku 5.5 100,000 tokens; OpenAI Luna and Sol 272,000 input tokens): those rates are not modeled here, so the controller refuses a call whose estimated input passes it.",
   "models": {
     "claude-haiku-5-5": {
       "provider": "anthropic",
       "source": "https://platform.claude.com/docs/en/about-claude/pricing",
       "checked": "2026-11-07",
+      "long_prompt_tokens": 100000,
       "sync": {"input": 0.10, "output": 0.50, "cache_write": 0.20, "cache_read": 0.01},
       "batch": {"input": 0.05, "output": 0.25, "cache_write": 0.20, "cache_read": 0.01},
-      "note": "cache_write is the 1-hour rate (5 minutes: 0.125); batch cache rates are the unstacked ones (50% off would give 0.10 and 0.005); above 100K prompt tokens the page lists 0.50 in / 2.50 out"
+      "note": "cache_write is the 1-hour rate (5 minutes: 0.125); batch cache rates are the unstacked ones (50% off would give 0.10 and 0.005); a prompt over 100,000 tokens (cache reads and writes count) is billed at 0.50 in / 2.50 out (batch 0.25 / 1.25) and is refused here, see long_prompt_tokens"
     },
     "claude-sonnet-5-5": {
       "provider": "anthropic",
@@ -25,30 +26,32 @@
       "provider": "openai",
       "source": "https://developers.openai.com/api/docs/pricing",
       "checked": "2026-11-07",
+      "long_prompt_tokens": 272000,
       "sync": {"input": 0.10, "output": 0.50, "cache_read": 0.01},
       "batch": {"input": 0.05, "output": 0.25, "cache_read": 0.01},
-      "note": "the page says Batch is 50% of Standard, which would make cached input 0.005; 0.01 is used until the pricing test settles it; no cache write price is listed, so input-rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output"
+      "note": "the page says Batch is 50% of Standard, which would make cached input 0.005; 0.01 is used until the pricing test settles it; no cache write price is listed, so input-rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output, and such a prompt is refused here (long_prompt_tokens)"
     },
     "gpt-6.1-sol": {
       "provider": "openai",
       "source": "https://developers.openai.com/api/docs/pricing",
       "checked": "2026-11-07",
+      "long_prompt_tokens": 272000,
       "sync": {"input": 2.00, "output": 10.00, "cache_read": 0.10},
       "batch": {"input": 1.00, "output": 5.00, "cache_read": 0.10},
-      "note": "batch cached input is the unstacked 0.10 (50% off would give 0.05); no cache write price is listed, so the input rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output"
+      "note": "batch cached input is the unstacked 0.10 (50% off would give 0.05); no cache write price is listed, so the input rate is used; above 272K input tokens the page lists 2x input and cache rates and 1.5x output, and such a prompt is refused here (long_prompt_tokens)"
     },
     "gemini-3.8-flash": {
       "provider": "gemini",
       "source": "https://aistudio.google.com/docs/pricing",
       "checked": "2026-11-07",
       "until": "2026-12-31",
-      "note": "introductory rate until 2026-12-31; the page lists one input rate, so cached tokens are priced at it (an upper bound); context-cache storage is billed separately and is not counted here",
-      "sync": {"input": 0.75, "output": 3.75, "cache_read": 0.75},
-      "batch": {"input": 0.375, "output": 1.875, "cache_read": 0.75},
+      "note": "introductory rates until 2026-12-31, doubling on 2027-01-01; the page's Context caching rows (read) and its storage price ($0.50 per million cached tokens per hour, $1.00 from 2027-01-01, the same on the Batch tab) were read on 2026-11-07; the page lists no long-prompt tier for this model; the one-time cost of making a cache is not stated on the page and is not counted",
+      "sync": {"input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_storage": 0.50},
+      "batch": {"input": 0.375, "output": 1.875, "cache_read": 0.0375, "cache_storage": 0.50},
       "then": {
-        "note": "list rate after the introductory period",
-        "sync": {"input": 1.50, "output": 7.50, "cache_read": 1.50},
-        "batch": {"input": 0.75, "output": 3.75, "cache_read": 1.50}
+        "note": "list rates from 2027-01-01",
+        "sync": {"input": 1.50, "output": 7.50, "cache_read": 0.15, "cache_storage": 1.00},
+        "batch": {"input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_storage": 1.00}
       }
     },
     "gemini-4-argon": {

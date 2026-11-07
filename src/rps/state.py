@@ -223,6 +223,8 @@ class State:
         self.refusals: dict[str, dict[str, Any]] = {}
         self.halts: list[dict[str, Any]] = []
         self.caches: dict[tuple[str, str], dict[str, Any]] = {}
+        self.storage: list[dict[str, Any]] = []  # cache storage charges, one line each
+        self._storage_seen: set[tuple[str, str, str]] = set()
         self.runs: list[dict[str, Any]] = []
         self._passed_by_provider: dict[str, int] = {}
         self.shipped_files: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -410,6 +412,17 @@ class State:
         p = event.payload
         self.caches[(p["route"], p["key"])] = dict(p)
 
+    def _on_cache_storage(self, event: Event) -> None:
+        """A storage fee for the hours a provider-side cache was kept: spent money, with a line of its own."""
+        p = event.payload
+        route, purpose, usd = p["route"], p["purpose"], float(p["usd"])  # read everything before changing anything
+        marker = (route, p["name"], p["to"])  # one charge per stretch of a cache's life
+        if marker in self._storage_seen:
+            return
+        self._storage_seen.add(marker)
+        self.storage.append({**p, "ts": event.ts})
+        self._spend_cell(route, purpose)[0] += usd
+
     def _on_row_assessed(self, event: Event) -> None:
         p = event.payload
         row = self.rows.get(p["row_id"])
@@ -588,6 +601,7 @@ class State:
         "batch_collected": _on_batch_collected,
         "route_halted": _on_route_halted,
         "cache_created": _on_cache_created,
+        "cache_storage": _on_cache_storage,
         "row_assessed": _on_row_assessed,
         "row_rejected": _on_row_rejected,
         "row_set_aside": _on_row_set_aside,
@@ -615,8 +629,14 @@ class State:
                 failed += int(cell[3])
         return Spend(actual=actual, reserved=reserved, calls=calls, failed=failed)
 
+    def storage_usd(self, route: str, purpose: str | None = None) -> float:
+        """Money spent keeping provider-side caches on a route, optionally for one purpose."""
+        return sum(
+            float(line["usd"]) for line in self.storage if line["route"] == route and (purpose is None or line["purpose"] == purpose)
+        )
+
     def recompute_spend(self) -> dict[tuple[str, str], Spend]:
-        """Spend rebuilt from the call records alone (used to check the running totals)."""
+        """Spend rebuilt from the call and storage records alone (used to check the running totals)."""
         cells: dict[tuple[str, str], list[float]] = {}
         for call in self.calls.values():
             cell = cells.setdefault((call.route, call.purpose), [0.0, 0.0, 0, 0])
@@ -627,6 +647,8 @@ class State:
                     cell[3] += 1
             else:
                 cell[1] += call.est_usd
+        for line in self.storage:
+            cells.setdefault((line["route"], line["purpose"]), [0.0, 0.0, 0, 0])[0] += float(line["usd"])
         return {key: Spend(actual=c[0], reserved=c[1], calls=int(c[2]), failed=int(c[3])) for key, c in cells.items()}
 
     # ------------------------------------------------------------------ queries: calls and batches
@@ -843,6 +865,7 @@ class State:
                     "refusals": self.refusals,
                     "halts": self.halts,
                     "caches": {f"{route}|{key}": value for (route, key), value in self.caches.items()},
+                    "storage": self.storage,
                     "passed_by_provider": self._passed_by_provider,
                     "shipped_files": {f"{t}|{r}": list(ids) for (t, r), ids in self.shipped_files.items()},
                     "spend": {f"{r}|{p}": [round(v, 9) for v in cell] for (r, p), cell in self._spend.items()},
