@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -34,13 +35,15 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import __version__, ids, layout
 from .assess import AssessCallFn, AssessContext, AssessFn, Assessment, default_assess
-from .config import Config, ConfigError
+from .config import PURPOSES, Config, ConfigError, RouteConfig
 from .events import EventLog, Event, replay, utc_now
 from .failures import (
     KIND_BAD_REQUEST,
     KIND_CANCELED,
     KIND_EXPIRED,
     KIND_INVALID_OUTPUT,
+    KIND_LONG_PROMPT,
+    KIND_MISMATCH,
     KIND_PROVIDER,
     KIND_UNEXPECTED,
     STOP_ROUTE_KINDS,
@@ -48,7 +51,7 @@ from .failures import (
 from .images import ImageError, load_picture
 from .keys import redact
 from .layout import controller_actor
-from .ledger import Ledger, PriceTable, effective_purpose
+from .ledger import Ledger, PriceError, PriceTable, effective_purpose
 from .prompting import WriterRules, assignment_data, assignment_for, load_writer_rules, render_task_text
 from .provenance import (
     ProvenanceError,
@@ -170,6 +173,17 @@ def _parse_ts(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
 
 
+def _parse_moment(value: Any) -> datetime | None:
+    """A UTC moment from ISO text (with or without fractions of a second); None when it is not one."""
+    if not isinstance(value, str):
+        return None
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.astimezone(timezone.utc) if moment.tzinfo else moment.replace(tzinfo=timezone.utc)
+
+
 def _chunks(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
     for start in range(0, len(items), size):
         yield items[start : start + size]
@@ -254,6 +268,9 @@ class Controller:
         self._events = 0
         self._parked: set[str] = set()
         self._prepared_here: set[str] = set()
+        # Calls whose submit failed in a way that may still have reached the provider: the
+        # next attempt looks for the batch before it sends the calls again.
+        self._send_unsure: set[str] = set()
         self._halted: dict[str, str] = {}  # routes stopped for this run, with the reason
         self._closed_notes: set[tuple[str, str]] = set()
         self._to_release: list[tuple[Writer, Handle]] = []
@@ -282,6 +299,12 @@ class Controller:
                 )
             if self.rules is not None and route.is_enabled:
                 self.writers[name].check_rules(self.rules)
+            if route.is_enabled and self.writers[name].bills_cache_storage:
+                if self.ledger.storage_rate(name, on=self._today_date()) is None:
+                    raise ConfigError(
+                        f"route {name!r} keeps the writing rules in a provider cache, which is billed for the hours it is "
+                        f"kept, but the price table has no cache_storage rate for model {route.model!r}"
+                    )
         replayed = replay(self.state_store)
         self.state = State.from_events(replayed.events)
         if replayed.problems:
@@ -444,6 +467,12 @@ class Controller:
                 raise
             except Exception as error:
                 self._warn(f"the last collection failed: {describe_error(error)}")
+        try:
+            self._drain_notes()
+        except NotImplementedError:
+            raise
+        except Exception as error:
+            self._warn(f"recording what the writers noted failed: {describe_error(error)}")
         for name, writer in self.writers.items():
             try:
                 writer.close()
@@ -489,6 +518,7 @@ class Controller:
         self._stage_submit()
         self._drain_notes()
         self._stage_poll()
+        self._drain_notes()  # a cache kept alive while a batch was polled
         self._stage_assess()
         self._stage_review()
         self._stage_ship()
@@ -690,6 +720,11 @@ class Controller:
                         task, line, status = origin[spec.call_id]
                         self._record_unpreparable(task, line, status, request)
                         continue
+                    too_long = self._long_prompt_problem(route, request)
+                    if too_long:
+                        task, line, status = origin[spec.call_id]
+                        self._record_unpreparable(task, line, status, too_long, KIND_LONG_PROMPT)
+                        continue
                     estimate = self.ledger.estimate(
                         route_name, request.est_input_tokens, request.max_output_tokens, on=self._today_date()
                     )
@@ -751,7 +786,23 @@ class Controller:
                 pairs.append((spec, f"{type(error).__name__}: {error}"))
         return pairs
 
-    def _record_unpreparable(self, task: TaskState, line: LineState, status: Any, problem: str) -> None:
+    def _long_prompt_problem(self, route: RouteConfig, request: Request) -> str | None:
+        """Why a call is refused for its length, or None when it is short enough.
+
+        Past a provider's long-prompt threshold higher rates apply that the price table does
+        not model, so a call whose estimated input passes it is refused before it is sent.
+        """
+        limit = self.prices.long_prompt_limit(route.model)
+        if limit is None or request.est_input_tokens <= limit:
+            return None
+        return (
+            f"the prompt is estimated at {request.est_input_tokens:,} tokens, over the {limit:,}-token "
+            f"long-prompt threshold of {route.model}, where higher rates apply that the price table does not model"
+        )
+
+    def _record_unpreparable(
+        self, task: TaskState, line: LineState, status: Any, problem: str, kind: str = KIND_BAD_REQUEST
+    ) -> None:
         """A call that cannot be built (its picture cannot be read) fails at once, without retries."""
         call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
         self._emit(
@@ -779,7 +830,7 @@ class Controller:
                 "error": redact(f"call could not be prepared: {problem}")[:300],
                 "retryable": False,
                 "billed": False,
-                "kind": KIND_BAD_REQUEST,
+                "kind": kind,
                 "usage": {},
                 "usd": 0.0,
                 "price_table_date": self.prices.date,
@@ -818,13 +869,16 @@ class Controller:
                 self._emit_failed_unpreparable(call_id)
                 continue
             requests.append(request)
-            if call_id not in self._prepared_here:
+            if call_id not in self._prepared_here or call_id in self._send_unsure:
                 inherited.append(request)
-        # Calls prepared by an earlier run may have been submitted just before it stopped. Every
-        # batch the writer can find for them is taken up again, so none is sent twice.
+        # Calls prepared by an earlier run may have been submitted just before it stopped, and so
+        # may calls whose submit failed on the way back from the provider. Every batch the writer
+        # can find for them is taken up again, so none is sent twice. The writer is told when the
+        # calls were prepared (nothing was sent before that) and which batches are already recorded.
+        since = self._earliest_prepared(inherited)
         while inherited:
             try:
-                found = writer.recover(inherited)
+                found = writer.recover(inherited, since=since, recorded=frozenset(self.state.batches))
             except NotImplementedError:
                 raise
             except Exception as error:
@@ -852,6 +906,7 @@ class Controller:
             )
             requests = [r for r in requests if r.call_id not in covered]
             inherited = [r for r in inherited if r.call_id not in covered]
+            self._send_unsure -= covered
         if not requests:
             return
         for group in writer.split(requests):
@@ -866,12 +921,15 @@ class Controller:
                 self._note_closed(route_name, str(error), permanent=False)
                 return
             except Exception as error:
+                # The provider may have taken the batch even though the answer never came back.
+                self._send_unsure.update(request.call_id for request in group)
                 self._submit_failures += 1
                 self._warn(f"submit to {route_name} failed ({self._submit_failures}): {describe_error(error)}")
                 if self._submit_failures >= self._max_failures:
                     self._stop_reason = "submit_failing"
                 return
             self._submit_failures = 0
+            self._send_unsure.difference_update(request.call_id for request in group)
             self._emit(
                 "batch_submitted",
                 {
@@ -883,6 +941,21 @@ class Controller:
                 },
                 durable=True,
             )
+
+    def _earliest_prepared(self, requests: Sequence[Request]) -> datetime | None:
+        """When the earliest of these calls was prepared: nothing was sent for them before then.
+
+        None when any of the times is missing or unreadable, so a writer never works from a
+        moment later than the truth.
+        """
+        moments = []
+        for request in requests:
+            call = self.state.calls.get(request.call_id)
+            try:
+                moments.append(_parse_ts(call.prepared_ts))  # type: ignore[union-attr]
+            except (AttributeError, ValueError):
+                return None
+        return min(moments) if moments else None
 
     def _emit_failed_unpreparable(self, call_id: str) -> None:
         self._emit(
@@ -939,10 +1012,84 @@ class Controller:
                 self._warn(f"clean-up after {handle.handle_id} failed: {describe_error(error)}")
 
     def _drain_notes(self) -> None:
-        """Record what writers asked to have remembered (a cache they made)."""
+        """Record what writers asked to have remembered (a cache they made), and charge its storage.
+
+        The storage charge is written first: if the run stops between the two, the cache is not
+        remembered and gets made again, which costs a little more rather than leaving a fee
+        unrecorded.
+        """
         for writer in self.writers.values():
             for kind, payload in writer.drain_notes():
+                if kind == "cache_created":
+                    self._charge_cache_storage(payload)
                 self._emit(kind, payload, durable=True)
+
+    def _charge_cache_storage(self, note: Mapping[str, Any]) -> None:
+        """Charge the storage fee for the stretch of a cache's life a note covers, as a ledger line of its own.
+
+        A new cache is billed from its creation to its expiry; a cache kept alive longer, from its
+        earlier expiry to the new one. The fee is the cache's tokens times the hours times the
+        storage rate per million tokens per hour of the day it is charged, and goes to the purpose
+        most of the calls that use the cache carry.
+        """
+        route = str(note.get("route", ""))
+        name = str(note.get("name", ""))
+        started = _parse_moment(note.get("extended_from") or note.get("created"))
+        ends = _parse_moment(note.get("expires"))
+        tokens = note.get("tokens")
+        if route not in self.config.routes:
+            return
+        if not isinstance(tokens, int) or isinstance(tokens, bool) or tokens <= 0 or started is None or ends is None:
+            self._warn(f"the storage of cache {name} on {route} cannot be charged: its size or its dates are not known")
+            return
+        if ends <= started:
+            return  # the cache was not kept any longer: nothing more to pay for
+        hours = (ends - started).total_seconds() / 3600.0
+        today = self._today_date()
+        try:
+            rate = self.ledger.storage_rate(route, on=today)
+            usd = self.ledger.storage_cost(route, tokens, hours, on=today)
+        except PriceError as error:
+            self._warn(f"the storage of cache {name} on {route} cannot be charged: {error}")
+            return
+        self._emit(
+            "cache_storage",
+            {
+                "route": route,
+                "purpose": self._storage_purpose(route, name),
+                "key": note.get("key"),
+                "name": name,
+                "model": note.get("model"),
+                "tokens": tokens,
+                "tokens_estimated": bool(note.get("tokens_estimated", False)),
+                "hours": round(hours, 6),
+                "rate": rate,
+                "usd": usd,
+                "from": note.get("extended_from") or note.get("created"),
+                "to": note.get("expires"),
+                "price_table_date": self.prices.date,
+            },
+            durable=True,
+        )
+
+    def _storage_purpose(self, route_name: str, cache_name: str) -> str:
+        """The purpose a cache's storage is charged to: the one most of the calls using the cache carry.
+
+        Batches still waiting that refer to the cache come first; a cache made for a batch that is
+        not recorded yet counts the calls waiting on the route; failing that, every call on the route.
+        """
+        counts: Counter[str] = Counter()
+        for batch in self.state.batches.values():
+            data = batch.handle.get("data") or {}
+            if batch.route == route_name and not batch.collected and data.get("cache_name") == cache_name:
+                counts.update(self.state.calls[call_id].purpose for call_id in batch.call_ids if call_id in self.state.calls)
+        if not counts:
+            counts.update(call.purpose for call in self.state.pending_calls(route_name))
+        if not counts:
+            counts.update(call.purpose for call in self.state.calls.values() if call.route == route_name)
+        if not counts:
+            return PURPOSES[-1]
+        return max(counts, key=lambda purpose: (counts[purpose], -PURPOSES.index(purpose)))
 
     def _stage_poll(self) -> None:
         for batch in list(self.state.batches_to_poll()):
@@ -969,6 +1116,10 @@ class Controller:
                     self._warn_changed(batch.handle_id, f"collecting {batch.handle_id} failed: {describe_error(error)}")
                     continue
                 returned, failed = self._collect(batch.handle_id, batch.call_ids, batch.submitted_ts, results)
+                if any(result.kind == KIND_MISMATCH for result in results):
+                    text = f"batch {batch.handle_id} was taken up again after a crash but did not hold its calls; they are sent again"
+                    self._note_problem(text)
+                    self._warn(text)
                 if status.state == "partial":
                     if returned or failed:
                         self._flush_state()  # results already paid for are made durable as they land
@@ -1527,10 +1678,11 @@ class Controller:
                 (row.record, {"line_id": line.line_id, "item_id": line.item_id, "spec": line.spec}, image, ext)
             )
         packet_id = ids.packet_id([f"{reviewer_id}:{row.row_id}:{round_}:{int(audit)}" for row, round_, audit in chunk])
+        brief_version = self._brief_version()
         packet = build_packet(
             packet_id=packet_id,
             reviewer_id=reviewer_id,
-            brief_version=self.config.review.brief_version,
+            brief_version=brief_version,
             created=self._timestamp(),
             rows=entries,
             withheld=withheld,
@@ -1547,10 +1699,19 @@ class Controller:
                 "packet_id": packet_id,
                 "reviewer_id": reviewer_id,
                 "family": family,
-                "brief_version": self.config.review.brief_version,
+                "brief_version": brief_version,
                 "items": items,
             },
         )
+
+    def _brief_version(self) -> str:
+        """The brief version a packet carries.
+
+        When writing rules are loaded (the rule pool, say) it is their version, which a reviewer
+        compares with the pool's VERSION file; the configured `review.brief_version` applies
+        only when no rules are loaded.
+        """
+        return self.rules.version if self.rules is not None else self.config.review.brief_version
 
     def _burn_images(self) -> None:
         """Delete the shared copy of a picture once its reviewer's verdict has been read."""

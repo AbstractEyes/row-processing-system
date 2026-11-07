@@ -217,6 +217,25 @@ def test_an_assessor_that_cannot_be_loaded_is_a_configuration_error(tmp_path):
         world.controller()
 
 
+def test_a_packet_carries_the_rule_pools_version_for_the_reviewers_to_compare_with_its_version_file(tmp_path):
+    from pathlib import Path
+
+    version_file = Path(rules.__file__).parent / "VERSION"
+    version = version_file.read_text(encoding="utf-8").strip()
+    assert rules.rules_version() == version
+    config = pool_config()
+    assert config.review.brief_version == "1"  # the configured value is not what the packets carry
+    world = World(tmp_path, config=config, behavior=pool_behavior)
+    controller = world.controller()
+    controller.add_task(pool_task())
+    world.drive(controller, keep_all)
+    paths = [p for p in world.state_store.list("packets/") if p.endswith("packet.json")]
+    assert paths and {json.loads(world.state_store.read_text(p))["brief_version"] for p in paths} == {version}
+    published = world.events_of("packet_published")
+    assert published and {e.payload["brief_version"] for e in published} == {version}
+    assert {packet.brief_version for packet in controller.state.packets.values()} == {version}
+
+
 def test_an_answer_the_rules_cannot_turn_into_rows_is_an_unusable_output_and_is_retried(tmp_path):
     seeded = example("seeded_single")
     def behavior(payload):

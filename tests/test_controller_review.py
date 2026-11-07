@@ -421,6 +421,45 @@ def test_packets_never_show_the_writer(tmp_path):
     assert {row["writer"]["model"] for row in world.shipped_rows()} == {"model-plugh-9"}
 
 
+def briefed_config(brief_version):
+    return make_config(
+        review={
+            "packet_size": 3,
+            "reviewers": REVIEWERS,
+            "brief_version": brief_version,
+            "provider_families": {"fake": "writer-family"},
+            "policy": {"audit_fraction": 0.0},
+        }
+    )
+
+
+def packet_versions(world):
+    paths = [p for p in world.state_store.list("packets/") if p.endswith("packet.json")]
+    assert paths
+    return {json.loads(world.state_store.read_text(p))["brief_version"] for p in paths}
+
+
+def test_without_rules_a_packet_carries_the_configured_brief_version(tmp_path):
+    world = World(tmp_path, config=briefed_config("7"))
+    controller = world.controller()
+    assert controller.rules is None
+    controller.add_task(task_spec(("001", "002", "003")))
+    world.drive(controller, keep_all)
+    assert packet_versions(world) == {"7"}
+    assert {e.payload["brief_version"] for e in world.events_of("packet_published")} == {"7"}
+
+
+def test_loaded_rules_win_over_the_configured_brief_version(tmp_path):
+    from rps.prompting import make_rules
+
+    world = World(tmp_path, config=briefed_config("7"))
+    controller = world.controller(rules=make_rules("Answer in json.", {"type": "object"}, "rules-9"))
+    controller.add_task(task_spec(("001", "002", "003")))
+    world.drive(controller, keep_all)
+    assert packet_versions(world) == {"rules-9"}
+    assert {e.payload["brief_version"] for e in world.events_of("packet_published")} == {"rules-9"}
+
+
 PICTURE_REVIEWERS = [
     {"id": "rev-o", "family": "openai"},
     {"id": "rev-g", "family": "google"},
