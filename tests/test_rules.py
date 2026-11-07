@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -18,11 +16,8 @@ RULES_DIR = Path(rules.__file__).parent
 FORBIDDEN_SCHEMA_KEYWORDS = {"minLength", "maxLength", "minimum", "maximum", "pattern", "minItems", "maxItems", "$ref", "$defs", "oneOf", "allOf"}
 
 
-def test_generated_files_are_current():
-    result = subprocess.run(
-        [sys.executable, "-m", "rps.rules.compile", "--check"], capture_output=True, text=True, cwd=RULES_DIR.parents[2]
-    )
-    assert result.returncode == 0, result.stderr
+def test_generated_files_are_current(capsys):
+    assert rules_compile.main(["--check"]) == 0, capsys.readouterr().err
 
 
 def test_version_is_a_content_hash():
