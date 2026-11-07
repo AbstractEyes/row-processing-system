@@ -30,10 +30,26 @@ def seeded():
     return item, rows[0]
 
 
-def _context(item, attempt=1):
+def _context(item, attempt=1, assignment=None):
     return AssessContext(
-        task_id="t0123456789abcdef", source="s", batch="b", line="l1", attempt=attempt, route="r", pool_version="v", spec=item, item_id=None
+        task_id="t0123456789abcdef",
+        source="s",
+        batch="b",
+        line="l1",
+        attempt=attempt,
+        route="r",
+        pool_version="v",
+        spec=item,
+        item_id=None,
+        assignment=assignment,
     )
+
+
+ASSIGNED = {
+    "relation_part": "rel",
+    "unknown_keys": {"medium": "shot lens", "deep": "shot focus"},
+    "wordings": {"simple": ["caption"], "medium": ["caption", "prompt", "tags"], "deep": ["caption", "prompt", "tags", "critique"]},
+}
 
 
 def codes(problems, severity=None):
@@ -208,3 +224,76 @@ def test_report_counts_and_balance(series, seeded):
     data = result.to_dict()
     assert data["rows"] == 2 and data["by_code"] == result.by_code
     assert "2 rows" in result.summary()
+
+
+def test_a_clean_series_meets_its_assignment(series):
+    item, rows = series
+    results = assessor.Assessor().assess_call(copy.deepcopy(rows), _context(item, assignment=ASSIGNED))
+    assert [r.passed for r in results] == [True, True, True]
+
+
+def test_no_assignment_makes_no_assignment_checks(series):
+    item, row = _deep(series)
+    row["questions"][0]["key"] = "rel1 b"
+    assert not any(c.startswith("assigned_") for c in codes(checks.assignment_check(row, None)))
+    result = assessor.Assessor()(row, _context(item, assignment=None))
+    assert not any(line.startswith("assigned_") for line in result.errors)
+
+
+def test_assigned_relation_part_is_an_error(series):
+    item, row = _deep(series)
+    row["questions"][0]["key"] = "rel1 b"
+    result = assessor.Assessor()(row, _context(item, assignment=ASSIGNED))
+    assert not result.passed and any(line.startswith("assigned_relation_part: ") for line in result.errors)
+
+
+def test_assigned_unknown_key_checks(series):
+    item, row = _deep(series)
+    row["questions"][-1]["key"] = "shot angle"
+    found = codes(checks.assignment_check(row, ASSIGNED), "error")
+    assert found == {"assigned_unknown_key"}
+    item, row = _deep(series)
+    row["questions"] = [q for q in row["questions"] if q["needs"] != "unknown"]
+    assert codes(checks.assignment_check(row, ASSIGNED), "flag") == {"assigned_unknown_missing"}
+    item, row = _deep(series)
+    row["spec"]["shot"]["focus"] = "soft"
+    assert "assigned_unknown_held" in codes(checks.assignment_check(row, ASSIGNED), "error")
+
+
+def test_assigned_wordings(series):
+    item, row = _deep(series)
+    del row["wordings"]["critique"]
+    assert codes(checks.assignment_check(row, ASSIGNED), "error") == {"assigned_wordings"}
+    item, simple = _example("people_series")[0], copy.deepcopy(_example("people_series")[1][0])
+    simple["wordings"]["prompt"] = "a woman at a table"
+    assert codes(checks.assignment_check(simple, ASSIGNED), "flag") == {"assigned_wordings_extra"}
+
+
+def test_a_failed_rank_fails_its_siblings(series):
+    item, rows = series
+    rows = copy.deepcopy(rows)
+    rows[1]["wordings"]["caption"] = "A woman in a dress in a cafe."
+    results = assessor.Assessor().assess_call(rows, _context(item))
+    assert [r.passed for r in results] == [False, False, False]
+    for i in (0, 2):
+        assert any(line.startswith(f"series_sibling: rank 2 (row {rows[1]['id']}) failed: dress_caption") for line in results[i].errors)
+    assert not any(line.startswith("series_sibling") for line in results[1].errors)
+
+
+def test_a_single_row_call_has_no_sibling_errors(series):
+    item, rows = series
+    row = copy.deepcopy(rows[1])
+    row["wordings"]["caption"] = "A woman in a dress in a cafe."
+    result = assessor.Assessor().assess_call([row], _context(item))
+    assert not result.passed if not isinstance(result, list) else not result[0].passed
+    assert not any(line.startswith("series_sibling") for line in (result[0] if isinstance(result, list) else result).errors)
+
+
+def test_an_item_set_aside_sets_aside_every_rank(seeded):
+    item, row = seeded
+    item = dict(item, hint="A marble bust of a king on a plinth. " + item["hint"])
+    twin = copy.deepcopy(row)
+    twin["id"] = "art-900098"
+    results = assessor.Assessor().assess_call([row, twin], _context(item))
+    assert len(results) == 2
+    assert all(r.set_aside and r.set_aside["class"] == "person" for r in results)

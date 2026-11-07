@@ -4,6 +4,8 @@ You review rows of an art-thought dataset. A row is text only: one critic's thin
 
 A script has already checked everything it can: sizes, counts, the closed lists, the sealed values, nesting, wordings present, spelling, spec talk, advice, genre list, outfits named. Do not re-check those. Your job is what only a reader can judge. Some rows arrive with flags from the script (a short list of codes with a note); look at those first, but a flag is a pointer, not a verdict.
 
+A packet entry may carry `"image_withheld": true`: the picture was left out because your model family may not see pictures of that class. Judge such a row from its text and the task spec alone, and never fault it for something only the picture could show.
+
 ## What to read for
 
 | Code | Look for |
@@ -41,4 +43,4 @@ Return one line per row: row_id, verdict, reasons (the codes above; at least one
 
 ## Rules the script already holds (named only)
 
-Sizes and counts; closed lists and sealed values; nesting of ranks; wordings present; no pixel or file talk; no meta-language or spec talk; no advice words; genre on the list and one per series; American spelling; capitalized style names; recorded garments named in text and tags; relation question keys; hint-implied people in plain records.
+Sizes and counts; closed lists and sealed values; nesting of ranks; wordings present; no pixel or file talk; no meta-language or spec talk; no advice words; genre on the list and one per series; American spelling; capitalized style names; recorded garments named in text and tags; relation question keys; the assigned relation part, unknown key and wordings; hint-implied people in plain records.

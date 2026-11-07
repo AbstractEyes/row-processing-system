@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -43,10 +44,28 @@ def plain_task(spec="a plain spec", line="001"):
     )
 
 
+def conform(payload, output):
+    """The writer's answer with its questions asked as the call's task text assigned them."""
+    text = payload["task_text"]
+    part = re.search(r"ask 'rel1 (a|rel|b)'", text)
+    line = next((ln for ln in text.splitlines() if "Unknown question key by depth:" in ln), "")
+    unknown = dict(re.findall(r"(simple|medium|deep) = '([^']+)'", line))
+    out = json.loads(json.dumps(output))
+    for row in out["rows"]:
+        for q in row["questions"]:
+            if part and re.fullmatch(r"rel1 (a|rel|b)", q["key"]):
+                q["key"] = f"rel1 {part.group(1)}"
+                if q["needs"] == "record":
+                    q["value"] = row["relations"][0][part.group(1)]
+            if q["needs"] == "unknown" and row["depth"] in unknown:
+                q["key"] = unknown[row["depth"]]
+    return FakeOutcome(output=json.dumps(out))
+
+
 def pool_behavior(payload):
     for e in rules.examples():
         if e["item"]["ids"] == payload["spec"]["ids"]:
-            return FakeOutcome(output=json.dumps(e["output"]))
+            return conform(payload, e["output"])
     raise AssertionError("no example for this item")
 
 
@@ -95,7 +114,7 @@ def test_a_series_error_goes_to_every_row_of_the_call_and_the_series_is_rewritte
 
     def behavior(payload):
         attempts.append(payload["attempt"])
-        return FakeOutcome(output=json.dumps(broken if payload["attempt"] == 1 else series["output"]))
+        return conform(payload, broken if payload["attempt"] == 1 else series["output"])
 
     world = World(tmp_path, config=pool_config(), behavior=behavior)
     controller = world.controller()
@@ -116,7 +135,7 @@ def test_flags_are_bare_codes_and_do_not_reject_the_row(tmp_path):
     seeded = example("seeded_single")
     output = json.loads(json.dumps(seeded["output"]))
     output["rows"][0]["thoughts"][0]["text"] = "Someone stops to look at the grasshopper on the glass."
-    world = World(tmp_path, config=pool_config(), behavior=lambda payload: FakeOutcome(output=json.dumps(output)))
+    world = World(tmp_path, config=pool_config(), behavior=lambda payload: conform(payload, output))
     controller = world.controller()
     controller.add_task(pool_task([seeded["item"]]))
     world.drive(controller, keep_all)
@@ -200,10 +219,10 @@ def test_an_assessor_that_cannot_be_loaded_is_a_configuration_error(tmp_path):
 
 def test_an_answer_the_rules_cannot_turn_into_rows_is_an_unusable_output_and_is_retried(tmp_path):
     seeded = example("seeded_single")
-    outputs = {1: "this is not json at all", 2: json.dumps(seeded["output"])}
-    world = World(
-        tmp_path, config=pool_config(), behavior=lambda payload: FakeOutcome(output=outputs[payload["attempt"]])
-    )
+    def behavior(payload):
+        return FakeOutcome(output="this is not json at all") if payload["attempt"] == 1 else conform(payload, seeded["output"])
+
+    world = World(tmp_path, config=pool_config(), behavior=behavior)
     controller = world.controller()
     controller.add_task(pool_task([seeded["item"]]))
     world.drive(controller, keep_all)

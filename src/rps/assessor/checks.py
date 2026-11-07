@@ -382,6 +382,46 @@ def run_row_checks(row: Mapping[str, Any], item: Mapping[str, Any] | None = None
     return out
 
 
+# ------------------------------------------------------------------ the call's assignment
+
+
+def _unknown_questions(row: Mapping[str, Any]) -> list[str]:
+    return [str(q.get("key", "")) for q in row.get("questions", []) if q.get("needs") == "unknown"]
+
+
+def assignment_check(row: Mapping[str, Any], assignment: Mapping[str, Any] | None) -> list[Problem]:
+    """Check a row against what the writer was told to do for this call (None: no choices were made)."""
+    if not assignment:
+        return []
+    out: list[Problem] = []
+    rid, depth = row_id(row), str(row.get("depth"))
+    part = assignment.get("relation_part")
+    asked = [m.group(2) for q in row.get("questions", []) if (m := RELATION_KEY.match(str(q.get("key", ""))) ) and m.group(1) == "1"]
+    if part and asked and part not in asked:
+        out.append(Problem("assigned_relation_part", rid, f"the relation question was assigned as 'rel1 {part}'; this row asks {', '.join(repr('rel1 ' + a) for a in asked)}"))
+    key = (assignment.get("unknown_keys") or {}).get(depth)
+    if key:
+        asked_unknown = _unknown_questions(row)
+        system, _, attr = key.partition(" ")
+        held = (row.get("spec") or {}).get(system)
+        if isinstance(held, Mapping) and held.get(attr) is not None:
+            out.append(Problem("assigned_unknown_held", rid, f"the assigned unknown key {key!r} must not be recorded in the row's spec"))
+        if asked_unknown and key not in asked_unknown:
+            out.append(Problem("assigned_unknown_key", rid, f"the unknown question was assigned as {key!r}; this row asks {', '.join(repr(k) for k in asked_unknown)}"))
+        elif not asked_unknown:
+            out.append(Problem("assigned_unknown_missing", rid, f"no unknown question; {key!r} was assigned", FLAG))
+    kinds = (assignment.get("wordings") or {}).get(depth)
+    if kinds is not None:
+        w = wordings(row)
+        missing = [k for k in kinds if not w.get(k)]
+        extra = sorted(k for k in w if w.get(k) and k not in kinds)
+        if missing:
+            out.append(Problem("assigned_wordings", rid, f"a {depth} row was assigned the wordings {', '.join(kinds)}; missing {', '.join(missing)}"))
+        if extra:
+            out.append(Problem("assigned_wordings_extra", rid, f"wordings beyond the assignment for a {depth} row: {', '.join(extra)}", FLAG))
+    return out
+
+
 # ------------------------------------------------------------------ series-level
 
 

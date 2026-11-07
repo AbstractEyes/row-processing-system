@@ -58,8 +58,8 @@ class Assessor:
         self.index = index
         self.remember = remember
 
-    def _row_problems(self, row: Mapping[str, Any], item: Mapping[str, Any] | None) -> list[Problem]:
-        problems = check_row(row, item)
+    def _row_problems(self, row: Mapping[str, Any], item: Mapping[str, Any] | None, assignment: Mapping[str, Any] | None = None) -> list[Problem]:
+        problems = [*check_row(row, item), *checks.assignment_check(row, assignment)]
         if self.index is not None:
             problems.extend(self.index.problems(row))
         return problems
@@ -69,23 +69,57 @@ class Assessor:
             self.index.add(row)
 
     def __call__(self, row: Mapping[str, Any], context: AssessContext) -> Assessment:
-        assessment = _assessment(self._row_problems(row, _item(context.spec)))
+        assessment = _assessment(self._row_problems(row, _item(context.spec), context.assignment))
         self._remember(row, assessment)
         return assessment
 
     def assess_call(self, rows: Sequence[Mapping[str, Any]], context: AssessContext) -> list[Assessment]:
-        """Assess all rows of one call. A series-level error is given to every row, so the series is rewritten whole."""
+        """Assess all rows of one call.
+
+        A series-level error is given to every row. The controller accepts a line when any
+        of its rows is accepted, so when one rank of a multi-row call fails, every other
+        row gets an error naming it and the whole series is rewritten in its one rebound.
+        A row set aside for a reason that belongs to the item sets aside every rank.
+        """
         item = _item(context.spec)
-        per_row = [self._row_problems(row, item) for row in rows]
+        per_row = [self._row_problems(row, item, context.assignment) for row in rows]
         series = check_series(rows, item) if len(rows) > 1 else []
-        results = []
-        for row, problems in zip(rows, per_row):
-            assessment = _assessment([*problems, *series])
-            results.append(assessment)
+        results = [_assessment([*problems, *series]) for problems in per_row]
+        if len(rows) > 1:
+            results = _tie_ranks(rows, per_row, results)
         if all(a.passed for a in results):
             for row, assessment in zip(rows, results):
                 self._remember(row, assessment)
         return results
+
+
+RANKS = {"simple": 1, "medium": 2, "deep": 3}
+
+
+def _rank(row: Mapping[str, Any]) -> Any:
+    return row.get("rank") or RANKS.get(str(row.get("depth")), "?")
+
+
+def _tie_ranks(rows: Sequence[Mapping[str, Any]], per_row: Sequence[Sequence[Problem]], results: list[Assessment]) -> list[Assessment]:
+    aside = next((r.set_aside for r in results if r.set_aside), None)
+    if aside:
+        return [Assessment(passed=False, set_aside=dict(aside)) for _ in results]
+    failed = [i for i, p in enumerate(per_row) if errors(p)]
+    if not failed:
+        return results
+    tied = list(results)
+    for i, row in enumerate(rows):
+        others = [j for j in failed if j != i]
+        if not others:
+            continue
+        lines = tuple(
+            f"series_sibling: rank {_rank(rows[j])} (row {rows[j].get('id', '?')}) failed: "
+            + ", ".join(dict.fromkeys(p.code for p in errors(per_row[j])))
+            for j in others
+        )
+        base = results[i]
+        tied[i] = Assessment(passed=False, flags=base.flags, errors=(*base.errors, *lines))
+    return tied
 
 
 def report(
