@@ -6,9 +6,12 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.1.0. The provider adapters (`anthropic_api`, `openai_api`, `gemini_api`) are stubs
-that raise `NotImplementedError`; everything else works and is tested offline with a fake
-writer.
+Version 0.2.0. It has real writers for Anthropic (Message Batches), OpenAI (Batch API), Gemini
+(inline batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the
+first three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a
+dry-run tool for trying one route with a handful of calls. Everything is tested offline: with a
+fake writer, and with each adapter against the SDKs' own types built from recorded-response-shaped
+data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 
@@ -17,10 +20,10 @@ Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 | Step | What happens | Recorded as |
 |---|---|---|
 | plan | Task definitions (a batch of spec lines for one source and route) are read from the tasks file | `task_created` |
-| prepare | Each spec line becomes a call; its estimated cost is checked against the route and purpose budgets first | `call_prepared`, or `budget_refused` |
+| prepare | Each spec line becomes a call; a picture is checked against the routing table; the estimated cost is checked against the route and purpose budgets | `call_prepared`, or `budget_refused` |
 | submit | Calls go to the provider as a batch or one by one; the provider's batch id is made durable before anything waits on it | `batch_submitted` |
-| poll, collect | Finished batches are read; every returned row is stamped with its writer label and source label | `call_returned`, `call_failed` |
-| assess | A pluggable function checks each row | `row_assessed`, `row_rejected`, `row_set_aside` |
+| poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
+| assess | The rule set's checker (or a function you give) checks the rows | `row_assessed`, `row_rejected`, `row_set_aside` |
 | review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows | `packet_published`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_accepted` |
 | ship | Accepted rows and the ledger are written to the dataset repository | `shipped` |
 
@@ -32,7 +35,7 @@ files alone.
 
     pyproject.toml, requirements.txt   package metadata and exact pins
     src/rps/
-      config.py        Config: routes, budgets, sources, review policy, commit batching
+      config.py        Config: routes, budgets, sources, rules, review policy, commit batching
       ids.py           deterministic task, call, row and packet ids
       events.py        the append-only event log and tolerant replay
       state.py         the state rebuilt from events, and the queries the controller asks
@@ -40,8 +43,15 @@ files alone.
       store/           Store interface; local folder, Hub dataset repo, Hub storage bucket
       provenance.py    writer and source labels stamped on every row
       ledger.py        usage records, the price table, per-route and per-purpose budgets
-      providers/       the Writer interface, FakeWriter, and the stub adapters
-      assess.py        the assessment hook
+      routing.py       which pictures may go to which provider (one table)
+      failures.py      the kinds of failed call and what each one means
+      prompting.py     the writing rules as inputs, and the text of one call
+      providers/       the Writer interface, FakeWriter, the worker pool, the four adapters
+      routes.py        the standard routes (haiku-batch, luna-batch, flash-batch, deepseek-sync, ...)
+      dryrun.py        try one real route with a handful of calls
+      assess.py        the assessment hooks
+      rules/           the compiled rule pool: writer prompt, row schema, review brief, examples
+      assessor/        the assessor for rows written under that pool
       review/          packets, verdict format, review policy, reviewer client and its CLI
       controller.py    the loop
       runtime.py       build the stores, writers and controller from a Config
@@ -50,6 +60,7 @@ files alone.
       tasks.py         task definitions and the tasks file
       data/prices.json the dated price table
     notebooks/controller_colab.ipynb   run the controller on a Colab CPU runtime
+    tools/                             helper scripts (the assessor's parity check)
     tests/                             offline tests (no network, no keys)
 
 ## Install and test
@@ -59,9 +70,9 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.1.0"`.
-The tests never touch the network: a fixture refuses socket connections and empties `HF_TOKEN`
-and the provider keys.
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.0"`
+(it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
+touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
 ## Running it
 
@@ -80,12 +91,14 @@ print(controller.format_status())
 
 `run` prints progress as job size, lines done, time spent and time left, and ends when nothing
 is left to do, the time budget is used up, a stop file appears, or you interrupt it. Interrupting
-is safe. Run it again and it resumes.
+is safe. Run it again and it resumes. When a run ends (other than by an interrupt) it takes in
+whatever calls have already finished, then tells each writer to stop.
 
 On Colab, open `notebooks/controller_colab.ipynb`. It maps the Colab secrets `CLAUDE_API`,
 `OPENAI_API`, `GEMINI_API`, `DEEPSEEK_API` and `HF_TOKEN` to environment variables (printing only
-the secret names), loads a configuration, runs the controller for a time budget and prints the
-status. As shipped it is a dry run with a pretend provider on the runtime's disk.
+the secret names), can dry-run one real route, loads a configuration, runs the controller for a
+time budget and prints the status. As shipped it is a dry run with a pretend provider on the
+runtime's disk.
 
 ### Stopping
 
@@ -101,16 +114,19 @@ purpose:
 ```json
 [
   {
-    "source": "photos", "batch": "batch-0001", "route": "fast-batch", "purpose": "production",
+    "source": "photos", "batch": "batch-0001", "route": "luna-batch", "purpose": "production",
     "lines": [
-      {"line_id": "001", "spec": "what the writer is asked to do", "item_id": "img-001", "image": "img-001.jpg"}
+      {"line_id": "001", "spec": "what the writer is asked to do", "item_id": "img-001",
+       "image": "img-001.jpg", "image_class": "coco"}
     ]
   }
 ]
 ```
 
 The file may grow between passes. A task already recorded is ignored. The same lines through another
-route are a different task when given a `variant` (use the route name).
+route are a different task when given a `variant` (use the route name). With the rule pool, a
+line's `spec` is the specs-file item (kind, series, ids, domain, genre, specs or spec, seed id,
+hint, license) and the controller turns it into the user text of the call.
 
 ## Configuration
 
@@ -122,8 +138,9 @@ is refused. Unknown keys are refused too.
 | `bucket` | The storage bucket for event logs, review packets, pictures and verdicts. When absent, the work folder is used |
 | `data_repo` | The dataset repository for accepted rows and the ledger. When absent, the work folder is used |
 | `work_dir` | Local folder for dry runs, the stop file and the default pictures folder |
-| `routes` | One entry per way of getting rows written: `provider`, `model`, `kind` (api, batch, claude-code, codex, gemini-cli), `effort`, `budget_usd`, `purpose_caps`, `max_output_tokens`, `max_batch_calls` |
-| `sources` | Per source: `image_size`, `license`, `dataset`, `images_dir`. A spec line with no license (its own or its source's) is refused |
+| `routes` | One entry per way of getting rows written, see below |
+| `sources` | Per source: `image_size`, `license`, `dataset`, `images_dir`, `image_class`. A spec line with no license (its own or its source's) is refused |
+| `rules` | The writing rules, see "The writing rules are inputs" |
 | `commit` | How writes are batched, see below |
 | `review` | Reviewers, families, packet size, brief version and the review policy |
 | `price_table` | Path to a price table file (default: the dated table in the package) |
@@ -131,6 +148,22 @@ is refused. Unknown keys are refused too.
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
 | `wait_for_review` | Keep a run going, polling for verdicts, while any packet is out with a reviewer (default: a run ends when the controller has nothing left to do itself) |
 | `tasks_file` | The tasks file the planner reads on every pass |
+
+A route has these keys:
+
+| Key | Meaning |
+|---|---|
+| `provider`, `model` | `anthropic`, `openai`, `gemini` or `deepseek` (or `fake` for tests), and the provider's model name |
+| `kind` | `batch` (the provider's batch service) or `api` (one call at a time). `claude-code`, `codex` and `gemini-cli` are accepted by the configuration but have no adapter yet |
+| `effort` | The provider's reasoning or thinking level (Anthropic `low` to `max`, OpenAI's `reasoning.effort`, Gemini `minimal`, `low`, `medium`, `high`); left out, the provider's default applies |
+| `budget_usd`, `purpose_caps` | The route total and one cap per purpose |
+| `max_output_tokens` | The token limit of a call (a call cut off at it is retried once with a larger limit, see `truncation_factor`) |
+| `max_batch_calls` | The most calls in one provider batch (each adapter also splits by its provider's size limits) |
+| `enabled` | `true` or `false`. Left out, a route is on, except DeepSeek, which stays off until a configuration says `true` |
+| `max_retries`, `timeout_seconds` | Passed to the provider's client, whose own retries handle rate limits and server errors |
+| `workers` | How many calls a one-call route keeps in flight (cap 2,500) |
+| `truncation_factor` | How much larger the token limit is on the one retry that follows a cut-off answer (default 2) |
+| `options` | Settings of one provider (numbers, text or true/false), listed with each adapter; an unknown option is refused |
 
 ### Stores and who writes what
 
@@ -159,32 +192,184 @@ reported rather than overwritten. The bucket store batches by count and by age. 
 transactional, so a failed operation is retried on its own; every operation is an overwrite or a
 delete, so repeating one is harmless.
 
+## Routes and adapters
+
+| Route | Provider and model | Path | Pictures |
+|---|---|---|---|
+| `haiku-batch` | Anthropic `claude-haiku-5-5` | Message Batches | never |
+| `luna-batch` | OpenAI `gpt-6-luna` | Batch API on `/v1/responses` | public common, COCO, FFHQ |
+| `flash-batch` | Gemini `gemini-3.8-flash` | batch mode, inline requests | public common, COCO, FFHQ |
+| `deepseek-sync` | DeepSeek `deepseek-flash` | chat completions, one call at a time, off-peak | public common, COCO, FFHQ |
+| `haiku-sync`, `luna-sync`, `flash-sync` | as above | one call at a time (route kind `api`), for small tests | as above |
+
+`rps.routes.standard_route(name)` gives the route configuration for any of these. Every adapter
+reads its key from its environment variable only and never prints it; a route whose key is missing
+(or that is switched off) is closed for the run: the controller leaves its calls alone, says why
+once, and ends idle when nothing else can be done. A route that is closed only for a while (DeepSeek
+in its peak hours) keeps the run waiting. A request the provider calls malformed (HTTP 400) or a
+key it rejects (401, 403, a spent balance) stops that route for the rest of the run
+(`route_halted`); the next run starts with the route open again.
+
+All four adapters send the same things: the writing rules as the system text, the call's task
+text, the row schema as the answer format where the provider has one, and a picture only where the
+routing table allows it. None sends `temperature`, `top_p`, `top_k`, a prefill or a forced tool.
+
+### Anthropic (`haiku-batch`, `haiku-sync`)
+
+| Part | Form |
+|---|---|
+| Request | `model`, `max_tokens`, the rules as one `system` block marked for a cache (`cache_control` `ephemeral`, one hour), one user message of text, `output_config` with the row schema (`json_schema`) and the effort |
+| Text only | A call that carries a picture is refused, whatever its class |
+| Batch | `messages.batches.create`; results from `messages.batches.results`, matched by `custom_id` in any order. At most 100,000 requests and 240 MB per batch (the limit is 256 MB). A batch can expire after 24 hours; its unfinished calls come back as `expired` and are sent again as rebounds |
+| Answer | `end_turn` (and `stop_sequence`) is parsed; `max_tokens` is a truncation; `refusal` is recorded and not retried on the route; any other stop is a failure that is not retried |
+| Usage | input, cache write and cache read tokens as given; output minus thinking tokens, thinking apart |
+| After a crash | A batch cannot be searched for what it holds, so a crash in the instant between the provider accepting a batch and the controller recording its id cannot be recovered from the provider's side (the budgets bound what that costs) |
+| Options | `cache_ttl` (`5m` or `1h`, default `1h`) |
+
+### OpenAI (`luna-batch`, `luna-sync`)
+
+| Part | Form |
+|---|---|
+| Request | A `/v1/responses` body: `instructions` (the rules), one user message of `input_text` and, where allowed, `input_image` (a data URL with `detail`), a strict JSON schema as the text format, `reasoning.effort`, `max_output_tokens`, `store: false`, and the rules version as `prompt_cache_key` |
+| Batch | A JSONL file uploaded with `purpose="batch"` and an expiry, then `batches.create`. Up to 50,000 lines and 190 MB per file (the schema's property order is kept in the file, because it shapes the answer) |
+| Results | The output file and the error file, matched by `custom_id`; a request that expired appears in the error file as `batch_expired` and is sent again as a rebound; the finished requests of an expired batch are billed and returned |
+| Clean-up | After the results are durably recorded, the input, output and error files are deleted (the input holds the pictures); the expiry is the backstop |
+| Answer | `completed` is parsed; `incomplete` for `max_output_tokens` is a truncation, for a content filter a block; a `refusal` part is recorded and not retried; a failed response is retried unless the prompt itself was refused |
+| Usage | input minus cached and cache-write tokens, cache write, cache read, output minus reasoning, reasoning |
+| After a crash | The batch carries a digest of its calls in its metadata, so a batch created just before a crash is found again |
+| Options | `detail` (`low`, `high`, `original`, `auto`; default `auto`), `file_expiry_days` (default 7) |
+
+### Gemini (`flash-batch`, `flash-sync`)
+
+| Part | Form |
+|---|---|
+| Request | One `InlinedRequest` per call: the user turn (text and, where allowed, the picture as bytes), `response_mime_type` JSON with `response_json_schema`, `thinking_level` from the effort, `media_resolution` for a picture, `max_output_tokens`, the rules as `system_instruction`, and `metadata.custom_id` |
+| Batch | `batches.create` with inline requests, split under 19 MB per job (the limit is 20 MB); jobs that stay pending or running past 48 hours expire and their calls come back as rebounds |
+| Results | `dest.inlined_responses`, matched by the `custom_id` in each response's metadata |
+| Answer | `STOP` is parsed; `MAX_TOKENS` is a truncation; the filter stops (`SAFETY`, `PROHIBITED_CONTENT`, `SPII`, `RECITATION`, `BLOCKLIST`, the picture ones) and a blocked prompt are recorded and not retried; thought parts are left out of the text |
+| Usage | the prompt count minus cached tokens, cached tokens, candidates' tokens, thinking tokens (billed as output) |
+| The explicit cache | With `cache: true` (batches only), the rules are cached once per model and rules version and the batch's requests refer to the cache by name instead of repeating the rules. The cache name is recorded (`cache_created`) so a restart reuses it, and its life is extended while a batch that uses it is running. A failure to create the cache is an error, not a silent fallback. The storage fee of a cache is not counted in the ledger |
+| After a crash | The batch's display name carries a digest of its calls, so a batch created just before a crash is found again |
+| Options | `media_resolution` (`low`, `medium`, `high`; default `medium`), `cache` (default false), `cache_ttl_seconds` (default 21600) |
+
+### DeepSeek (`deepseek-sync`)
+
+| Part | Form |
+|---|---|
+| Request | A chat completion in JSON mode (`response_format` `json_object`): the rules as the system message (JSON mode needs the word "json", which is checked before a run, and an example row in them), the task text and, where allowed, a picture as an `image_url` in the user message |
+| Sending | There is no batch service: a pool of workers (the route's `workers`) sends one call each; every result is recorded as it lands, so a stop loses only the calls in flight, which a restart sends again as rebounds |
+| Off-peak | Calls go out only outside Monday to Friday 01:00 to 04:00 and 06:00 to 10:00 UTC. In those hours the route is closed for now, calls already queued wait at the edge, and the run keeps waiting. Every result is marked `peak` or `offpeak` by the time it was sent, and the ledger prices it by that tier |
+| Answer | `stop` is parsed (blank content is a failed parse, sent again once); `length` is a truncation; `content_filter` is a block; "too busy" is retried |
+| Usage | cache hit tokens as cache read, cache miss tokens as input, completion minus reasoning as output |
+| Switched off | The route is off unless the configuration says `enabled: true`. The key is `DEEPSEEK_API_KEY` |
+| Options | `detail` (`low` or `high`; default `low`), `offpeak_only` (default true; false turns the gate off, for a small test) |
+
+## Which pictures go where
+
+One table decides what an adapter may see. The class of a picture is the class of the picture's
+own origin (a narration written for a COCO picture is COCO class).
+
+| Class | Claude | OpenAI | Gemini | DeepSeek |
+|---|---|---|---|---|
+| `public_common` | no | yes | yes | yes |
+| `coco` | no | yes | yes | yes |
+| `ffhq` | no | yes | yes | yes |
+| `deepfashion` | no | no | no | no |
+| `hico` | no | no | no | no |
+| `synthetic` (no picture) | no | no | no | no |
+
+A source names its class (`sources.<name>.image_class`) and a spec line can override it. A task
+whose pictures may not go to its route is refused when it is added, before anything is recorded or
+paid for; the check is made again when each call is built and once more inside each adapter, so no
+picture reaches a provider by another path. A class that is not in the table, a route that is not
+recognized, and a picture with no class are all refused. Text is always allowed.
+
+## The writing rules are inputs
+
+The system prompt, the row schema and a version are never part of an adapter. Name them in the
+configuration, with two files or a package:
+
+```json
+"rules": {"package": "rps.rules"}
+"rules": {"system_file": "writer_system.md", "schema_file": "row_schema.json", "version": "2026-11-07a"}
+```
+
+or pass `rules=make_rules(system, schema, version)` to `build_controller`. The version is recorded
+on every row (`writer.rules_version`) and is the key of the providers' prompt caches; left out it is
+a hash of the two files, so changed rules always have a new version. A route that sends the rules
+to a model refuses to start without them, and each switched-on route checks the rules before the
+run starts (a schema the provider would reject fails there, not on every request).
+
+A rule set may also bring:
+
+| Part | Used for |
+|---|---|
+| `task_text(spec, ordinal[, choices])` | the user text of a call, from the spec line and its place in the batch |
+| `assign(spec, ordinal)` | the runner's per-call choices (which part of a relation to ask about, which unknown-question keys, which wordings) |
+| `normalize(text, spec, model)` | turns the writer's answer into the JSON list of rows; applied once, whatever the provider |
+| an assessor | checks the rows (see "Plugging in") |
+
+With the package `rps.rules` all four come from the rule pool and the assessor is `rps.assessor`.
+`rules.assessor` (`"module:name"`, or `"none"`) names a different one.
+
+## Failures
+
+Every failed call is recorded with a kind (`call_failed.kind`). A call that may be retried is sent
+again while the line's attempts are under `max_attempts` (default 2, so one retry):
+
+| Kind | Meaning | What happens |
+|---|---|---|
+| `truncated` | the answer stopped at the token limit | retried with the limit times `truncation_factor`, with no advice added |
+| `invalid_output` | blank, cut off or not the expected JSON | retried with the problem as advice |
+| `provider_error` | rate limit, server error, timeout, dropped connection, a batch that failed | retried as a rebound |
+| `expired`, `canceled` | the provider let the request lapse or canceled it | retried as a rebound |
+| `refused`, `blocked` | the model declined, or a safety filter stopped it | recorded; not retried on the same route |
+| `bad_request` | the request is malformed (HTTP 400, a schema the provider rejects) | not retried; stops the route for the run |
+| `auth` | the key is rejected or the balance is spent | not retried; stops the route for the run |
+| `unexpected` | a stop reason nothing here expects | not retried (an error line an adapter cannot classify is retried as a rebound) |
+
+The provider's own client already retries rate limits and server errors a few times
+(`max_retries`) with backoff; what comes back after that is recorded as above. A call that
+failed after the provider billed for it (a cut-off or unusable answer) still has its usage recorded
+and priced.
+
 ## Budgets
 
 Every call has a purpose: `test`, `pricing`, `probe`, `rebound` or `production`. A route has one
-dollar cap per purpose plus a total. Before a call is submitted its estimated cost (all input at the
-full rate, output up to its limit) must fit under both its (route, purpose) cap and the route total,
-counting what is already spent and what calls in flight may still cost. A call that does not fit is
-refused, never sent, and recorded as `budget_refused` with the numbers:
+dollar cap per purpose plus a total. Before a call is submitted its estimated cost (every input
+token at the highest input-side rate, output up to its limit, a route with price tiers at its
+dearest tier) must fit under both its (route, purpose) cap and the route total, counting what is
+already spent and what calls in flight may still cost. A call that does not fit is refused, never
+sent, and recorded as `budget_refused` with the numbers:
 
-    {"route": "fast-batch", "purpose": "pricing", "est_usd": 0.002, "reason": "purpose_cap",
+    {"route": "luna-batch", "purpose": "pricing", "est_usd": 0.002, "reason": "purpose_cap",
      "purpose_spent": 0.004, "purpose_cap": 0.004, "route_spent": 0.004, "route_cap": 5.0, ...}
 
 A retry or re-submission after a failed or rejected call is always `rebound`, whatever the task's
 purpose was, and draws only from the `rebound` cap. A purpose with no cap counts as a $0 cap, so its
 calls are refused. A refused call is left alone for the rest of the run and asked again by the next
-one, so raising a cap takes effect on the next run. `controller.format_status()` prints spend per (route, purpose) against its cap, and
-`ledger/summary.json` and `ledger/tasks.jsonl` record the same with token counts, attempts and
-minutes. Prices come from `data/prices.json`, which carries its own date; each usage record keeps
-the date of the table it was priced with.
+one, so raising a cap takes effect on the next run. `controller.format_status()` prints spend per
+(route, purpose) against its cap and the state of each route, and `ledger/summary.json` and
+`ledger/tasks.jsonl` record the same with token counts, attempts and minutes.
+
+### Prices
+
+`data/prices.json` carries its own date, and every model's entry names its source page and the date
+it was checked. A model has a synchronous rate card and, where the provider publishes one, a batch
+card (without one, the table's batch discount applies). A model can have rates that change on a
+date (`until`, then another card) and rates that depend on a tier (DeepSeek's `peak` and `offpeak`
+hours). Where a provider's pages do not say whether the batch discount and a cache price stack, the
+table carries the higher rate until the pricing test settles it. Cache rates left out are taken as
+the plain input rate. Each usage record keeps the date of the table
+it was priced with, and the controller notes a table that is old or a price that is about to change.
 
 ## Labels
 
 The runner stamps two labels on every row; a model's own value under a reserved key is dropped (and
 the row is flagged for the reviewers):
 
-- `writer`: provider, model, route, effort, date, task id, pool version and the size of the picture
-  the writer saw.
+- `writer`: provider, model, route, effort, date, task id, pool version, the size of the picture the
+  writer saw, and the rules version.
 - `source_label`: dataset, item id (seed or picture) and license.
 
 A row the owner writes or rewrites by hand carries `provider: "human"`, `model: "phil"`,
@@ -254,12 +439,41 @@ In Python, the same client runs a packet with a function or a command line per r
 The bucket copy of a packet's pictures is deleted by the controller once it has read that packet's
 verdicts (recorded as `packet_burned`). Reviewers delete their local copies when they push.
 
+## Dry run
+
+A dry run sends a few real calls through one route to show that it works: the key, the model name,
+the request form, the batch, the answer, the usage and the price.
+
+    python -m rps.dryrun --route luna-batch --calls 5
+
+or, in a notebook (no argument parser needed):
+
+```python
+from rps.dryrun import dry_run
+report = dry_run("luna-batch", calls=5)        # report.ok, report.outputs, report.usage, report.cost_usd
+```
+
+The calls carry a tiny plumbing prompt and a tiny answer schema, never the writing rules, and are
+charged to purpose `test`. It prints the parsed answers, the token counts per bucket and the cost
+next to the estimate. It refuses, before sending anything, when the estimate plus what earlier dry
+runs of the route spent (kept in `state_local/dryrun_spend.json`) would pass the test cap
+(`--cap`, default $0.50), when the route is closed (no key, switched off), and when more than 25
+calls are asked for. A batch's id is written to `state_local/dryrun_<route>_<time>.json` before the
+wait, so a stopped wait can be picked up with `--resume FILE` (nothing is sent again). It waits up to
+25 hours for a batch (`--wait-minutes`), checking every 20 seconds (`--poll-seconds`).
+`--image FILE --image-class CLASS` sends a picture with every call to a route the routing table
+allows it for. For `deepseek-sync` the tool switches the route on and its off-peak gate off, since it
+is a small test. The exit code is 0 when every call came back with a good answer, 1 when something
+did not work and 2 when the tool refused to start.
+
 ## Resuming
 
 | If the run stops here | Then the next run |
 |---|---|
-| before a batch id was recorded | asks the provider for batches matching the prepared calls and adopts one (`Writer.recover`), else submits |
+| before a batch id was recorded | asks the provider for batches matching the prepared calls and adopts every one it finds (`Writer.recover`; OpenAI and Gemini can be searched, Anthropic's cannot, see above), else submits |
 | after `batch_submitted` | polls that batch; it never submits the same calls again |
+| while a one-call route has calls in flight | records the calls that finished (they were recorded as they landed) and sends the ones that did not as rebounds |
+| between recording results and cleaning up | the results are durable first; a clean-up that did not happen (OpenAI's files) is left to the files' expiry |
 | between writing a packet's files and announcing it | writes the same packet again (the id comes from its rows) and announces it once |
 | while shipping | rebuilds the shipped files from the accepted rows; `shipped` is recorded only after the files are durable |
 | in the middle of an event line | skips the torn last line, reports it, and carries on |
@@ -270,12 +484,21 @@ and check that the resumed run ends in the same place with no repeated call or r
 ## Plugging in
 
 - **Assessor.** `rps.assess.AssessFn` takes a row and a context and returns an `Assessment`
-  (`passed`, `flags`, `errors`, `set_aside`). Pass it to `build_controller(config, assess=...)`. The
-  default accepts any row with content. A failed assessment retries the call once with the error
-  lines as feedback.
-- **Writers.** `rps.providers.base.Writer` has `prepare`, `submit`, `poll`, `results` and `recover`.
-  Register an adapter in `rps/providers/__init__.py`. `FakeWriter` needs no network and can be told
-  what to return, which is how the tests run.
+  (`passed`, `flags`, `errors`, `set_aside`). `AssessCallFn` takes all the rows one call returned and
+  the call's context and returns one `Assessment` per row, in the same order, so a check that
+  compares the rows of a call (a series' nesting, one genre for the whole series) can run; give an
+  error to every row and the whole call is written again. Pass either to
+  `build_controller(config, assess=..., assess_call=...)`; the call-level function wins when both
+  are given. Without either, the rule set's own assessor is used (the rule pool brings
+  `rps.assessor.Assessor`), else a function that accepts any row with content. Error lines go back to
+  the writer as `code: message` on the one retry; flags are bare codes for the reviewers. The
+  context carries `assignment`, the runner's choices for the call as plain data (for the rule pool
+  `{"relation_part", "unknown_keys", "wordings"}`, the same values the task text told the writer).
+- **Writers.** `rps.providers.base.Writer` has `prepare`, `submit`, `poll`, `results` and `recover`,
+  and optional `accepting`, `split`, `release`, `close`, `check_rules`, `restore` and `drain_notes`.
+  A writer that sends one call at a time can build on `rps.providers.pool.PoolWriter`. Register an
+  adapter in `rps/providers/__init__.py`. `FakeWriter` needs no network and can be told what to
+  return, which is how the tests run.
 - **Planner.** `build_controller(config, planner=fn)`, where `fn(state)` returns a list of
   `TaskSpec`, replaces the tasks file.
 
@@ -287,6 +510,13 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 
 ## Left for later
 
-- The three provider adapters (stubs).
-- The real assessor, which is meant to arrive as a separate package plugging into `AssessFn`.
-- The price table is seeded by hand and carries its date; check it before spending.
+- Routes of kind `claude-code`, `codex` and `gemini-cli` (the configuration accepts them; there is
+  no adapter).
+- Gemini batches from a JSONL file (only inline requests are built).
+- The pricing test that settles whether batch discounts stack with cache prices, and the probe
+  phase that compares effort and picture-resolution levels (the defaults are for dry runs).
+- A near-duplicate index kept across runs for the assessor (`Assessor(index=...)` takes one).
+- The routing table governs the writing routes only. A review packet still carries the pictures of
+  its rows whatever their class, so which reviewers may see which classes is for the person who
+  hands out the packets to decide.
+- The storage fee of a Gemini cache is not in the ledger (only tokens are).

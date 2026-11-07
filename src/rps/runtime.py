@@ -82,8 +82,9 @@ def build_controller(
     instead of the configured ones; every other keyword (`prices`, `assess`,
     `printer`, ...) goes to `Controller`.
 
-    A provider that has no adapter yet raises ConfigError here; an adapter that is
-    still a stub raises NotImplementedError when the controller first uses it.
+    A provider or route kind that has no adapter raises ConfigError here, naming what is
+    missing. A route whose key is missing or that is switched off is built but closed: the
+    controller leaves its calls alone and says why.
     """
     return Controller(
         config,
