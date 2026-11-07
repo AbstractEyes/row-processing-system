@@ -288,6 +288,12 @@ class RulesConfig:
     called `writer_system.md` and `row_schema.json` (and `VERSION`). The version is
     recorded on every row; when none is given it is a hash of the two files, so a
     changed rule set always has a new version.
+
+    `assessor` names the checker for rows written under these rules, as "module:name"
+    (a class or a function that is called with no arguments and returns an object that is
+    called with a row and its context, and may have an `assess_call` method for all the
+    rows of one call). Left out, the rule pool shipped in this package (`rps.rules`)
+    brings its own assessor and any other rule set has none; "none" turns it off.
     """
 
     system_file: str | None = None
@@ -295,6 +301,7 @@ class RulesConfig:
     version: str | None = None
     version_file: str | None = None
     package: str | None = None
+    assessor: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -303,6 +310,7 @@ class RulesConfig:
             "version": self.version,
             "version_file": self.version_file,
             "package": self.package,
+            "assessor": self.assessor,
         }
 
     @classmethod
@@ -310,14 +318,17 @@ class RulesConfig:
         where = "rules"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"system_file", "schema_file", "version", "version_file", "package"}, where)
+        _check_keys(data, {"system_file", "schema_file", "version", "version_file", "package", "assessor"}, where)
         rules = cls(
             system_file=_text(data.get("system_file"), f"{where}.system_file", allow_none=True),
             schema_file=_text(data.get("schema_file"), f"{where}.schema_file", allow_none=True),
             version=_text(data.get("version"), f"{where}.version", allow_none=True),
             version_file=_text(data.get("version_file"), f"{where}.version_file", allow_none=True),
             package=_text(data.get("package"), f"{where}.package", allow_none=True),
+            assessor=_text(data.get("assessor"), f"{where}.assessor", allow_none=True),
         )
+        if rules.assessor is not None and rules.assessor.lower() != "none" and ":" not in rules.assessor:
+            _fail(f"{where}.assessor: expected 'module:name' or 'none', got {rules.assessor!r}")
         if rules.package is None and (rules.system_file is None or rules.schema_file is None):
             _fail(f"{where}: name both system_file and schema_file, or a package that holds them")
         return rules

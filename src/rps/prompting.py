@@ -5,16 +5,22 @@ writer's answer must follow, and a version. The version is recorded on every row
 rules produced and keys the providers' prompt caches, so a changed rule set always
 has a new version.
 
-A rule set can also bring two functions:
+A rule set can also bring some functions and an object:
 
-    task_text(spec, ordinal) -> str            the user text of one call, built from a
-                                               spec line and the line's position in its batch
+    assign(spec, ordinal) -> choices           the choices the runner makes for one call
+                                               (which part of a relation to ask about, ...),
+                                               from the spec line and its position in the batch
+    task_text(spec, ordinal[, choices]) -> str the user text of one call, built from a
+                                               spec line, its position and the choices
     normalize(text, spec, model) -> str|None   turns the writer's answer into the JSON list
                                                of rows the controller reads
+    assessor                                   checks the rows a call returned (see rps.assess)
 
 Without them, a spec is sent as text (a string as it is, anything else as JSON) and the
 answer is read as it comes. When an earlier attempt failed its checks, the check
-messages follow the task text so the writer can fix them.
+messages follow the task text so the writer can fix them. The choices are also handed
+to the assessor (`AssessContext.assignment`), as plain data, so a check can compare a
+row with what the writer was told.
 """
 
 from __future__ import annotations
@@ -37,7 +43,11 @@ DEFAULT_VERSION_FILE = "VERSION"
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
-TaskTextFn = Callable[[Any, int], str]
+# Rule sets that come with a checker of their own, by package name.
+DEFAULT_ASSESSORS: Mapping[str, str] = {"rps.rules": "rps.assessor:Assessor"}
+
+TaskTextFn = Callable[..., str]
+AssignFn = Callable[[Any, int], Any]
 NormalizeFn = Callable[[str | None, Any, str], str | None]
 
 
@@ -45,8 +55,8 @@ NormalizeFn = Callable[[str | None, Any, str], str | None]
 class WriterRules:
     """What every writer call is told: the system prompt, the answer schema and the version.
 
-    `schema_name` is the name some providers want beside a schema. `task_text` and
-    `normalize` are the optional functions described in the module notes.
+    `schema_name` is the name some providers want beside a schema. `task_text`, `assign`,
+    `normalize` and `assessor` are the optional parts described in the module notes.
     """
 
     system: str
@@ -55,6 +65,8 @@ class WriterRules:
     schema_name: str = "row"
     task_text: TaskTextFn | None = field(default=None, compare=False, repr=False)
     normalize: NormalizeFn | None = field(default=None, compare=False, repr=False)
+    assign: AssignFn | None = field(default=None, compare=False, repr=False)
+    assessor: Any = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.system, str) or not self.system.strip():
@@ -81,6 +93,8 @@ def make_rules(
     *,
     task_text: TaskTextFn | None = None,
     normalize: NormalizeFn | None = None,
+    assign: AssignFn | None = None,
+    assessor: Any = None,
 ) -> WriterRules:
     """Build rules from text, with a content-hash version when none is given."""
     return WriterRules(
@@ -90,6 +104,8 @@ def make_rules(
         schema_name=schema_name,
         task_text=task_text,
         normalize=normalize,
+        assign=assign,
+        assessor=assessor,
     )
 
 
@@ -114,17 +130,40 @@ def _hook(package: str, module: str, name: str) -> Callable[..., Any] | None:
     return found if callable(found) else None
 
 
+def make_assessor(path: str) -> Any:
+    """Build a checker from a "module:name" path: a class or function called with no arguments.
+
+    Something that is not callable is used as it is (an already built checker).
+    """
+    module_name, _, attribute = path.partition(":")
+    if not module_name or not attribute:
+        raise ConfigError(f"rules.assessor: expected 'module:name', got {path!r}")
+    try:
+        found = getattr(importlib.import_module(module_name), attribute)
+    except (ImportError, AttributeError) as error:
+        raise ConfigError(f"rules.assessor {path!r} cannot be loaded: {error}") from None
+    if not callable(found):
+        return found
+    try:
+        return found()
+    except Exception as error:
+        raise ConfigError(f"rules.assessor {path!r} could not be built: {type(error).__name__}: {error}") from None
+
+
 def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None) -> WriterRules:
     """Read the rules a `RulesConfig` names.
 
     Relative file names are taken from `base_dir` (the current folder when omitted).
     A package supplies `writer_system.md`, `row_schema.json` and, optionally, a version
-    (its `rules_version()` function, else a `VERSION` file) and the two functions
-    `task_text.build_task_text` and `form.normalize_output`.
+    (its `rules_version()` function, else a `VERSION` file) and the functions
+    `task_text.build_task_text`, `balance.assign` and `form.normalize_output`. The
+    checker comes from `config.assessor`, or from the package's default (see
+    `DEFAULT_ASSESSORS`).
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     task_text: TaskTextFn | None = None
     normalize: NormalizeFn | None = None
+    assign: AssignFn | None = None
     if config.package:
         try:
             module = importlib.import_module(config.package)
@@ -147,6 +186,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
                 version_text = None
         task_text = _hook(config.package, "task_text", "build_task_text")
         normalize = _hook(config.package, "form", "normalize_output")
+        assign = _hook(config.package, "balance", "assign")
     else:
         system = _read(base / str(config.system_file), "system prompt file")
         schema_text = _read(base / str(config.schema_file), "schema file")
@@ -158,7 +198,19 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     if not isinstance(schema, dict):
         raise ConfigError("the row schema must be a JSON object")
     version = config.version or version_text or rules_version(system, schema)
-    return WriterRules(system=system, schema=schema, version=version, task_text=task_text, normalize=normalize)
+    assessor_path = config.assessor if config.assessor is not None else DEFAULT_ASSESSORS.get(config.package or "")
+    assessor = None
+    if assessor_path and assessor_path.lower() != "none":
+        assessor = make_assessor(assessor_path)
+    return WriterRules(
+        system=system,
+        schema=schema,
+        version=version,
+        task_text=task_text,
+        normalize=normalize,
+        assign=assign,
+        assessor=assessor,
+    )
 
 
 def spec_text(spec: Any) -> str:
@@ -176,10 +228,31 @@ def feedback_text(feedback: Sequence[str]) -> str:
     return f"\n\nYour previous answer for this task failed these checks. Answer again and fix every one of them:\n{lines}"
 
 
+def assignment_for(spec: Any, ordinal: int, rules: WriterRules | None) -> Any:
+    """The runner's choices for one call, as the rule set's `assign` function returns them (or None)."""
+    if rules is None or rules.assign is None:
+        return None
+    return rules.assign(spec, ordinal)
+
+
+def assignment_data(choices: Any) -> dict[str, Any] | None:
+    """The runner's choices as plain data for the assessor: `to_dict()` of the object, or the mapping itself."""
+    if choices is None:
+        return None
+    if hasattr(choices, "to_dict"):
+        choices = choices.to_dict()
+    return dict(choices) if isinstance(choices, Mapping) else None
+
+
 def render_task_text(spec: Any, feedback: Sequence[str] = (), *, ordinal: int = 0, rules: WriterRules | None = None) -> str:
-    """The user text of one call: the task text for the spec line, then any check messages."""
+    """The user text of one call: the task text for the spec line, then any check messages.
+
+    The runner's choices (`assign`) are worked out once here and handed to the task text,
+    so the text and the assessor's `AssessContext.assignment` carry the same values.
+    """
     if rules is not None and rules.task_text is not None:
-        text = rules.task_text(spec, ordinal)
+        choices = assignment_for(spec, ordinal, rules)
+        text = rules.task_text(spec, ordinal) if choices is None else rules.task_text(spec, ordinal, choices)
     else:
         text = spec_text(spec)
     return text + feedback_text(feedback)

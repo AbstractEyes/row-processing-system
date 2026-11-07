@@ -49,7 +49,7 @@ from .images import ImageError, load_picture
 from .keys import redact
 from .layout import controller_actor
 from .ledger import Ledger, PriceTable, effective_purpose
-from .prompting import WriterRules, load_writer_rules, render_task_text
+from .prompting import WriterRules, assignment_data, assignment_for, load_writer_rules, render_task_text
 from .provenance import (
     ProvenanceError,
     SourceLabel,
@@ -224,11 +224,18 @@ class Controller:
         self.writers = dict(writers)
         self.prices = prices or (PriceTable.load(config.price_table) if config.price_table else PriceTable.default())
         self.ledger = Ledger(config, self.prices)
-        self.assess: AssessFn = assess or default_assess
-        self.assess_call: AssessCallFn | None = assess_call
         self.rules: WriterRules | None = rules if rules is not None else (
             load_writer_rules(config.rules) if config.rules is not None else None
         )
+        self.assess: AssessFn = assess or default_assess
+        self.assess_call: AssessCallFn | None = assess_call
+        checker = self.rules.assessor if self.rules is not None else None
+        if checker is not None and assess is None and assess_call is None:
+            # The rule set's own checker, unless the caller brought one.
+            if callable(getattr(checker, "assess_call", None)):
+                self.assess_call = checker.assess_call
+            if callable(checker):
+                self.assess = checker
         self.planner: Planner | None = planner or (FilePlanner(config.tasks_file) if config.tasks_file else None)
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
@@ -1162,6 +1169,7 @@ class Controller:
             pool_version=task.pool_version,
             spec=line.spec,
             item_id=line.item_id,
+            assignment=assignment_data(assignment_for(line.spec, line.ordinal, self.rules)),
         )
 
     def _settle_assessment(self, row: RowState, assessment: Assessment) -> None:

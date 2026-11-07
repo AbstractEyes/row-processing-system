@@ -40,6 +40,11 @@ class AssessContext:
     pool_version: str
     spec: Any
     item_id: str | None
+    # The choices the runner made for this call and told the writer (the rule set's
+    # `assign` function, as plain data), or None when the rules make none. The rule
+    # pool's form is {"relation_part": "a" | "rel" | "b", "unknown_keys": {depth: key},
+    # "wordings": {depth: [kind, ...]}}.
+    assignment: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
