@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable
 
 from .events import Event
+from .failures import KIND_TRUNCATED
 from .ids import canonical_json
 
 TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside"})
@@ -31,11 +32,16 @@ TERMINAL_LINE_OUTCOMES = frozenset({"accepted", "set_aside", "rejected", "exhaus
 
 @dataclass
 class LineState:
+    """One spec line of a task. `ordinal` is its position in the task (the runner's
+    per-call choices rotate on it); `image_class` is the class of its picture's origin."""
+
     line_id: str
     spec: Any
     item_id: str | None = None
     image: str | None = None
     license: str | None = None
+    image_class: str | None = None
+    ordinal: int = 0
 
 
 @dataclass
@@ -76,6 +82,8 @@ class CallState:
     error: str | None = None
     retryable: bool = True
     billed: bool = False
+    kind: str | None = None
+    tier: str | None = None
     row_ids: list[str] = field(default_factory=list)
     skips: list[dict[str, Any]] = field(default_factory=list)
     skips_recorded: bool = False
@@ -172,6 +180,7 @@ class LineStatus:
     next_attempt: int = 1
     retry_of: str | None = None
     feedback: tuple[str, ...] = ()
+    boost: bool = False  # the retry follows a truncated answer and gets a larger token limit
 
 
 @dataclass(frozen=True)
@@ -212,6 +221,8 @@ class State:
         self.batches: dict[str, BatchState] = {}
         self.packets: dict[str, PacketState] = {}
         self.refusals: dict[str, dict[str, Any]] = {}
+        self.halts: list[dict[str, Any]] = []
+        self.caches: dict[tuple[str, str], dict[str, Any]] = {}
         self.runs: list[dict[str, Any]] = []
         self._passed_by_provider: dict[str, int] = {}
         self.shipped_files: dict[tuple[str, str], tuple[str, ...]] = {}
@@ -255,13 +266,15 @@ class State:
         if p["task_id"] in self.tasks:
             return
         lines = {}
-        for item in p["lines"]:
+        for ordinal, item in enumerate(p["lines"]):
             lines[item["line_id"]] = LineState(
                 line_id=item["line_id"],
                 spec=item.get("spec"),
                 item_id=item.get("item_id"),
                 image=item.get("image"),
                 license=item.get("license"),
+                image_class=item.get("image_class"),
+                ordinal=ordinal,
             )
         self.tasks[p["task_id"]] = TaskState(
             task_id=p["task_id"],
@@ -339,6 +352,7 @@ class State:
         call.usd = float(p.get("usd", 0.0))
         call.price_table_date = p.get("price_table_date")
         call.minutes = float(p.get("minutes", 0.0))
+        call.tier = p.get("tier")
         call.finished_ts = ts
         cell = self._spend_cell(call.route, call.purpose)
         cell[1] = max(0.0, cell[1] - call.est_usd)
@@ -377,12 +391,23 @@ class State:
         call.error = str(p.get("error", ""))
         call.retryable = bool(p.get("retryable", True))
         call.billed = bool(p.get("billed", False))
+        call.kind = p.get("kind")
         self._spend_cell(call.route, call.purpose)[3] += 1
 
     def _on_batch_collected(self, event: Event) -> None:
         batch = self.batches.get(event.payload["handle_id"])
         if batch is not None:
             batch.collected = True
+
+    def _on_route_halted(self, event: Event) -> None:
+        p = event.payload
+        if any(h.get("call_id") == p.get("call_id") and h.get("route") == p["route"] for h in self.halts):
+            return
+        self.halts.append({"ts": event.ts, **p})
+
+    def _on_cache_created(self, event: Event) -> None:
+        p = event.payload
+        self.caches[(p["route"], p["key"])] = dict(p)
 
     def _on_row_assessed(self, event: Event) -> None:
         p = event.payload
@@ -560,6 +585,8 @@ class State:
         "call_returned": _on_call_returned,
         "call_failed": _on_call_failed,
         "batch_collected": _on_batch_collected,
+        "route_halted": _on_route_halted,
+        "cache_created": _on_cache_created,
         "row_assessed": _on_row_assessed,
         "row_rejected": _on_row_rejected,
         "row_set_aside": _on_row_set_aside,
@@ -634,8 +661,10 @@ class State:
             return LineStatus("in_flight")
         if latest.status == "failed":
             if latest.retryable and latest.attempt < max_attempts:
-                feedback = (latest.error,) if latest.billed and latest.error else ()
-                return LineStatus("retry", latest.attempt + 1, latest.call_id, feedback)
+                truncated = latest.kind == KIND_TRUNCATED
+                # A cut-off answer needs room, not advice; any other billed failure tells the writer what went wrong.
+                feedback = (latest.error,) if latest.billed and latest.error and not truncated else ()
+                return LineStatus("retry", latest.attempt + 1, latest.call_id, feedback, boost=truncated)
             return LineStatus("exhausted")
         rows = [self.rows[row_id] for row_id in latest.row_ids if row_id in self.rows]
         if not rows:
@@ -811,6 +840,8 @@ class State:
                         pid: {**asdict(packet), "burned": sorted(packet.burned)} for pid, packet in self.packets.items()
                     },
                     "refusals": self.refusals,
+                    "halts": self.halts,
+                    "caches": {f"{route}|{key}": value for (route, key), value in self.caches.items()},
                     "passed_by_provider": self._passed_by_provider,
                     "shipped_files": {f"{t}|{r}": list(ids) for (t, r), ids in self.shipped_files.items()},
                     "spend": {f"{r}|{p}": [round(v, 9) for v in cell] for (r, p), cell in self._spend.items()},

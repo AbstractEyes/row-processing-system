@@ -1,17 +1,26 @@
 """The writer interface and a fake writer for tests.
 
 A writer sends "write a row" calls to one model route. The controller drives it
-through four steps:
+through these steps:
 
     prepare(calls)    -> requests          build the provider requests (no network)
     submit(requests)  -> handle            send them; a batch id or per-call ids
     poll(handle)      -> PollStatus        is the batch finished?
     results(handle)   -> [CallResult]      raw outputs, usage and errors per call
+    release(handle)                        clean up once the results are safely recorded
 
 `handle` is plain data that can be stored in an event and handed back after a
 restart, so a submitted batch is polled rather than submitted again. `recover`
 lets an adapter look for a batch it submitted just before a crash, using the
 deterministic custom ids; the default finds nothing.
+
+A writer whose work arrives piece by piece (calls sent one at a time) answers a poll
+with `partial` and hands over the results that are ready; the controller records
+each one as it lands and polls again until the handle is `ended`.
+
+`accepting` lets a writer say it cannot take calls now (no key, switched off, outside
+its hours); the controller then leaves that route's calls alone. A result whose `kind`
+is in `STOP_ROUTE_KINDS` (a bad request, a rejected key) stops the route for the run.
 
 Writers read API keys from environment variables only and never log them.
 """
@@ -21,15 +30,32 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, ClassVar, Mapping, Sequence
 
 from ..config import RouteConfig
 from ..ids import custom_id as make_custom_id
 from ..ledger import Usage
+from ..prompting import WriterRules
 
 
 class ProviderError(Exception):
     """A provider call failed in a way that may succeed later."""
+
+
+class RouteUnavailable(RuntimeError):
+    """A route cannot send calls (switched off, no key, outside its hours)."""
+
+
+class RouteRejected(ProviderError):
+    """A provider turned a request down in a way no retry fixes.
+
+    `kind` is "bad_request" (the request itself is wrong) or "auth" (the key is rejected
+    or the balance is spent). The controller stops the route for the rest of the run.
+    """
+
+    def __init__(self, kind: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
 
 
 class SimulatedCrash(BaseException):
@@ -40,8 +66,28 @@ class SimulatedCrash(BaseException):
 
 
 @dataclass(frozen=True)
+class Acceptance:
+    """Whether a writer can take calls right now, and why not if it cannot.
+
+    `later` is True when the route will open by itself (a provider's off-peak hours),
+    so the controller waits for it; otherwise a closed route stays closed for the run
+    (no key, switched off) and its calls are left alone.
+    """
+
+    ok: bool
+    reason: str = ""
+    later: bool = False
+
+
+@dataclass(frozen=True)
 class CallSpec:
-    """Everything a writer needs to build one request."""
+    """Everything a writer needs to build one request.
+
+    `task_text` is the user text of the call (the spec line, the runner's choices and any
+    messages from a failed attempt); `rules` carries the system prompt, the row schema and
+    the rules version. A picture arrives in `image` only after the routing table allowed
+    it for this route, and `image_class` says what class it was.
+    """
 
     call_id: str
     task_id: str
@@ -59,6 +105,9 @@ class CallSpec:
     feedback: tuple[str, ...] = ()
     image: bytes | None = field(default=None, repr=False)
     image_ext: str | None = None
+    image_class: str | None = None
+    task_text: str | None = None
+    rules: WriterRules | None = field(default=None, repr=False)
 
     @property
     def custom_id(self) -> str:
@@ -67,13 +116,20 @@ class CallSpec:
 
 @dataclass(frozen=True)
 class Request:
-    """A provider request, ready to submit. `payload` is JSON-serializable and holds no key."""
+    """A provider request, ready to submit.
+
+    `payload` is plain data the adapter's own submit step understands; it holds no key.
+    `size_bytes` is the request's size on the wire when the adapter knows it (batches
+    have size limits). `attempt` lets a synchronous writer space out retries.
+    """
 
     call_id: str
     custom_id: str
     payload: dict[str, Any]
     est_input_tokens: int
     max_output_tokens: int
+    attempt: int = 1
+    size_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -104,7 +160,11 @@ class Handle:
 
 @dataclass(frozen=True)
 class PollStatus:
-    """`state` is in_progress, ended, failed, expired or canceled."""
+    """`state` is in_progress, partial, ended, failed, expired or canceled.
+
+    `partial` means some results are ready to be taken with `results` while the handle
+    is not finished.
+    """
 
     state: str
     note: str | None = None
@@ -115,7 +175,9 @@ class CallResult:
     """One call's outcome. `error` set means the call produced no usable output.
 
     `retryable` False marks an error a second attempt would not fix. `minutes` is the
-    time the call took when the adapter knows it.
+    time the call took when the adapter knows it. `kind` says why the call failed (one
+    of `FAILURE_KINDS`). `tier` names the price tier the call was billed at when the
+    provider has tiers (DeepSeek's peak and off-peak hours).
     """
 
     call_id: str
@@ -125,10 +187,40 @@ class CallResult:
     retryable: bool = True
     minutes: float | None = None
     stop_reason: str | None = None
+    kind: str | None = None
+    tier: str | None = None
+
+
+def split_requests(
+    requests: Sequence[Request], max_count: int, max_bytes: int | None = None
+) -> list[list[Request]]:
+    """Cut requests into groups of at most `max_count` requests and `max_bytes` bytes, in order.
+
+    A single request larger than `max_bytes` still gets a group of its own; the provider
+    will refuse it and say why.
+    """
+    groups: list[list[Request]] = []
+    current: list[Request] = []
+    size = 0
+    for request in requests:
+        too_many = len(current) >= max_count
+        too_big = max_bytes is not None and current and size + request.size_bytes > max_bytes
+        if too_many or too_big:
+            groups.append(current)
+            current, size = [], 0
+        current.append(request)
+        size += request.size_bytes
+    if current:
+        groups.append(current)
+    return groups
 
 
 class Writer(ABC):
     """Sends calls to one route. Subclasses implement the four steps."""
+
+    # True for writers that send the writing rules to a real model; the controller then
+    # refuses to start without rules.
+    needs_rules: ClassVar[bool] = False
 
     def __init__(self, route_name: str, route: RouteConfig) -> None:
         self.route_name = route_name
@@ -148,7 +240,7 @@ class Writer(ABC):
 
     @abstractmethod
     def results(self, handle: Handle) -> list[CallResult]:
-        """Return the results for a finished handle. May be called again for the same handle."""
+        """Return the results that are ready. May be called again for the same handle."""
 
     def recover(self, requests: Sequence[Request]) -> Handle | None:
         """Find work submitted for these requests by a run that crashed before recording it.
@@ -156,6 +248,27 @@ class Writer(ABC):
         Returns a handle covering the requests that were found, or None.
         """
         return None
+
+    def accepting(self) -> Acceptance:
+        """Whether this route can take calls now. The default is always."""
+        return Acceptance(True)
+
+    def split(self, requests: Sequence[Request]) -> list[list[Request]]:
+        """Cut requests into the groups that become one handle each."""
+        return split_requests(requests, self.route.max_batch_calls)
+
+    def release(self, handle: Handle) -> None:
+        """Clean up after a handle's results are recorded durably (delete uploaded files, say)."""
+
+    def close(self) -> None:
+        """Stop any background work. Called when a run ends."""
+
+    def restore(self, notes: Sequence[Mapping[str, Any]]) -> None:
+        """Hand back what this writer asked to have recorded earlier (see `drain_notes`)."""
+
+    def drain_notes(self) -> list[tuple[str, dict[str, Any]]]:
+        """Events the writer wants recorded, as (event kind, payload) pairs, then forgotten."""
+        return []
 
 
 # --------------------------------------------------------------------------- fake
@@ -170,6 +283,7 @@ class FakeOutcome:
     retryable: bool = True
     usage: Usage | None = None
     minutes: float | None = None
+    kind: str | None = None
 
 
 class FakeProvider:
@@ -239,6 +353,8 @@ class FakeWriter(Writer):
                 "feedback": list(call.feedback),
                 "has_image": call.image is not None,
                 "model": call.model,
+                "max_output_tokens": call.max_output_tokens,
+                "task_text": call.task_text,
             }
             requests.append(
                 Request(
@@ -247,6 +363,7 @@ class FakeWriter(Writer):
                     payload=payload,
                     est_input_tokens=self.est_input_tokens,
                     max_output_tokens=call.max_output_tokens,
+                    attempt=call.attempt,
                 )
             )
         return requests
@@ -290,6 +407,7 @@ class FakeWriter(Writer):
                     error=outcome.error,
                     retryable=outcome.retryable,
                     minutes=outcome.minutes,
+                    kind=outcome.kind,
                 )
             )
         return results

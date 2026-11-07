@@ -25,7 +25,9 @@ def make_config(**overrides: Any) -> Config:
                 "purpose_caps": dict(ROUTE_CAPS),
             }
         },
-        "sources": {"photos": {"image_size": 64, "license": "CC BY-NC", "dataset": "photos"}},
+        "sources": {
+            "photos": {"image_size": 64, "license": "CC BY-NC", "dataset": "photos", "image_class": "public_common"}
+        },
         "poll_seconds": 0,
         "review": {
             "packet_size": 3,

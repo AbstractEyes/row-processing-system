@@ -404,7 +404,8 @@ def test_packets_never_show_the_writer(tmp_path):
     prices = PriceTable.from_dict({"date": "2026-11-06", "models": {"model-plugh-9": {"input": 1.0, "output": 2.0}}})
     world = World(tmp_path, config=config, behavior=behavior, prices=prices)
     controller = world.controller()
-    controller.add_task(task_spec(("001", "002", "003"), image="p.jpg"))
+    # The made-up provider is not in the routing table, so this task carries no picture.
+    controller.add_task(task_spec(("001", "002", "003")))
     world.drive(controller, keep_all)
     paths = [p for p in world.state_store.list("packets/") if p.endswith("packet.json")]
     assert len(paths) == 3

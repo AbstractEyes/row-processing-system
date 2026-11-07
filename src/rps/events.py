@@ -12,14 +12,20 @@ Event kinds and their payloads:
     controller_started   run, version, config digest
     controller_stopped   run, reason, counts
     task_created         task_id, source, batch, variant, route, purpose, effort,
-                         pool_version, lines [{line_id, spec, item_id, image, license}]
+                         pool_version, lines [{line_id, spec, item_id, image, image_class, license}]
     call_prepared        call_id, task_id, line, attempt, route, purpose, est_usd,
                          est_input_tokens, max_output_tokens, image_size, feedback, retry_of
     budget_refused       call_id, route, purpose, est_usd, reason, and the spend and caps
     batch_submitted      handle_id, handle, route, call_ids (recorded before any wait)
-    call_returned        call_id, handle_id, usage, usd, price_table_date, minutes, rows, skips
-    call_failed          call_id, handle_id, error, retryable, billed, usage, usd, minutes
+    call_returned        call_id, handle_id, usage, usd, price_table_date, minutes, rows, skips,
+                         tier (the price tier the call was billed at, when the route has tiers)
+    call_failed          call_id, handle_id, error, retryable, billed, usage, usd, minutes,
+                         kind (why it failed: see rps.failures), tier
     batch_collected      handle_id, returned, failed
+    route_halted         route, kind, reason, call_id (a rejected request or key stops the route
+                         for the rest of the run)
+    cache_created        route, key, name, expires (a provider-side prompt cache a writer made,
+                         remembered so a restart reuses it)
     row_assessed         row_id, call_id, passed, flags, errors
     row_rejected         row_id, call_id, by (assessor or reviewers), reason, errors, retry
     row_set_aside        call_id, row_id (optional), class, reason
@@ -54,6 +60,8 @@ EVENT_KINDS: tuple[str, ...] = (
     "call_returned",
     "call_failed",
     "batch_collected",
+    "route_halted",
+    "cache_created",
     "row_assessed",
     "row_rejected",
     "row_set_aside",

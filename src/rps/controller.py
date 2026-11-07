@@ -28,18 +28,28 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import __version__, ids, layout
-from .assess import AssessContext, AssessFn, default_assess
+from .assess import AssessCallFn, AssessContext, AssessFn, Assessment, default_assess
 from .config import Config, ConfigError
 from .events import EventLog, Event, replay, utc_now
+from .failures import (
+    KIND_BAD_REQUEST,
+    KIND_CANCELED,
+    KIND_EXPIRED,
+    KIND_INVALID_OUTPUT,
+    KIND_PROVIDER,
+    KIND_UNEXPECTED,
+    STOP_ROUTE_KINDS,
+)
 from .images import ImageError, load_picture
 from .keys import redact
 from .layout import controller_actor
 from .ledger import Ledger, PriceTable, effective_purpose
+from .prompting import WriterRules, load_writer_rules, render_task_text
 from .provenance import (
     ProvenanceError,
     SourceLabel,
@@ -49,7 +59,7 @@ from .provenance import (
     stamp_human_row,
     stamp_row,
 )
-from .providers.base import CallResult, CallSpec, Handle, Request, Writer
+from .providers.base import CallResult, CallSpec, Handle, Request, RouteRejected, RouteUnavailable, Writer
 from .review.packets import build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
     ACCEPT,
@@ -61,6 +71,7 @@ from .review.policy import (
     pick_further_reviewer,
     settle,
 )
+from .routing import ImageRoutingError, check_image_allowed
 from .state import LineState, RowState, State, TaskState
 from .store.base import ActorStore, NotFound, RateLimitedError, Store, StoreError
 from .store.remote import describe_error
@@ -172,9 +183,13 @@ class Controller:
 
     `state_store` holds event logs, packets, pictures and verdicts; `ship_store` (the
     same store when omitted) receives accepted rows and the ledger. `writers` maps each
-    configured route to its writer. `assess` and `planner` are the pluggable hooks.
-    `clock` (monotonic seconds), `now` (UTC datetime) and `sleep` can be replaced in
-    tests; `on_event` is called after every event is written and applied.
+    configured route to its writer. `assess`, `assess_call` and `planner` are the
+    pluggable hooks: `assess` judges one row, `assess_call` judges all the rows one call
+    returned together (and wins when both are given). `rules` are the writing rules
+    (system prompt, row schema, version); when omitted they are read from the
+    configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
+    (UTC datetime) and `sleep` can be replaced in tests; `on_event` is called after
+    every event is written and applied.
     """
 
     def __init__(
@@ -186,6 +201,8 @@ class Controller:
         ship_store: Store | None = None,
         prices: PriceTable | None = None,
         assess: AssessFn | None = None,
+        assess_call: AssessCallFn | None = None,
+        rules: WriterRules | None = None,
         planner: Planner | None = None,
         image_loader: ImageLoader | None = None,
         instance: str | None = None,
@@ -208,6 +225,10 @@ class Controller:
         self.prices = prices or (PriceTable.load(config.price_table) if config.price_table else PriceTable.default())
         self.ledger = Ledger(config, self.prices)
         self.assess: AssessFn = assess or default_assess
+        self.assess_call: AssessCallFn | None = assess_call
+        self.rules: WriterRules | None = rules if rules is not None else (
+            load_writer_rules(config.rules) if config.rules is not None else None
+        )
         self.planner: Planner | None = planner or (FilePlanner(config.tasks_file) if config.tasks_file else None)
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
@@ -226,8 +247,12 @@ class Controller:
         self._events = 0
         self._parked: set[str] = set()
         self._prepared_here: set[str] = set()
+        self._halted: dict[str, str] = {}  # routes stopped for this run, with the reason
+        self._closed_notes: set[tuple[str, str]] = set()
+        self._to_release: list[tuple[Writer, Handle]] = []
         self._submit_failures = 0
         self._ship_failures = 0
+        self._last_warning: dict[str, str] = {}
         self._stop_reason: str | None = None
         self._last_stop_check = float("-inf")
         self._ledger_written: tuple[str, str] | None = None
@@ -240,14 +265,22 @@ class Controller:
         if self._started:
             return
         self.ledger.validate_prices()
-        for name in self.config.routes:
+        for name, route in self.config.routes.items():
             if name not in self.writers:
                 raise ConfigError(f"route {name!r} has no writer")
+            if self.writers[name].needs_rules and route.is_enabled and self.rules is None:
+                raise ConfigError(
+                    f"route {name!r} sends the writing rules to a model, but no rules are set "
+                    "(pass `rules`, or add a `rules` section to the configuration)"
+                )
         replayed = replay(self.state_store)
         self.state = State.from_events(replayed.events)
         if replayed.problems:
             self.problems.append(replayed.report())
             self._print(f"[rps] {replayed.report()}")
+        for name, writer in self.writers.items():
+            # A writer takes back what it asked to have recorded (a provider-side cache it made).
+            writer.restore([dict(note) for (route, _key), note in self.state.caches.items() if route == name])
         self.log = EventLog(
             self.state_store,
             self.actor,
@@ -288,6 +321,9 @@ class Controller:
 
     def _today(self) -> str:
         return self._now().astimezone(timezone.utc).strftime("%Y-%m-%d")
+
+    def _today_date(self) -> date:
+        return self._now().astimezone(timezone.utc).date()
 
     def _timestamp(self) -> str:
         return self._now().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -367,6 +403,7 @@ class Controller:
                 self._warn(f"could not flush a store: {error}")
 
     def _finish(self, reason: str, steps: int, started: float, budget: float | None) -> RunSummary:
+        self._wind_down(collect=reason != "interrupt")
         elapsed = self._clock() - started
         counts = self.state.counts()
         self._emit("controller_stopped", {"run": self.instance, "reason": reason, "steps": steps, "seconds": round(elapsed, 3), "counts": counts})
@@ -383,6 +420,26 @@ class Controller:
         )
         self._print(f"[rps] run {self.instance} ended ({reason}); " + self._progress_line(elapsed, budget))
         return summary
+
+    def _wind_down(self, *, collect: bool = True) -> None:
+        """Take in whatever has already finished, then let the writers stop their background work.
+
+        A synchronous route's calls that finished but were not collected yet are paid for;
+        recording them now saves sending those calls again. After an interrupt the last
+        collection is skipped: whoever pressed the key wants out.
+        """
+        if collect:
+            try:
+                self._stage_poll()
+            except NotImplementedError:
+                raise
+            except Exception as error:
+                self._warn(f"the last collection failed: {describe_error(error)}")
+        for name, writer in self.writers.items():
+            try:
+                writer.close()
+            except Exception as error:
+                self._warn(f"closing {name} failed: {describe_error(error)}")
 
     def _stop_requested(self, started: float, budget: float | None) -> str | None:
         if self._stop_reason:
@@ -421,6 +478,7 @@ class Controller:
         before = self._events
         self._stage_plan()
         self._stage_submit()
+        self._drain_notes()
         self._stage_poll()
         self._stage_assess()
         self._stage_review()
@@ -454,6 +512,15 @@ class Controller:
                     f"task {spec.source}/{spec.batch}, line {line.line_id}: no license "
                     "(set it on the line or on the source in the configuration)"
                 )
+            if line.image:
+                # A picture goes only where the routing table allows its class; refuse the whole
+                # task before anything is prepared or paid for.
+                image_class = line.image_class or source.image_class
+                try:
+                    check_image_allowed(image_class, route.provider)
+                except ImageRoutingError as error:
+                    raise ConfigError(f"task {spec.source}/{spec.batch}, line {line.line_id}: {error}") from None
+                entry["image_class"] = image_class
             lines.append(entry)
         self._emit(
             "task_created",
@@ -485,14 +552,32 @@ class Controller:
         return load_picture(folder / line.image, source.image_size)
 
     def _call_spec(
-        self, task: TaskState, line: LineState, attempt: int, feedback: Sequence[str]
+        self,
+        task: TaskState,
+        line: LineState,
+        attempt: int,
+        feedback: Sequence[str],
+        *,
+        boost: bool = False,
+        max_output_tokens: int | None = None,
     ) -> tuple[CallSpec, int | None]:
-        """Build the call for a spec line, with the size of the picture it carries (if any)."""
+        """Build the call for a spec line, with the size of the picture it carries (if any).
+
+        A picture is loaded only after the routing table has allowed it for the route
+        (`ImageRoutingError` otherwise). With `boost` the token limit is raised by the
+        route's truncation factor: the previous answer was cut off at the limit. A call
+        rebuilt after a restart passes the limit it was first prepared with.
+        """
         route = self.config.routes[task.route]
         image = ext = None
         size = None
         if line.image:
+            check_image_allowed(line.image_class, route.provider)
             image, ext, size = self.image_loader(self.config.source(task.source), line)
+        if not max_output_tokens:
+            max_output_tokens = route.max_output_tokens
+            if boost:
+                max_output_tokens = max(max_output_tokens + 1, int(max_output_tokens * route.truncation_factor))
         spec = CallSpec(
             call_id=ids.call_id(task.task_id, line.line_id, attempt),
             task_id=task.task_id,
@@ -503,22 +588,69 @@ class Controller:
             model=route.model,
             kind=route.kind,
             effort=task.effort or route.effort,
-            max_output_tokens=route.max_output_tokens,
+            max_output_tokens=max_output_tokens,
             spec=line.spec,
             pool_version=task.pool_version,
             purpose=effective_purpose(task.purpose, attempt),
             feedback=tuple(feedback),
             image=image,
             image_ext=ext,
+            image_class=line.image_class if line.image else None,
+            task_text=render_task_text(line.spec, feedback, ordinal=line.ordinal, rules=self.rules),
+            rules=self.rules,
         )
         return spec, size
+
+    # -- which routes may take calls
+
+    def _note_closed(self, route_name: str, reason: str, *, permanent: bool = True) -> None:
+        """Say once that a route cannot take calls, and why."""
+        if (route_name, reason) in self._closed_notes:
+            return
+        self._closed_notes.add((route_name, reason))
+        if permanent:
+            self._note_problem(f"route {route_name} is closed for this run: {reason}; its calls are left alone")
+        self._print(f"[rps] route {route_name} is closed{'' if permanent else ' for now'}: {reason}")
+
+    def route_state(self, route_name: str) -> tuple[str, str]:
+        """(state, reason) of a route: "open" (calls may go out), "later" (closed for now; it
+        opens by itself) or "closed" (for this run). Records and prints nothing."""
+        route = self.config.routes.get(route_name)
+        writer = self.writers.get(route_name)
+        if route is None or writer is None:
+            return "closed", "the route has no writer"
+        if route_name in self._halted:
+            return "closed", f"stopped for this run ({self._halted[route_name]})"
+        if not route.is_enabled:
+            return "closed", "it is switched off in the configuration"
+        acceptance = writer.accepting()
+        if acceptance.ok:
+            return "open", ""
+        return ("later" if acceptance.later else "closed"), acceptance.reason or "its writer takes no calls"
+
+    def _route_status(self, route_name: str) -> str:
+        """The state of a route, noting once why a closed route is closed."""
+        state, reason = self.route_state(route_name)
+        if state != "open" and route_name not in self._halted:
+            self._note_closed(route_name, reason, permanent=state == "closed")
+        return state
+
+    def _halt_route(self, route_name: str, kind: str, reason: str, *, call_id: str | None = None) -> None:
+        """Stop a route for the rest of this run (the provider rejected a request or the key)."""
+        if route_name in self._halted:
+            return
+        self._halted[route_name] = kind
+        text = redact(reason)[:300]
+        self._emit("route_halted", {"route": route_name, "kind": kind, "reason": text, "call_id": call_id})
+        self._note_problem(f"route {route_name} stopped for this run ({kind}): {text}")
+        self._print(f"[rps] route {route_name} stopped for this run ({kind}): {text}")
 
     def _stage_submit(self) -> None:
         if self._stop_reason:
             return
         for route_name, writer in self.writers.items():
             route = self.config.routes.get(route_name)
-            if route is None:
+            if route is None or self._route_status(route_name) != "open":
                 continue
             approved: dict[str, Request] = {}
             due = [
@@ -531,19 +663,27 @@ class Controller:
                 specs: list[CallSpec] = []
                 sizes: dict[str, int | None] = {}
                 retry_of: dict[str, str | None] = {}
+                origin: dict[str, tuple[TaskState, LineState, Any]] = {}
                 for task, line, status in group:
                     try:
-                        spec, size = self._call_spec(task, line, status.next_attempt, status.feedback)
-                    except ImageError as error:
+                        spec, size = self._call_spec(task, line, status.next_attempt, status.feedback, boost=status.boost)
+                    except (ImageError, ImageRoutingError) as error:
                         self._record_unpreparable(task, line, status, str(error))
                         continue
                     specs.append(spec)
                     sizes[spec.call_id] = size
                     retry_of[spec.call_id] = status.retry_of
+                    origin[spec.call_id] = (task, line, status)
                 if not specs:
                     continue
-                for spec, request in zip(specs, writer.prepare(specs)):
-                    estimate = self.ledger.estimate(route_name, request.est_input_tokens, request.max_output_tokens)
+                for spec, request in self._prepare_group(writer, specs):
+                    if isinstance(request, str):
+                        task, line, status = origin[spec.call_id]
+                        self._record_unpreparable(task, line, status, request)
+                        continue
+                    estimate = self.ledger.estimate(
+                        route_name, request.est_input_tokens, request.max_output_tokens, on=self._today_date()
+                    )
                     decision = self.ledger.check(self.state, route_name, spec.purpose, estimate)
                     if not decision.ok:
                         self._parked.add(spec.call_id)
@@ -580,6 +720,28 @@ class Controller:
                     approved[spec.call_id] = request
             self._submit_pending(route_name, writer, approved)
 
+    def _prepare_group(self, writer: Writer, specs: Sequence[CallSpec]) -> list[tuple[CallSpec, Request | str]]:
+        """Build the requests for a group of calls.
+
+        A call the writer cannot build comes back with the problem text in place of a
+        request, so one bad call does not take the rest of its group with it.
+        """
+        try:
+            return list(zip(specs, writer.prepare(specs)))
+        except NotImplementedError:
+            raise
+        except Exception:
+            pass
+        pairs: list[tuple[CallSpec, Request | str]] = []
+        for spec in specs:
+            try:
+                pairs.append((spec, writer.prepare([spec])[0]))
+            except NotImplementedError:
+                raise
+            except Exception as error:
+                pairs.append((spec, f"{type(error).__name__}: {error}"))
+        return pairs
+
     def _record_unpreparable(self, task: TaskState, line: LineState, status: Any, problem: str) -> None:
         """A call that cannot be built (its picture cannot be read) fails at once, without retries."""
         call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
@@ -608,6 +770,7 @@ class Controller:
                 "error": redact(f"call could not be prepared: {problem}")[:300],
                 "retryable": False,
                 "billed": False,
+                "kind": KIND_BAD_REQUEST,
                 "usage": {},
                 "usd": 0.0,
                 "price_table_date": self.prices.date,
@@ -616,21 +779,25 @@ class Controller:
         )
 
     def _rebuild_request(self, writer: Writer, call_id: str) -> Request | None:
+        """The request of a call prepared by an earlier run, rebuilt with the limit it was prepared with."""
         call = self.state.calls[call_id]
         task = self.state.tasks.get(call.task_id)
         line = task.lines.get(call.line) if task else None
         if task is None or line is None:
             return None
         try:
-            spec, _ = self._call_spec(task, line, call.attempt, call.feedback)
-        except ImageError as error:
-            self._warn(f"call {call_id}: {error}")
+            spec, _ = self._call_spec(
+                task, line, call.attempt, call.feedback, max_output_tokens=call.max_output_tokens or None
+            )
+            return writer.prepare([spec])[0]
+        except NotImplementedError:
+            raise
+        except Exception as error:
+            self._warn(f"call {call_id}: {describe_error(error)}")
             return None
-        return writer.prepare([spec])[0]
 
     def _submit_pending(self, route_name: str, writer: Writer, approved: dict[str, Request]) -> None:
         """Submit every call that is prepared but not yet submitted."""
-        route = self.config.routes[route_name]
         pending_ids = [call.call_id for call in self.state.pending_calls(route_name)]
         if not pending_ids:
             return
@@ -646,7 +813,17 @@ class Controller:
                 inherited.append(request)
         if inherited:
             # Calls prepared by an earlier run may have been submitted just before it stopped.
-            found = writer.recover(inherited)
+            try:
+                found = writer.recover(inherited)
+            except NotImplementedError:
+                raise
+            except Exception as error:
+                # Sending them again could pay twice; leave them for the next pass.
+                self._submit_failures += 1
+                self._warn(f"looking for earlier work on {route_name} failed ({self._submit_failures}): {describe_error(error)}")
+                if self._submit_failures >= self._max_failures:
+                    self._stop_reason = "submit_failing"
+                return
             if found is not None:
                 covered = set(found.call_ids)
                 self._emit(
@@ -661,11 +838,17 @@ class Controller:
                     durable=True,
                 )
                 requests = [r for r in requests if r.call_id not in covered]
-        for group in _chunks(requests, route.max_batch_calls):
+        for group in writer.split(requests):
             try:
                 handle = writer.submit(group)
             except NotImplementedError:
                 raise
+            except RouteRejected as error:
+                self._halt_route(route_name, error.kind, str(error), call_id=group[0].call_id if group else None)
+                return
+            except RouteUnavailable as error:
+                self._note_closed(route_name, str(error), permanent=False)
+                return
             except Exception as error:
                 self._submit_failures += 1
                 self._warn(f"submit to {route_name} failed ({self._submit_failures}): {describe_error(error)}")
@@ -694,6 +877,7 @@ class Controller:
                 "error": "call could not be rebuilt after a restart (its task or picture is missing)",
                 "retryable": False,
                 "billed": False,
+                "kind": KIND_UNEXPECTED,
                 "usage": {},
                 "usd": 0.0,
                 "price_table_date": self.prices.date,
@@ -702,6 +886,43 @@ class Controller:
         )
 
     # ------------------------------------------------------------------ poll and collect
+
+    def _warn_changed(self, key: str, message: str) -> None:
+        """Print a warning unless the same one was the last printed for this key."""
+        if self._last_warning.get(key) != message:
+            self._last_warning[key] = message
+            self._warn(message)
+
+    def _flush_state(self) -> bool:
+        """Make everything recorded so far durable. False when the store could not take it now."""
+        try:
+            self.state_store.flush(force=True)
+        except RateLimitedError as error:
+            self._warn(str(error))
+            return False
+        except StoreError as error:
+            self._warn(f"could not flush the state store: {error}")
+            return False
+        return True
+
+    def _release_ready(self) -> None:
+        """Let writers clean up after handles whose results are durably recorded."""
+        if not self._to_release or not self._flush_state():
+            return
+        waiting, self._to_release = self._to_release, []
+        for writer, handle in waiting:
+            try:
+                writer.release(handle)
+            except NotImplementedError:
+                raise
+            except Exception as error:
+                self._warn(f"clean-up after {handle.handle_id} failed: {describe_error(error)}")
+
+    def _drain_notes(self) -> None:
+        """Record what writers asked to have remembered (a cache they made)."""
+        for writer in self.writers.values():
+            for kind, payload in writer.drain_notes():
+                self._emit(kind, payload, durable=True)
 
     def _stage_poll(self) -> None:
         for batch in list(self.state.batches_to_poll()):
@@ -714,27 +935,36 @@ class Controller:
             except NotImplementedError:
                 raise
             except Exception as error:
-                self._warn(f"polling {batch.handle_id} failed: {describe_error(error)}")
+                self._warn_changed(batch.handle_id, f"polling {batch.handle_id} failed: {describe_error(error)}")
                 continue
             if status.state == "in_progress":
                 continue
             returned = failed = 0
-            if status.state == "ended":
+            if status.state in ("ended", "partial"):
                 try:
                     results = writer.results(handle)
                 except NotImplementedError:
                     raise
                 except Exception as error:
-                    self._warn(f"collecting {batch.handle_id} failed: {describe_error(error)}")
+                    self._warn_changed(batch.handle_id, f"collecting {batch.handle_id} failed: {describe_error(error)}")
                     continue
                 returned, failed = self._collect(batch.handle_id, batch.call_ids, batch.submitted_ts, results)
-                failed += self._fail_unfinished(batch.handle_id, batch.call_ids, "the call is missing from the batch results")
+                if status.state == "partial":
+                    if returned or failed:
+                        self._flush_state()  # results already paid for are made durable as they land
+                    continue
+                failed += self._fail_unfinished(
+                    batch.handle_id, batch.call_ids, "the call is missing from the batch results", KIND_UNEXPECTED
+                )
             else:
                 note = f": {status.note}" if status.note else ""
-                failed = self._fail_unfinished(batch.handle_id, batch.call_ids, f"the batch {status.state}{note}")
+                kind = {"expired": KIND_EXPIRED, "canceled": KIND_CANCELED}.get(status.state, KIND_PROVIDER)
+                failed = self._fail_unfinished(
+                    batch.handle_id, batch.call_ids, f"the batch {status.state}{note}", kind
+                )
             self._emit("batch_collected", {"handle_id": batch.handle_id, "returned": returned, "failed": failed})
-            if handle.mode == "per_call":
-                self.state_store.flush(force=True)
+            self._to_release.append((writer, handle))
+        self._release_ready()
 
     def _collect(self, handle_id: str, call_ids: Sequence[str], submitted_ts: str, results: Sequence[CallResult]) -> tuple[int, int]:
         by_id = {result.call_id: result for result in results}
@@ -750,7 +980,7 @@ class Controller:
                 failed += 1
         return returned, failed
 
-    def _fail_unfinished(self, handle_id: str, call_ids: Sequence[str], error: str) -> int:
+    def _fail_unfinished(self, handle_id: str, call_ids: Sequence[str], error: str, kind: str = KIND_PROVIDER) -> int:
         count = 0
         for call_id in call_ids:
             call = self.state.calls.get(call_id)
@@ -764,6 +994,7 @@ class Controller:
                     "error": error,
                     "retryable": True,
                     "billed": False,
+                    "kind": kind,
                     "usage": {},
                     "usd": 0.0,
                     "price_table_date": self.prices.date,
@@ -777,11 +1008,11 @@ class Controller:
         """Turn one call result into a call_returned or call_failed event. True if it returned rows."""
         call = self.state.calls[call_id]
         task = self.state.tasks[call.task_id]
-        usd = self.ledger.cost(call.route, result.usage)
+        usd = self.ledger.cost(call.route, result.usage, tier=result.tier, on=self._today_date())
         minutes = result.minutes
         if minutes is None:
             minutes = max(0.0, (self._now() - _parse_ts(submitted_ts)).total_seconds() / 60.0)
-        common = {
+        common: dict[str, Any] = {
             "call_id": call_id,
             "handle_id": handle_id,
             "usage": result.usage.to_dict(),
@@ -789,13 +1020,28 @@ class Controller:
             "price_table_date": self.prices.date,
             "minutes": round(minutes, 4),
         }
+        if result.tier:
+            common["tier"] = result.tier
         if result.error:
+            kind = result.kind or (KIND_PROVIDER if result.retryable else KIND_UNEXPECTED)
             self._emit(
                 "call_failed",
-                {**common, "error": redact(result.error)[:300], "retryable": result.retryable, "billed": usd > 0},
+                {
+                    **common,
+                    "error": redact(result.error)[:300],
+                    "retryable": result.retryable,
+                    "billed": usd > 0,
+                    "kind": kind,
+                },
             )
+            if kind in STOP_ROUTE_KINDS:
+                self._halt_route(call.route, kind, result.error, call_id=call_id)
             return False
-        rows, skips, problem = parse_output(result.output)
+        output, problem = self._normalized(task, call.line, call.route, result.output)
+        rows: list[dict[str, Any]] = []
+        skips: list[dict[str, Any]] = []
+        if problem is None:
+            rows, skips, problem = parse_output(output)
         if problem:
             self._emit(
                 "call_failed",
@@ -804,6 +1050,7 @@ class Controller:
                     "error": f"unusable output: {problem}",
                     "retryable": True,
                     "billed": True,
+                    "kind": KIND_INVALID_OUTPUT,
                     "output": (result.output or "")[:2000],
                 },
             )
@@ -814,6 +1061,22 @@ class Controller:
             {**common, "rows": stamped, "row_flags": flags, "skips": skips, "stop_reason": result.stop_reason},
         )
         return True
+
+    def _normalized(self, task: TaskState, line_id: str, route_name: str, output: str | None) -> tuple[str | None, str | None]:
+        """The writer's answer in the form `parse_output` reads, and a problem text when it cannot be.
+
+        This is where a rule set's `normalize` function is applied: once, for every provider.
+        """
+        normalize = self.rules.normalize if self.rules is not None else None
+        if normalize is None or output is None or not output.strip():
+            return output, None
+        try:
+            converted = normalize(output, task.lines[line_id].spec, self.config.routes[route_name].model)
+        except Exception as error:  # a rule function must not stop the run
+            return None, f"the answer could not be turned into rows ({type(error).__name__}: {error})"
+        if converted is None:
+            return None, "the answer could not be turned into rows"
+        return converted, None
 
     def _stamp(
         self, call_id: str, task: TaskState, line_id: str, image_size: int | None, rows: Sequence[dict[str, Any]]
@@ -829,6 +1092,7 @@ class Controller:
             task_id=task.task_id,
             pool_version=task.pool_version,
             image_size=image_size,
+            rules_version=self.rules.version if self.rules is not None else None,
         )
         source = SourceLabel(
             dataset=task.dataset or task.source,
@@ -860,46 +1124,72 @@ class Controller:
             )
         for row in self.state.rows_failed_unrejected():
             self._reject_after_assessment(row, row.errors)
-        for row in self.state.rows_awaiting_assessment():
-            call = self.state.calls[row.call_id]
-            task = self.state.tasks[row.task_id]
-            line = task.lines[row.line]
-            context = AssessContext(
-                task_id=task.task_id,
-                source=task.source,
-                batch=task.batch,
-                line=row.line,
-                attempt=call.attempt,
-                route=row.route,
-                pool_version=task.pool_version,
-                spec=line.spec,
-                item_id=line.item_id,
-            )
-            assessment = self.assess(row.record, context)
-            if assessment.set_aside:
-                self._emit(
-                    "row_set_aside",
-                    {
-                        "row_id": row.row_id,
-                        "call_id": row.call_id,
-                        "class": str(assessment.set_aside.get("class", "other")),
-                        "reason": str(assessment.set_aside.get("reason", ""))[:300],
-                    },
+        waiting = self.state.rows_awaiting_assessment()
+        if self.assess_call is None:
+            for row in waiting:
+                self._settle_assessment(row, self.assess(row.record, self._assess_context(row)))
+            return
+        # A call-level function sees every row one call returned, so checks that compare the
+        # rows of a call (a series' nesting, one genre for the whole series) can run.
+        by_call: dict[str, list[RowState]] = {}
+        for row in waiting:
+            by_call.setdefault(row.call_id, []).append(row)
+        for call_id, rows in by_call.items():
+            call = self.state.calls[call_id]
+            context = self._assess_context(rows[0])
+            records = [self.state.rows[row_id].record for row_id in call.row_ids]
+            assessments = list(self.assess_call(records, context))
+            if len(assessments) != len(records):
+                raise ControllerError(
+                    f"the call-level assess function returned {len(assessments)} assessments "
+                    f"for the {len(records)} rows of call {call_id}"
                 )
-                continue
-            errors = [str(error) for error in assessment.errors]
+            by_row = dict(zip(call.row_ids, assessments))
+            for row in rows:
+                self._settle_assessment(row, by_row[row.row_id])
+
+    def _assess_context(self, row: RowState) -> AssessContext:
+        call = self.state.calls[row.call_id]
+        task = self.state.tasks[row.task_id]
+        line = task.lines[row.line]
+        return AssessContext(
+            task_id=task.task_id,
+            source=task.source,
+            batch=task.batch,
+            line=row.line,
+            attempt=call.attempt,
+            route=row.route,
+            pool_version=task.pool_version,
+            spec=line.spec,
+            item_id=line.item_id,
+        )
+
+    def _settle_assessment(self, row: RowState, assessment: Assessment) -> None:
+        """Record what an assess function decided about one row."""
+        if assessment.set_aside:
             self._emit(
-                "row_assessed",
+                "row_set_aside",
                 {
                     "row_id": row.row_id,
                     "call_id": row.call_id,
-                    "passed": bool(assessment.passed),
-                    "flags": [str(flag) for flag in assessment.flags],
-                    "errors": errors,
+                    "class": str(assessment.set_aside.get("class", "other")),
+                    "reason": str(assessment.set_aside.get("reason", ""))[:300],
                 },
             )
-            if not assessment.passed:
-                self._reject_after_assessment(self.state.rows[row.row_id], errors)
+            return
+        errors = [str(error) for error in assessment.errors]
+        self._emit(
+            "row_assessed",
+            {
+                "row_id": row.row_id,
+                "call_id": row.call_id,
+                "passed": bool(assessment.passed),
+                "flags": [str(flag) for flag in assessment.flags],
+                "errors": errors,
+            },
+        )
+        if not assessment.passed:
+            self._reject_after_assessment(self.state.rows[row.row_id], errors)
 
     def _reject_after_assessment(self, row: RowState, errors: Sequence[str]) -> None:
         call = self.state.calls[row.call_id]
@@ -1109,7 +1399,7 @@ class Controller:
     def _upstream_idle(self) -> bool:
         s = self.state
         return not (
-            s.pending_calls()
+            self._pending_calls()
             or s.batches_to_poll()
             or self._calls_due()
             or s.rows_awaiting_assessment()
@@ -1118,11 +1408,33 @@ class Controller:
         )
 
     def _calls_due(self) -> list[Any]:
-        return [
-            item
-            for item in self.state.lines_needing_calls(self.config.max_attempts)
-            if ids.call_id(item[0].task_id, item[1].line_id, item[2].next_attempt) not in self._parked
-        ]
+        """Spec lines due a call, leaving out calls a budget refused and calls on closed routes.
+
+        A route that is closed for the run (no key, switched off, stopped) cannot do
+        them, so they do not keep the run waiting; a route that opens later does.
+        """
+        status: dict[str, str] = {}
+        due = []
+        for item in self.state.lines_needing_calls(self.config.max_attempts):
+            task, line, line_status = item
+            if ids.call_id(task.task_id, line.line_id, line_status.next_attempt) in self._parked:
+                continue
+            if task.route not in status:
+                status[task.route] = self._route_status(task.route)
+            if status[task.route] != "closed":
+                due.append(item)
+        return due
+
+    def _pending_calls(self) -> list[Any]:
+        """Calls prepared but not yet submitted, on routes that are not closed for the run."""
+        status: dict[str, str] = {}
+        pending = []
+        for call in self.state.pending_calls():
+            if call.route not in status:
+                status[call.route] = self._route_status(call.route)
+            if status[call.route] != "closed":
+                pending.append(call)
+        return pending
 
     def _plan_assignments(self) -> tuple[dict[str, list[tuple[RowState, int, bool]]], list[tuple[RowState, str]]]:
         """Which rows go to which reviewer next. Pure: records nothing.
@@ -1280,7 +1592,7 @@ class Controller:
             len(items) for items in plan.values() if len(items) >= packet_size or self._upstream_idle()
         )
         return (
-            len(s.pending_calls())
+            len(self._pending_calls())
             + len(s.batches_to_poll())
             + len(self._calls_due())
             + len(s.rows_awaiting_assessment())
@@ -1327,12 +1639,17 @@ class Controller:
         )
 
     def status(self) -> dict[str, Any]:
-        """Counts, progress and spend, as plain data."""
+        """Counts, progress, spend and the state of each route, as plain data."""
+        routes = {}
+        for name in self.config.routes:
+            state, reason = self.route_state(name)
+            routes[name] = {"state": state, "reason": reason}
         return {
             "run": self.instance,
             "progress": self.state.job_progress(self.config.max_attempts),
             "counts": self.state.counts(),
             "spend": self.ledger.status_rows(self.state),
+            "routes": routes,
             "price_table_date": self.prices.date,
             "problems": list(self.problems),
         }
@@ -1351,6 +1668,10 @@ class Controller:
         ]
         if self._parked:
             lines.append(f"{len(self._parked)} call(s) refused by a budget this run")
+        for name in self.config.routes:
+            state, reason = self.route_state(name)
+            if state != "open":
+                lines.append(f"route {name}: {'closed' if state == 'closed' else 'closed for now'} ({reason})")
         for note in self.prices.warnings():
             lines.append(f"note: {note}")
         return "\n".join(lines)
