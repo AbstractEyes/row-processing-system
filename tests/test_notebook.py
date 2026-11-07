@@ -17,7 +17,7 @@ from rps.store.local import LocalStore
 
 NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "notebooks" / "controller_colab.ipynb"
 COLAB_URL = "https://colab.research.google.com/github/AbstractEyes/row-processing-system/blob/main/notebooks/controller_colab.ipynb"
-INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.1.0"'
+INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.0"'
 
 
 @pytest.fixture(scope="module")
@@ -63,7 +63,7 @@ def test_the_install_cell_installs_the_tagged_release_from_github(notebook):
 
 
 def test_the_code_cells_come_in_the_documented_order(notebook):
-    assert [cell["id"] for cell in code_cells(notebook)] == ["install", "secrets", "config", "tasks", "run", "status"]
+    assert [cell["id"] for cell in code_cells(notebook)] == ["install", "secrets", "dryrun", "config", "tasks", "run", "status"]
 
 
 def test_cells_are_whole_and_colab_safe(notebook):
@@ -148,6 +148,20 @@ def test_the_cells_run_as_a_dry_run_and_print_only_secret_names(notebook, tmp_pa
     assert controller.state.spend("demo", "test").calls == 6
     assert (tmp_path / "work" / "tasks.json").exists()
     assert json.loads((tmp_path / "work" / "tasks.json").read_text(encoding="utf-8"))[0]["purpose"] == "test"
+
+
+def test_the_dry_run_cell_sends_nothing_unless_a_route_is_named(notebook, tmp_path, monkeypatch):
+    from rps import dryrun
+
+    calls = []
+    monkeypatch.setattr(dryrun, "dry_run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    namespace, _printed = execute(notebook, tmp_path, monkeypatch, {}, only=("dryrun",))
+    assert namespace["DRY_RUN_ROUTE"] is None and calls == []
+    # naming a route runs the dry run, five calls, through the function (no argument parser)
+    cell = next(cell for cell in code_cells(notebook) if cell["id"] == "dryrun")
+    text = runnable(source(cell)).replace("DRY_RUN_ROUTE = None", 'DRY_RUN_ROUTE = "luna-batch"')
+    exec(compile(text, "dryrun", "exec"), {})
+    assert calls == [(("luna-batch",), {"calls": 5})]
 
 
 def test_the_secrets_cell_reports_a_secret_that_is_not_shared_without_failing(notebook, tmp_path, monkeypatch):
