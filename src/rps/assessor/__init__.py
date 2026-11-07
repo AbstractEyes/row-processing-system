@@ -12,11 +12,11 @@ a real-picture item whose hint implies a person the records leave out).
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from ..assess import AssessContext, Assessment
 from . import checks, validator
-from .problems import ERROR, FLAG, Problem, errors, flags
+from .problems import ERROR, Problem, errors, flags
 from .report import Report, balance_problems, row_stats
 from .similarity import SimilarityIndex
 
@@ -108,7 +108,7 @@ def _tie_ranks(rows: Sequence[Mapping[str, Any]], per_row: Sequence[Sequence[Pro
     if not failed:
         return results
     tied = list(results)
-    for i, row in enumerate(rows):
+    for i in range(len(rows)):
         others = [j for j in failed if j != i]
         if not others:
             continue

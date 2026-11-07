@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .problems import ERROR, FLAG, Problem
 
