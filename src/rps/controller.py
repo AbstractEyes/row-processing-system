@@ -820,8 +820,9 @@ class Controller:
             requests.append(request)
             if call_id not in self._prepared_here:
                 inherited.append(request)
-        if inherited:
-            # Calls prepared by an earlier run may have been submitted just before it stopped.
+        # Calls prepared by an earlier run may have been submitted just before it stopped. Every
+        # batch the writer can find for them is taken up again, so none is sent twice.
+        while inherited:
             try:
                 found = writer.recover(inherited)
             except NotImplementedError:
@@ -833,20 +834,26 @@ class Controller:
                 if self._submit_failures >= self._max_failures:
                     self._stop_reason = "submit_failing"
                 return
-            if found is not None:
-                covered = set(found.call_ids)
-                self._emit(
-                    "batch_submitted",
-                    {
-                        "handle_id": found.handle_id,
-                        "handle": found.to_dict(),
-                        "route": route_name,
-                        "call_ids": [cid for cid in pending_ids if cid in covered],
-                        "recovered": True,
-                    },
-                    durable=True,
-                )
-                requests = [r for r in requests if r.call_id not in covered]
+            # Only calls still waiting for a handle count, so each pass takes in at least one more
+            # and the loop ends.
+            covered = set(found.call_ids) & {r.call_id for r in inherited} if found is not None else set()
+            if found is None or not covered:
+                break
+            self._emit(
+                "batch_submitted",
+                {
+                    "handle_id": found.handle_id,
+                    "handle": found.to_dict(),
+                    "route": route_name,
+                    "call_ids": [cid for cid in pending_ids if cid in covered],
+                    "recovered": True,
+                },
+                durable=True,
+            )
+            requests = [r for r in requests if r.call_id not in covered]
+            inherited = [r for r in inherited if r.call_id not in covered]
+        if not requests:
+            return
         for group in writer.split(requests):
             try:
                 handle = writer.submit(group)

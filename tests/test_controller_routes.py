@@ -336,6 +336,35 @@ def test_a_handle_the_writer_lost_fails_its_calls_and_they_are_sent_again_as_reb
     assert [e.payload["purpose"] for e in world.events_of("call_prepared")] == ["production", "rebound"]
 
 
+def test_every_batch_a_crash_left_unrecorded_is_found_again_before_anything_is_sent(tmp_path):
+    from rps.providers import SimulatedCrash
+
+    class TwoLost(FakeWriter):
+        def split(self, requests):
+            return [list(requests)]
+
+        def submit(self, requests):
+            if not self.provider.batches:
+                for group in (requests[:2], requests[2:]):
+                    super().submit(group)  # both batches reach the provider ...
+                raise SimulatedCrash("the process died before either id was recorded")
+            return super().submit(requests)
+
+    world = World(tmp_path, writer_class=TwoLost, behavior=ok_behavior)
+    first = world.controller()
+    first.add_task(task_spec(("001", "002", "003", "004")))
+    with pytest.raises(SimulatedCrash):
+        first.run()
+    assert world.provider.submit_count == 2 and not world.events_of("batch_submitted")
+    second = world.controller()
+    world.drive(second, keep_all)
+    recovered = world.events_of("batch_submitted")
+    assert [e.payload["recovered"] for e in recovered] == [True, True]
+    assert sorted(cid for e in recovered for cid in e.payload["call_ids"]) == sorted(second.state.calls)
+    assert world.provider.submit_count == 2  # nothing was sent again
+    assert len(world.shipped_rows()) == 4
+
+
 # ---------------------------------------------------------------------------- remembered caches
 
 
