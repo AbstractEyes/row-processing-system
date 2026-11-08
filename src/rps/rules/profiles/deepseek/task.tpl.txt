@@ -1,0 +1,15 @@
+Write one {task_kind}. Series id {series_id}. Row ids in order: {row_ids}.
+Ranks and depths: {ranks}.
+Domain: {domain}.
+Genre: {genre_line}
+Source: {source_line}
+{hint_block}
+Records to keep (key = value):
+{records_by_depth}
+
+Assigned for this call:
+- Relations: {relation_line}
+- Unknown question key by depth: {unknown_line}
+- Wordings by depth: {wordings_line}
+
+Return one JSON object as the system instruction and format block require: {"skip", "reason", "class", "rows"}.

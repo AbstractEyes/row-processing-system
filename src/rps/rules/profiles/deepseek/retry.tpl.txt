@@ -1,0 +1,4 @@
+Your previous answer for this task failed these checks. Rewrite the whole answer and fix every fault below. Do not explain, apologise or discuss the checks; return one JSON object only.
+{check_messages}
+
+When fixing: if a fault names a given record, copy it exactly; if a fault names nesting, copy every lower-rank record and relation upward; if a fault names thought length or slice budget, shorten thoughts rather than adding facts; if a fault names a chain question, put its value word for word in a thought; if a fault names wordings or garments, repair that field without changing the picture.

@@ -27,7 +27,10 @@ test = ["pytest>=9.2,<10"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-rps = ["data/*.json", "rules/*.md", "rules/*.json", "rules/VERSION", "rules/examples/*.json", "rules/templates/*.md"]
+rps = [
+    "data/*.json", "rules/*.md", "rules/*.json", "rules/VERSION", "rules/examples/*.json", "rules/templates/*.md",
+    "rules/profiles/*/*.md", "rules/profiles/*/*.txt", "rules/profiles/*/*.json", "rules/profiles/*/VERSION",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,24 @@
+TASK
+Write one {task_kind}.
+Series id: {series_id}
+Row ids in output order: {row_ids}
+Ranks and depths in the same order: {ranks}
+Domain: {domain}
+Genre: {genre_line}
+Record layout: {record_mode}
+
+PICTURE EVIDENCE
+{hint_block}
+
+RECORDS TO KEEP
+{records_by_depth}
+
+RELATIONS TO KEEP
+{relations_by_depth}
+
+ASSIGNMENTS
+Relation question: {relation_line}
+Unknown questions by depth: {unknown_line}
+Wordings by depth: {wordings_line}
+
+Write the complete result for this item.

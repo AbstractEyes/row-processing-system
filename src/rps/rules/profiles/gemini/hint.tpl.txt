@@ -1,0 +1,4 @@
+<source_evidence>
+This item comes from a real picture. The records are facts about it; the hint below is evidence, never text to copy (never reuse >=3/4 of a hint sentence's content words or walk the hint in sentence order). Keep every record; add facts only where the rules allow.
+Hint: {hint_text}
+</source_evidence>

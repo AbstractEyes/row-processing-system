@@ -1,0 +1,28 @@
+<task_spec>
+Task: {task_line}
+Series ID: {series_id}
+Row IDs in order: {row_ids}
+Ranks and depths: {ranks}
+Domain: {domain}
+Genre rule: {genre_line}
+</task_spec>
+{hint_block}
+<seed_records>
+Records to keep (key = value; copy verbatim in exact order and spelling—none dropped, changed, or reordered):
+{records_by_depth}
+</seed_records>
+
+<assigned_constraints>
+Assigned for this call:
+- Relation constraint: {relation_line}
+- Unknown question key by depth: {unknown_line}
+- Wordings by depth: {wordings_line}
+</assigned_constraints>
+
+<pre_output_checklist>
+Before emitting JSON, verify:
+1. If a Hint is present and implies an unrecorded person, contradicts a record/period year, or never mentions the recorded main subject, return skip=true.
+2. Nesting & counts: simple=1-4 (add nothing), medium=6-14 (keep all simple + add mood feeling & mood from), deep=14-30 (keep all medium unchanged + add intent purpose, intent for, story moment, and one of story before [<=15B] / story after [<=16B] / story cause [<=16B]).
+3. Questions: "record" copies a key=value in this row's records; "chain" uses a valid 2-word key NOT in this row's records whose value (<=20B) appears word-for-word in this row's thoughts; "unknown" uses the exact assigned unknown key with value="unknown" (and that key is never added to records or answered in text).
+Return the json output object described in the rules: {"skip", "reason", "class", "rows"}.
+</pre_output_checklist>

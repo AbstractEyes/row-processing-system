@@ -1,0 +1,224 @@
+{
+ "type": "object",
+ "required": [
+  "skip",
+  "reason",
+  "class",
+  "rows"
+ ],
+ "properties": {
+  "skip": {
+   "type": "boolean",
+   "description": "Set true ONLY to decline the item (when hint implies an unrecorded person, contradicts a record/period year, or never names the recorded main subject); otherwise false."
+  },
+  "reason": {
+   "type": "string",
+   "description": "Empty string \"\" when skip is false. When skip is true, state why in exactly one plain sentence."
+  },
+  "class": {
+   "type": "string",
+   "description": "Allowed values: \"\", \"person\", \"contradiction\", \"ungrounded\", \"other\". Must be \"\" when skip is false."
+  },
+  "rows": {
+   "type": "array",
+   "description": "Empty array [] when skip is true. Otherwise 1 row for a single, or 3 nested rows in order (rank 1 simple, rank 2 medium, rank 3 deep) for a series.",
+   "items": {
+    "type": "object",
+    "required": [
+     "id",
+     "series",
+     "depth",
+     "rank",
+     "domain",
+     "genre",
+     "records",
+     "relations",
+     "thoughts",
+     "wordings",
+     "questions"
+    ],
+    "properties": {
+     "id": {
+      "type": "string",
+      "description": "Exact row id assigned for this rank in the user message."
+     },
+     "series": {
+      "type": "string",
+      "description": "Exact series id assigned in the user message."
+     },
+     "depth": {
+      "type": "string",
+      "description": "Row depth matching rank: 1=simple, 2=medium, 3=deep (or assigned single depth).",
+      "enum": [
+       "simple",
+       "medium",
+       "deep"
+      ]
+     },
+     "rank": {
+      "type": "integer",
+      "description": "Allowed values: 1, 2, 3. In a 3-row series, output 1 (simple), then 2 (medium), then 3 (deep)."
+     },
+     "domain": {
+      "type": "string",
+      "description": "Exact domain given in the user message.",
+      "enum": [
+       "photograph",
+       "painting",
+       "illustration",
+       "sculpture",
+       "design"
+      ]
+     },
+     "genre": {
+      "type": "string",
+      "description": "One genre for the entire series from the genre list (or two list genres combined, 'environmental portrait', or 'figure study'). Replace off-list object/topic names (animal, kylix, coin, vehicle, food, people)."
+     },
+     "records": {
+      "type": "array",
+      "description": "Copy all given records for this rank in exact order and spelling. Total records+relations: simple 1-4 (add nothing), medium 6-14 (add 'mood feeling' and 'mood from'), deep 14-30 (keep medium's records unchanged, add 'intent purpose', 'intent for', 'story moment', and one of 'story before'/'story after'/'story cause'). Never add the assigned unknown question key or sealed values.",
+      "items": {
+       "type": "object",
+       "required": [
+        "key",
+        "value"
+       ],
+       "properties": {
+        "key": {
+         "type": "string",
+         "description": "Two lower-case words 'system attribute' (e.g. 'mood feeling', 'shot light'). Never one word, never starting with 'rel' or 'relation', and never the assigned unknown key."
+        },
+        "value": {
+         "type": "string",
+         "description": "Plain lower-case words, <= 20 UTF-8 bytes, with key+value <= 27 bytes. Use closed-list values where a list exists; never use a sealed value unless copying a given record. Keep story before <= 15B and story after/cause <= 16B (2-3 plain event words)."
+        }
+       }
+      }
+     },
+     "relations": {
+      "type": "array",
+      "description": "Keep given relations in exact order; [] if none. Each counts as 1 toward record+relation totals. Series ranks must nest relations in order.",
+      "items": {
+       "type": "object",
+       "required": [
+        "a",
+        "rel",
+        "b"
+       ],
+       "properties": {
+        "a": {
+         "type": "string",
+         "description": "First concrete thing/person from closed lists (never a direction, frame part, or new sealed value)."
+        },
+        "rel": {
+         "type": "string",
+         "description": "Relation phrase from the closed relation list; a is rel of b."
+        },
+        "b": {
+         "type": "string",
+         "description": "Second concrete thing/person from closed lists (never a direction, frame part, or new sealed value)."
+        }
+       }
+      }
+     },
+     "thoughts": {
+      "type": "array",
+      "description": "Critic steps about THIS picture (1-4 sentences each; no glosses, no colon labels, no spec/file talk, no advice, no invented facts, no hint copying). Counts & caps: simple 1-2 (<=8 slices, <=100B each); medium 3-5 (<=16 slices, <=330B total); deep 6-10 (<=64 slices, must include 'check' and 'compare'/'change'). Mention every record in medium/deep. Embed the exact <=20B phrase needed for any 'chain' question.",
+      "items": {
+       "type": "object",
+       "required": [
+        "step",
+        "text"
+       ],
+       "properties": {
+        "step": {
+         "type": "string",
+         "description": "Step kind matching what the sentence does. Omit 'light' if no light record/hint exists. Deep rows require 'check' and ('compare' or 'change').",
+         "enum": [
+          "see",
+          "name",
+          "place",
+          "count",
+          "relate",
+          "form",
+          "light",
+          "colour",
+          "mood",
+          "mean",
+          "intend",
+          "story",
+          "compare",
+          "change",
+          "check",
+          "say"
+         ]
+        },
+        "text": {
+         "type": "string",
+         "description": "1-4 sentences in US spelling about this picture. Hedge mood claims in ONE thought only ('suggests', 'seems', 'may', 'feels', 'reads as') and mark inferences with evidence."
+        }
+       }
+      }
+     },
+     "wordings": {
+      "type": "array",
+      "description": "In order by depth: simple=[caption]; medium=[caption, prompt, tags]; deep=[caption, prompt, tags, critique].",
+      "items": {
+       "type": "object",
+       "required": [
+        "kind",
+        "text"
+       ],
+       "properties": {
+        "kind": {
+         "type": "string",
+         "enum": [
+          "caption",
+          "prompt",
+          "tags",
+          "critique"
+         ]
+        },
+        "text": {
+         "type": "string",
+         "description": "caption: 1 natural sentence naming every recorded garment+color. prompt: comma-separated recreation phrases. tags: lower-case comma-separated booru tags (thing+color, shot, medium; 1girl/1boy/1other/solo only if records agree; no mood/palette/composition/sealed words; no 'jeans' or 'from above'). critique: 1-2 craft sentences."
+        }
+       }
+      }
+     },
+     "questions": {
+      "type": "array",
+      "description": "Counts: simple 1-2, medium 3-5, deep 5-8 (deep must include >=1 'chain' and >=1 'unknown').",
+      "items": {
+       "type": "object",
+       "required": [
+        "key",
+        "value",
+        "needs"
+       ],
+       "properties": {
+        "key": {
+         "type": "string",
+         "description": "Two-word 'system attribute' spec key (or assigned 'rel1 a'/'rel1 rel'/'rel1 b' for relation record questions). For 'chain' and 'unknown', this key MUST NOT exist in this row's records."
+        },
+        "value": {
+         "type": "string",
+         "description": "For 'record': exact value from this row's records/relations. For 'chain': exact verbatim substring (<=20 bytes, 1-3 words, not sealed, key+value<=27B) copied word-for-word from this row's thoughts[].text. For 'unknown': must be 'unknown'."
+        },
+        "needs": {
+         "type": "string",
+         "description": "'record' = key IS in this row's records/relations; 'chain' = key is NOT in records and value is stated word-for-word in thoughts; 'unknown' = assigned unknown key with value 'unknown'.",
+         "enum": [
+          "record",
+          "chain",
+          "unknown"
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ }
+}

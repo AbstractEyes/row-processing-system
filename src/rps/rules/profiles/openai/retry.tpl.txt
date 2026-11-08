@@ -1,0 +1,7 @@
+RETRY: REPLACE THE COMPLETE RESULT
+The previous result failed the checks below. Produce a complete replacement for the original item, correcting every listed fault. Keep the supplied ids, records, relations and assignments; preserve nesting. Repairs must remain grounded and within the depth limits. If the item cannot satisfy the rules, use the applicable skip class and state the obstacle in one sentence.
+
+Checker findings:
+{check_messages}
+
+Return the complete result, not a patch or an explanation.
