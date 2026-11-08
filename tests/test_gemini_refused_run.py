@@ -8,6 +8,8 @@ the route stops once, with the provider's whole message in the run's notes.
 
 from __future__ import annotations
 
+import json
+
 from google.genai import types
 
 from rps import ids
@@ -116,6 +118,7 @@ def test_a_batch_every_item_of_which_is_refused_is_sent_again_in_the_documented_
     assert all(request.config.response_json_schema is not None and "custom_id" in request.metadata for request in first)
     assert all(
         request.config.response_schema is not None and request.config.response_json_schema is None
+        and "additionalProperties" not in json.dumps(request.config.response_schema)  # the field takes none (the OpenAPI form)
         and list(request.metadata) == ["key"] and request.config.cached_content is None
         for request in second
     )

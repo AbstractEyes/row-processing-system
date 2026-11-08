@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -157,8 +158,14 @@ def test_the_variants_each_change_one_part_of_the_request_as_sent(with_key):
     assert by_key["schema_field"].config.response_json_schema is None
     assert by_key["schema_field"].config.response_schema == sent.config.response_json_schema
     assert by_key["metadata_key"].metadata == {"key": sent.metadata["custom_id"]} and by_key["metadata_key"].config == sent.config
+    openapi = by_key["openapi"]  # the OpenAPI form of the schema in response_schema, the rest as sent
+    assert openapi.config.response_json_schema is None and openapi.config.response_schema is not None
+    assert "additionalProperties" in json.dumps(sent.config.response_json_schema)
+    assert "additionalProperties" not in json.dumps(openapi.config.response_schema)
+    assert openapi.metadata == sent.metadata and openapi.config.system_instruction == sent.config.system_instruction
+    assert openapi.config.thinking_config == sent.config.thinking_config and openapi.config.cached_content is None
     documented = by_key["documented"]
-    assert documented.config.response_schema is not None and documented.config.response_json_schema is None
+    assert documented.config.response_schema == openapi.config.response_schema and documented.config.response_json_schema is None
     assert list(documented.metadata) == ["key"] and documented.config.cached_content is None
     bare = by_key["bare"]
     assert bare.contents == sent.contents and bare.metadata is None
@@ -172,7 +179,7 @@ def test_the_part_the_service_refuses_is_named_with_the_providers_whole_error(wi
     service = BatchService(refuses=lambda request, model: "Request contains an invalid argument." if request.config.response_json_schema else None)
     report, lines = probe(service)
     assert not report.ok and report.verdict("as_sent") == "refused"
-    assert keys(report, "taken") == ["no_schema", "schema_field", "documented", "bare"]
+    assert keys(report, "taken") == ["no_schema", "schema_field", "openapi", "documented", "bare"]
     refused = report.outcomes[0]
     assert refused.state == "JOB_STATE_SUCCEEDED" and refused.error.startswith("3: Request contains an invalid argument. | details: ")
     assert "fieldViolations" in refused.error  # the whole error: code, message and details
@@ -182,8 +189,38 @@ def test_the_part_the_service_refuses_is_named_with_the_providers_whole_error(wi
     assert result[0] == "RESULT: the batch service refused the request as the writer sends it."
     assert any("(without the schema)" in line and 'set the route option "schema" to "none"' in line for line in result)
     assert any("(schema in response_schema)" in line and '"schema_field" to "response_schema"' in line for line in result)
+    assert any("(schema in the OpenAPI form)" in line and '"schema" to "openapi"' in line for line in result)
     assert any("documented form" in line and '"batch_form" to "documented"' in line for line in result)
     assert not any("bare request was refused" in line for line in result)
+
+
+def test_the_findings_of_the_live_run_are_reproduced_and_the_openapi_form_is_the_variant_that_is_taken(with_key):
+    """The first live probe: as sent refused after running, the schema in response_schema refused at creation,
+    the schema left out taken. The OpenAPI form of the schema in response_schema is the new variant that goes through."""
+    error = ApiError(400, "400 INVALID_ARGUMENT. Invalid JSON payload received. Unknown name \"additional_properties\" at response_schema")
+
+    def named(request):
+        return "additionalProperties" in json.dumps(request.config.response_schema)
+
+    service = BatchService(
+        refuses=lambda request, model: "Request contains an invalid argument." if request.config.response_json_schema else None,
+        create_error=lambda request, model: error if named(request) else None,
+    )
+    report, lines = probe(service)
+    assert report.verdict("as_sent") == "refused" and report.outcomes[0].state == "JOB_STATE_SUCCEEDED"
+    schema_field = next(o for o in report.outcomes if o.key == "schema_field")
+    assert schema_field.verdict == "refused" and schema_field.state == "not created" and "additional_properties" in schema_field.error
+    assert keys(report, "taken") == ["no_schema", "openapi", "documented", "bare"]
+    text = "\n".join(lines)
+    assert 'set the route options "schema" to "openapi" and "schema_field" to "response_schema"' in text
+    assert 'set the route option "batch_form" to "documented"' in text
+
+
+def test_the_openapi_variant_can_be_asked_for_by_itself(with_key):
+    service = BatchService()
+    report, _lines = probe(service, keys=("openapi",))
+    assert [outcome.key for outcome in report.outcomes] == ["openapi"] and len(service.jobs) == 1
+    assert service.request_of(report.outcomes[0]).config.response_schema is not None
 
 
 def test_an_explicit_cache_the_route_uses_is_named_when_it_is_the_part_and_is_deleted_after(with_key):
@@ -254,7 +291,7 @@ def test_a_batch_the_service_will_not_even_create_shows_its_whole_error_and_the_
     report, lines = probe(service)
     first = report.outcomes[0]
     assert first.verdict == "refused" and first.state == "not created" and "response_json_schema is not allowed in a batch" in first.error
-    assert keys(report, "taken") == ["no_schema", "schema_field", "documented", "bare"]
+    assert keys(report, "taken") == ["no_schema", "schema_field", "openapi", "documented", "bare"]
     assert any("not allowed in a batch" in line for line in lines)
 
 

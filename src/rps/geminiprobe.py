@@ -26,7 +26,8 @@ The batch service validates a request apart from the one-call endpoint and repor
 batch has run, as a code and a sentence for each item. `probe_gemini_batch` therefore sends the request as
 the batch writer builds it, then the same request with one part left out or changed (the schema, the system
 instruction, the thinking setting, the metadata, the explicit cache, the field that carries the schema, the
-name of the metadata), then the documented form and the bare request, each as a batch of one item. It
+name of the metadata, the OpenAPI form of the schema), then the documented form and the bare request, each as
+a batch of one item. It
 waits for each batch, prints the provider's whole error for a refusal, cancels the batches that have not
 answered, and says in plain sentences which part the service refuses. A refused item costs nothing; a taken
 one is billed at the batch rate, which `cap_usd` bounds.
@@ -306,7 +307,8 @@ BATCH_VARIANTS = {
     "cache_on": ("with the explicit cache", "the rules in a cache made for this probe (deleted after), the request naming it"),
     "schema_field": ("schema in response_schema", "the schema in response_schema, the field the batch page shows"),
     "metadata_key": ("metadata key named key", "metadata {key: ...}, the name the batch page uses, not custom_id"),
-    "documented": ("the documented form", "response_schema, metadata key, no explicit cache: what the writer falls back to"),
+    "openapi": ("schema in the OpenAPI form", "the schema without additionalProperties, in response_schema; the rest as sent"),
+    "documented": ("the documented form", "response_schema (OpenAPI form), metadata key, no explicit cache: what the writer falls back to"),
     "bare": ("bare request", "only the task text and the token limit: no rules, schema, thinking setting, metadata or cache"),
 }
 # What it means for a run when the request is taken with only this part changed.
@@ -319,11 +321,22 @@ _ADVICE = {
     "cache_on": 'the explicit cache is needed: set the route option "cache" to true',
     "schema_field": 'the field is the part: set the route option "schema_field" to "response_schema"',
     "metadata_key": "the name of the metadata is the part; the documented form of the writer sends it as key",
+    "openapi": 'the schema is taken in the OpenAPI form in response_schema: set the route options "schema" to "openapi" and "schema_field" to "response_schema"',
     "documented": 'set the route option "batch_form" to "documented" (the writer steps down to that form by itself after one refused batch)',
 }
-_SINGLE_PARTS = ("no_schema", "no_system", "no_thinking", "no_metadata", "cache_off", "cache_on", "schema_field", "metadata_key")
+_SINGLE_PARTS = (
+    "no_schema",
+    "no_system",
+    "no_thinking",
+    "no_metadata",
+    "cache_off",
+    "cache_on",
+    "schema_field",
+    "metadata_key",
+    "openapi",
+)
 # With the route's cache on, the request as sent has the cache, and so do the variants that change one other part.
-_WITH_ROUTE_CACHE = frozenset({"as_sent", "no_schema", "no_thinking", "no_metadata", "schema_field", "metadata_key"})
+_WITH_ROUTE_CACHE = frozenset({"as_sent", "no_schema", "no_thinking", "no_metadata", "schema_field", "metadata_key", "openapi"})
 
 
 def _enum_name(value: Any) -> str:
@@ -391,6 +404,8 @@ def _variant(key: str, sent: Any, documented: Any) -> Any:
         return with_config(sent, response_json_schema=None, response_schema=sent.config.response_json_schema)
     if key == "metadata_key":
         return sent.model_copy(update={"metadata": {"key": (sent.metadata or {}).get("custom_id", "probe")}})
+    if key == "openapi":
+        return with_config(sent, response_json_schema=None, response_schema=documented.config.response_schema)
     if key == "documented":
         return documented
     if key == "bare":

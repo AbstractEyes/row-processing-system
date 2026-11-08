@@ -6,7 +6,7 @@ the row schema (`response_json_schema`, in the form the `schema` option names); 
 from the route's effort; and, for a picture, a media resolution. Inline batches stay under the
 provider's size limit by splitting.
 
-Route options: `schema` ("plain", "exact" or "none", default "plain": the form in which the row schema
+Route options: `schema` ("plain", "exact", "none" or "openapi", default "plain": the form in which the row schema
 is sent, see `rps.providers.schemas.gemini_schema`), `schema_field` ("response_json_schema", the default, or
 "response_schema": the request field that carries it), `batch_form` (see below), `media_resolution` ("low",
 "medium" or "high", default "medium"), `cache` (true to keep the writing rules in an explicit cache for batches; default
@@ -28,7 +28,9 @@ service although the one-call endpoint took the same request. The batch pages sh
 the schema in `response_schema`, the request's own metadata under the name `key`, and a cache only by name;
 they say nothing of `response_json_schema`, `thinking_config` or a `custom_id`. So a batch route has a
 second form, the documented one: the schema in `response_schema`, the metadata key `key`, no explicit
-cache. The route option `batch_form` is "auto" (the default: the first form, and when every request of a
+cache. The `response_schema` field takes an OpenAPI Schema object, which has no `additionalProperties` (a live
+batch refused it by name: "Unknown name "additional_properties""), so in this form the row schema is sent in
+the "openapi" form whatever the `schema` option says (unless that is "none"). The route option `batch_form` is "auto" (the default: the first form, and when every request of a
 batch comes back refused as an invalid argument, the same calls again in the documented form, once for the
 run), "documented" (always the documented form) or "full" (always the first form, never a second).
 `python -m rps.geminiprobe --batch` sends the variants and says which part the service refuses.
@@ -257,12 +259,19 @@ class _GeminiCommon:
             return  # no schema is sent
         try:
             check_schema(rules.schema, GEMINI)
+            # A batch route may step down to the documented form, which sends the OpenAPI form of the
+            # schema: a schema that cannot be written so is found here, not in the middle of a run.
+            gemini_schema(rules.schema, "openapi")
         except SchemaError as error:
             raise ConfigError(f"route {self.route_name!r}: {error}") from None
 
+    def _schema_mode_now(self) -> str:
+        """The form of the row schema that requests are built with now."""
+        return self._schema_mode
+
     def answer_schema(self, rules: WriterRules) -> dict[str, Any] | None:
         """The row schema in the form this route sends (None when the route sends none)."""
-        return gemini_schema(rules.schema, self._schema_mode)
+        return gemini_schema(rules.schema, self._schema_mode_now())
 
     def _client(self) -> Any:
         with self._client_lock:
@@ -375,6 +384,10 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
 
     def _schema_field_name(self) -> str:
         return "response_schema" if self._step >= FORM_DOCUMENTED else self._schema_field
+
+    def _schema_mode_now(self) -> str:
+        """The documented form sends the OpenAPI form of the schema, the one `response_schema` takes."""
+        return "openapi" if self._step >= FORM_DOCUMENTED and self._schema_mode != "none" else self._schema_mode
 
     def _metadata_key(self) -> str:
         return "key" if self._step >= FORM_DOCUMENTED else "custom_id"

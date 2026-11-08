@@ -20,7 +20,7 @@ from rps.failures import PROVIDER_ERROR_CHARS
 from rps.prompting import load_writer_rules
 from rps.providers import GeminiBatchWriter, GeminiSyncWriter, Handle
 from rps.providers.gemini_api import inlined_error_text, parse_inlined
-from rps.providers.schemas import GEMINI_SCHEMA_MODES, gemini_schema
+from rps.providers.schemas import GEMINI_SCHEMA_MODES, OPENAPI_KEYWORDS, SchemaError, gemini_schema
 
 from adapter_helpers import ApiError, Namespace, Recorder, call, route
 
@@ -82,7 +82,7 @@ def test_the_exact_form_is_a_copy_of_the_schema_and_the_none_form_is_no_schema()
     assert gemini_schema(schema, "none") is None
     with pytest.raises(ValueError, match="unknown schema mode"):
         gemini_schema(schema, "turbo")
-    assert set(GEMINI_SCHEMA_MODES) == {"plain", "exact", "none"}
+    assert set(GEMINI_SCHEMA_MODES) == {"plain", "exact", "none", "openapi"}
 
 
 def test_the_plain_form_extends_a_description_and_treats_a_field_named_enum_as_a_field():
@@ -107,6 +107,152 @@ def test_the_plain_form_extends_a_description_and_treats_a_field_named_enum_as_a
 def test_a_schema_without_value_lists_is_sent_as_it_is_in_the_plain_form():
     tiny = {"type": "object", "additionalProperties": False, "required": ["answer"], "properties": {"answer": {"type": "string"}}}
     assert gemini_schema(tiny, "plain") == tiny
+
+
+# ---------------------------------------------------------------------------- the OpenAPI form (for the response_schema field)
+
+
+def paths_of(node, wanted, path="(root)"):
+    """Every place in a schema at which a node has one of the keywords `wanted` (property names are not keywords)."""
+    found = []
+    if isinstance(node, dict):
+        found += [f"{path}.{key}" for key in node if key in wanted]
+        for name, child in (node.get("properties") or {}).items():
+            found += paths_of(child, wanted, f"{path}.{name}")
+        found += paths_of(node.get("items"), wanted, f"{path}[]")
+        for index, child in enumerate(node.get("anyOf") or []):
+            found += paths_of(child, wanted, f"{path}.anyOf[{index}]")
+    return found
+
+
+def required_lists(node, path="(root)"):
+    found = {}
+    if isinstance(node, dict):
+        if "required" in node:
+            found[path] = node["required"]
+        for name, child in (node.get("properties") or {}).items():
+            found.update(required_lists(child, f"{path}.{name}"))
+        found.update(required_lists(node.get("items"), f"{path}[]"))
+    return found
+
+
+def all_keywords(node):
+    keywords = set()
+    if isinstance(node, dict):
+        keywords |= set(node)
+        for child in (node.get("properties") or {}).values():
+            keywords |= all_keywords(child)
+        keywords |= all_keywords(node.get("items"))
+        for child in node.get("anyOf") or []:
+            keywords |= all_keywords(child)
+    return keywords
+
+
+def test_the_openapi_form_of_the_pool_schema_has_no_additional_properties_at_any_depth_and_keeps_every_required_list():
+    schema = pool.row_schema()
+    before = copy.deepcopy(schema)
+    shaped = gemini_schema(schema, "openapi")
+    assert schema == before  # the schema passed in is never changed
+    assert len(paths_of(schema, {"additionalProperties"})) == 7  # one on every object of the row schema
+    assert paths_of(shaped, {"additionalProperties", "additional_properties"}) == []
+    assert "additionalProperties" not in json.dumps(shaped)
+    assert required_lists(shaped) == required_lists(schema) and len(required_lists(schema)) == 7
+    assert all_keywords(shaped) <= set(OPENAPI_KEYWORDS)  # nothing the response_schema field does not take
+    # the structure is the original's: the same properties at every level
+    assert list(shaped["properties"]) == list(schema["properties"])
+    assert list(shaped["properties"]["rows"]["items"]["properties"]) == list(schema["properties"]["rows"]["items"]["properties"])
+
+
+def test_the_openapi_form_keeps_a_list_of_text_values_and_moves_the_lists_a_field_cannot_hold():
+    shaped = gemini_schema(pool.row_schema(), "openapi")
+    row = shaped["properties"]["rows"]["items"]["properties"]
+    assert row["depth"] == {"type": "string", "enum": ["simple", "medium", "deep"]}
+    assert row["domain"]["enum"] == ["photograph", "painting", "illustration", "sculpture", "design"]
+    assert row["thoughts"]["items"]["properties"]["step"]["enum"][:3] == ["see", "name", "place"]
+    # integers cannot be in a list of text values, and an empty text is not kept: both go into the description
+    assert row["rank"] == {"type": "integer", "description": "Allowed values: 1, 2, 3."}
+    assert "enum" not in shaped["properties"]["class"] and '""' in shaped["properties"]["class"]["description"]
+
+
+def test_the_openapi_form_decides_each_value_list_on_its_own():
+    schema = {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string", "description": "The kind.", "enum": ["a", "b"]},
+            "untyped": {"enum": ["x", "y"]},
+            "number": {"type": "integer", "enum": ["1", "2"]},
+            "mixed": {"type": "string", "enum": ["a", 2]},
+            "fixed": {"type": "string", "const": "x"},
+            "fixed_number": {"type": "integer", "const": 4},
+            "empty_list": {"type": "string", "enum": []},
+        },
+    }
+    shaped = gemini_schema(schema, "openapi")["properties"]
+    assert shaped["kind"] == {"type": "string", "description": "The kind.", "enum": ["a", "b"]}
+    assert shaped["untyped"] == {"type": "string", "enum": ["x", "y"]}  # a list of text is on a text field
+    assert shaped["number"] == {"type": "integer", "description": 'Allowed values: "1", "2".'}
+    assert shaped["mixed"] == {"type": "string", "description": 'Allowed values: "a", 2.'}
+    assert shaped["fixed"] == {"type": "string", "enum": ["x"]}
+    assert shaped["fixed_number"] == {"type": "integer", "description": "Allowed values: 4."}
+    assert shaped["empty_list"] == {"type": "string"}
+
+
+def test_the_openapi_form_leaves_out_what_the_response_schema_field_has_no_place_for():
+    schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "x",
+        "type": "object",
+        "additionalProperties": {"type": "string"},
+        "patternProperties": {"^a": {"type": "string"}},
+        "required": ["n", 7],
+        "properties": {
+            "n": {"type": "number", "minimum": 0, "exclusiveMaximum": 9, "multipleOf": 2, "maximum": 8, "default": 1, "title": "N"},
+            "tags": {"type": "array", "uniqueItems": True, "minItems": 1, "maxItems": 3, "items": {"type": "string", "pattern": "^[a-z]+$"}},
+            "either": {"oneOf": [{"type": "string"}, {"type": "integer"}], "description": "One of two."},
+            "maybe": {"type": ["string", "null"]},
+            "inferred": {"properties": {"a": {"type": "boolean"}}},
+        },
+    }
+    shaped = gemini_schema(schema, "openapi")
+    assert set(shaped) == {"type", "required", "properties"}
+    assert shaped["required"] == ["n"]  # only names
+    props = shaped["properties"]
+    assert props["n"] == {"type": "number", "minimum": 0, "maximum": 8, "default": 1, "title": "N"}
+    assert props["tags"] == {"type": "array", "minItems": 1, "maxItems": 3, "items": {"type": "string", "pattern": "^[a-z]+$"}}
+    assert props["either"] == {"description": "One of two.", "anyOf": [{"type": "string"}, {"type": "integer"}]}
+    assert props["maybe"] == {"type": "string", "nullable": True}
+    assert props["inferred"] == {"type": "object", "properties": {"a": {"type": "boolean"}}}
+
+
+def test_the_openapi_form_writes_a_reference_out_in_place_and_refuses_what_it_cannot_hold():
+    schema = {
+        "type": "object",
+        "$defs": {"point": {"type": "object", "additionalProperties": False, "required": ["x"], "properties": {"x": {"type": "number"}}}},
+        "properties": {"from": {"$ref": "#/$defs/point"}, "to": {"$ref": "#/$defs/point", "description": "The end."}},
+    }
+    shaped = gemini_schema(schema, "openapi")
+    assert "$defs" not in shaped and "$ref" not in json.dumps(shaped)
+    assert shaped["properties"]["from"] == {"type": "object", "required": ["x"], "properties": {"x": {"type": "number"}}}
+    assert shaped["properties"]["to"]["description"] == "The end." and shaped["properties"]["to"]["required"] == ["x"]
+    recursive = {"type": "object", "$defs": {"node": {"type": "object", "properties": {"next": {"$ref": "#/$defs/node"}}}}, "properties": {"head": {"$ref": "#/$defs/node"}}}
+    with pytest.raises(SchemaError, match="recursive"):
+        gemini_schema(recursive, "openapi")
+    with pytest.raises(SchemaError, match="cannot resolve"):
+        gemini_schema({"type": "object", "properties": {"a": {"$ref": "#/$defs/missing"}}}, "openapi")
+    with pytest.raises(SchemaError, match="list of types"):
+        gemini_schema({"type": "object", "properties": {"a": {"type": ["string", "integer"]}}}, "openapi")
+    with pytest.raises(SchemaError, match="schema object"):
+        gemini_schema({"type": "object", "properties": {"a": True}}, "openapi")
+
+
+def test_the_sdk_takes_the_openapi_form_as_a_response_schema():
+    """The SDK's own type reads the shaped schema, every field of it by the name the API calls it."""
+    shaped = gemini_schema(pool.row_schema(), "openapi")
+    config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=shaped)
+    assert config.response_schema == shaped
+    parsed = types.Schema.model_validate(shaped)
+    assert parsed.additional_properties is None and parsed.required == shaped["required"]
+    assert parsed.properties["rows"].items.properties["depth"].enum == ["simple", "medium", "deep"]
 
 
 # ---------------------------------------------------------------------------- the request
@@ -143,6 +289,17 @@ def test_the_schema_option_applies_to_the_one_call_route_too_and_is_checked(pool
         GeminiBatchWriter("flash-batch", route_with("turbo"))
     with pytest.raises(ConfigError, match="unknown option"):
         GeminiBatchWriter("flash-batch", route("gemini", MODEL, options={"scheme": "plain"}))
+
+
+def test_a_schema_that_cannot_be_written_in_the_openapi_form_is_refused_before_the_run(pool_rules):
+    # A batch route can step down to the documented form, which sends the OpenAPI form: the check is made at the start.
+    recursive = {"type": "object", "$defs": {"n": {"type": "object", "properties": {"next": {"$ref": "#/$defs/n"}}}}, "properties": {"head": {"$ref": "#/$defs/n"}}}
+    rules = pool_rules.__class__(system=pool_rules.system, schema=recursive, version="v")
+    with pytest.raises(ConfigError, match="recursive"):
+        GeminiBatchWriter("flash-batch", route_with()).check_rules(rules)
+    with pytest.raises(ConfigError, match="recursive"):
+        GeminiSyncWriter("flash-sync", route_with(kind="api")).check_rules(rules)
+    GeminiBatchWriter("flash-batch", route_with("none")).check_rules(rules)
 
 
 def test_a_route_that_sends_no_schema_does_not_need_one_that_fits(pool_rules):

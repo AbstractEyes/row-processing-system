@@ -7,6 +7,8 @@ of `rps.providers.gemini_api` and the run-level tests in test_gemini_refused_run
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from google.genai import types
 
@@ -14,6 +16,7 @@ from rps import ids
 from rps.config import ConfigError
 from rps.failures import PROVIDER_ERROR_CHARS
 from rps.providers import GeminiBatchWriter, GeminiSyncWriter, Handle
+from rps.providers.schemas import gemini_schema
 
 from adapter_helpers import Recorder
 from test_adapter_gemini import fake_client, generated, inlined, job, make_call, make_route
@@ -70,7 +73,7 @@ def test_a_route_with_no_schema_sends_none_in_either_field():
 # ---------------------------------------------------------------------------- the two forms of a request
 
 
-def test_the_first_form_is_the_default_and_the_documented_form_changes_three_things():
+def test_the_first_form_is_the_default_and_the_documented_form_changes_four_things():
     writer = GeminiBatchWriter("flash-batch", make_route())
     [first] = writer.prepare([make_call()])
     assert first.payload["form"] == 0
@@ -81,7 +84,11 @@ def test_the_first_form_is_the_default_and_the_documented_form_changes_three_thi
     documented = second.payload["request"]
     assert second.payload["form"] == 1 and list(documented.metadata) == ["key"]
     assert documented.metadata["key"] == full.metadata["custom_id"]
-    assert documented.config.response_schema == full.config.response_json_schema and documented.config.response_json_schema is None
+    # the schema moves to response_schema and loses additionalProperties, which that field does not take
+    assert documented.config.response_json_schema is None
+    assert documented.config.response_schema == gemini_schema(make_call().rules.schema, "openapi")
+    assert "additionalProperties" in json.dumps(full.config.response_json_schema)
+    assert "additionalProperties" not in json.dumps(documented.config.response_schema)
     # nothing else differs: the rules, the thinking setting, the limit and the answer type are the same
     assert documented.contents == full.contents
     for name in ("system_instruction", "thinking_config", "max_output_tokens", "response_mime_type"):

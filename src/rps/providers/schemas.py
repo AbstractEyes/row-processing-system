@@ -27,7 +27,7 @@ GEMINI = "gemini"
 DEEPSEEK = "deepseek"
 
 # The forms in which a schema can be sent to Gemini (see `gemini_schema`).
-GEMINI_SCHEMA_MODES = ("plain", "exact", "none")
+GEMINI_SCHEMA_MODES = ("plain", "exact", "none", "openapi")
 
 _ANTHROPIC_FORBIDDEN = (
     "minimum",
@@ -135,6 +135,12 @@ _SCHEMA_LISTS = ("anyOf", "oneOf", "allOf", "prefixItems")
 _SCHEMA_ONE = ("items", "additionalProperties", "not")
 
 
+def _allowed_values(said: Any, allowed: list[Any]) -> str:
+    """A description with the allowed values of a field written out after it."""
+    listed = "Allowed values: " + ", ".join(json.dumps(value, ensure_ascii=False) for value in allowed) + "."
+    return f"{str(said or '').strip()} {listed}".strip()
+
+
 def _plain(node: Any) -> Any:
     """A schema without its value lists: each `enum` (and `const`) moves into the node's description."""
     if not isinstance(node, Mapping):
@@ -153,9 +159,106 @@ def _plain(node: Any) -> Any:
             out[key] = copy.deepcopy(value)
     allowed = node.get("enum") if isinstance(node.get("enum"), list) else ([node["const"]] if "const" in node else [])
     if allowed:
-        said = str(node.get("description") or "").strip()
-        listed = "Allowed values: " + ", ".join(json.dumps(value, ensure_ascii=False) for value in allowed) + "."
-        out["description"] = f"{said} {listed}".strip()
+        out["description"] = _allowed_values(node.get("description"), allowed)
+    return out
+
+
+# The keywords of the OpenAPI Schema object, which is what the `response_schema` field takes. Google's API
+# reference lists exactly these. The SDK's `Schema` type has three more (`additionalProperties`, `$defs`, `$ref`)
+# that only the other Google platform reads: the Gemini API refuses them by name ("Unknown name
+# "additional_properties""), even as `false`.
+OPENAPI_KEYWORDS = (
+    "type",
+    "format",
+    "title",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "maxItems",
+    "minItems",
+    "properties",
+    "required",
+    "minProperties",
+    "maxProperties",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "example",
+    "anyOf",
+    "propertyOrdering",
+    "default",
+)
+_OPENAPI_TEXT = ("title", "description", "format", "pattern")
+_OPENAPI_COUNTS = ("maxItems", "minItems", "maxProperties", "minProperties", "minLength", "maxLength")
+
+
+def _openapi(node: Any, root: Mapping[str, Any], stack: tuple[str, ...], path: str) -> dict[str, Any]:
+    """A schema as the OpenAPI Schema object of the Gemini API: only the keywords that object has."""
+    if not isinstance(node, Mapping):
+        raise SchemaError(f"{path or '(root)'}: a schema object is needed here")
+    ref = node.get("$ref")
+    if isinstance(ref, str):
+        if ref in stack:
+            raise SchemaError(f"{path or '(root)'}: the schema is recursive through {ref}, which the OpenAPI form cannot hold")
+        target = _resolve(root, ref)
+        if target is None:
+            raise SchemaError(f"{path or '(root)'}: cannot resolve {ref}")
+        return _openapi({**target, **{key: value for key, value in node.items() if key != "$ref"}}, root, stack + (ref,), path)
+    out: dict[str, Any] = {}
+    kind = node.get("type")
+    if isinstance(kind, list):  # JSON Schema allows a list of types; the OpenAPI object has `nullable` instead
+        named = [name for name in kind if isinstance(name, str)]
+        others = [name for name in named if name != "null"]
+        if len(others) > 1:
+            raise SchemaError(f"{path or '(root)'}: a list of types ({others}) cannot be held; write the choices as anyOf")
+        if "null" in named:
+            out["nullable"] = True
+        kind = others[0] if others else "null"
+    if isinstance(kind, str):
+        out["type"] = kind
+    for name in _OPENAPI_TEXT:
+        if isinstance(node.get(name), str):
+            out[name] = node[name]
+    if isinstance(node.get("nullable"), bool):
+        out["nullable"] = node["nullable"]
+    for name in ("minimum", "maximum"):
+        if isinstance(node.get(name), (int, float)) and not isinstance(node[name], bool):
+            out[name] = node[name]
+    for name in _OPENAPI_COUNTS:
+        if isinstance(node.get(name), int) and not isinstance(node[name], bool):
+            out[name] = node[name]
+    for name in ("example", "default"):
+        if name in node:
+            out[name] = copy.deepcopy(node[name])
+    for name in ("required", "propertyOrdering"):
+        if isinstance(node.get(name), list):
+            out[name] = [item for item in node[name] if isinstance(item, str)]
+    properties = node.get("properties")
+    if isinstance(properties, Mapping):
+        out["properties"] = {
+            str(name): _openapi(child, root, stack, f"{path}.{name}" if path else str(name)) for name, child in properties.items()
+        }
+    if isinstance(node.get("items"), Mapping):
+        out["items"] = _openapi(node["items"], root, stack, f"{path}[]")
+    choices = node.get("anyOf") if isinstance(node.get("anyOf"), list) else node.get("oneOf")
+    if isinstance(choices, list):
+        out["anyOf"] = [_openapi(child, root, stack, f"{path}.anyOf[{index}]") for index, child in enumerate(choices)]
+    # A value list stays a list only where the field can hold it: text values, none of them empty, on a text field.
+    allowed = node.get("enum") if isinstance(node.get("enum"), list) else ([node["const"]] if "const" in node else [])
+    if allowed:
+        if out.get("type", "string") == "string" and all(isinstance(value, str) and value for value in allowed):
+            out["enum"] = list(allowed)
+            out.setdefault("type", "string")
+        else:
+            out["description"] = _allowed_values(out.get("description"), allowed)
+    if "type" not in out and "anyOf" not in out:
+        if "properties" in out:
+            out["type"] = "object"
+        elif "items" in out:
+            out["type"] = "array"
     return out
 
 
@@ -169,6 +272,12 @@ def gemini_schema(schema: Mapping[str, Any], mode: str = "plain") -> dict[str, A
                 as too heavy includes fewer enum values. The assessor still checks every value
         exact   the schema as it is
         none    no schema: the answer is asked for as JSON and the writing rules describe its form
+        openapi the schema as the `response_schema` field takes it, which is an OpenAPI Schema object: only the
+                keywords that object has (`additionalProperties` and the other JSON Schema keywords it lacks are
+                left out at every depth; `$ref` is written out in place), and a value list kept only where it is
+                a list of non-empty text values on a text field (any other moves into the description, as in
+                `plain`). Every `required` list is kept. A schema that cannot be written so (a recursive `$ref`,
+                a list of several types) raises SchemaError
 
     The schema passed in is never changed.
     """
@@ -178,4 +287,6 @@ def gemini_schema(schema: Mapping[str, Any], mode: str = "plain") -> dict[str, A
         return copy.deepcopy(dict(schema))
     if mode == "none":
         return None
+    if mode == "openapi":
+        return _openapi(schema, schema, (), "")
     raise ValueError(f"unknown schema mode {mode!r}; use one of {list(GEMINI_SCHEMA_MODES)}")
