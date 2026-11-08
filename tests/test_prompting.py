@@ -15,6 +15,7 @@ from rps.prompting import (
     load_writer_rules,
     make_assessor,
     make_rules,
+    make_screen,
     render_task_text,
     rules_version,
     spec_text,
@@ -179,6 +180,39 @@ def test_an_assessor_that_cannot_be_loaded_or_built_is_a_configuration_error():
         make_assessor("no_colon")
     with pytest.raises(ConfigError, match="could not be built"):
         make_assessor("rps.prompting:make_rules")  # called with no arguments, it needs some
+
+
+def test_the_rule_pool_brings_its_screen_and_it_can_be_named_replaced_or_turned_off(tmp_path):
+    from rps.assessor import screen_item
+
+    assert load_writer_rules(RulesConfig(package="rps.rules")).screen is screen_item
+    assert load_writer_rules(RulesConfig(package="rps.rules", screen="none")).screen is None
+    assert load_writer_rules(RulesConfig(package="rps.rules", screen="None")).screen is None
+    named = load_writer_rules(RulesConfig(package="rps.rules", screen="rps.prompting:spec_text"))
+    assert named.screen is spec_text
+    # rules from two files have no screen unless one is named
+    assert load_writer_rules(write(tmp_path), base_dir=tmp_path).screen is None
+    given = write(tmp_path)
+    assert load_writer_rules(RulesConfig(**{**given.to_dict(), "screen": "rps.assessor:screen_item"}), base_dir=tmp_path).screen is screen_item
+    # made from text, a screen is given as a function
+    assert make_rules("x", SCHEMA, screen=screen_item).screen is screen_item and make_rules("x", SCHEMA).screen is None
+
+
+def test_a_screen_that_cannot_be_loaded_is_a_configuration_error():
+    with pytest.raises(ConfigError, match="cannot be loaded"):
+        make_screen("rps.no_such_module:thing")
+    with pytest.raises(ConfigError, match="cannot be loaded"):
+        make_screen("rps.assessor:no_such_name")
+    with pytest.raises(ConfigError, match="expected 'module:name'"):
+        make_screen("no_colon")
+    with pytest.raises(ConfigError, match="not a function"):
+        make_screen("rps.prompting:DEFAULT_SCREENS")
+
+
+def test_the_screen_does_not_change_the_rules_version_or_what_two_rule_sets_compare_as():
+    plain = make_rules("x", SCHEMA)
+    with_screen = make_rules("x", SCHEMA, screen=lambda spec: None)
+    assert plain.version == with_screen.version and plain == with_screen
 
 
 def test_rules_need_a_system_prompt_a_schema_and_a_version():

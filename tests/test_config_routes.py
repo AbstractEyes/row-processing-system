@@ -103,6 +103,15 @@ def test_the_assessor_in_the_rules_section_is_module_colon_name_or_none():
         RulesConfig.from_dict({"package": "rps.rules", "assessor": "Assessor"})
 
 
+def test_the_screen_in_the_rules_section_is_module_colon_name_or_none():
+    assert RulesConfig.from_dict({"package": "rps.rules"}).screen is None
+    assert RulesConfig.from_dict({"package": "rps.rules", "screen": "rps.assessor:screen_item"}).screen == "rps.assessor:screen_item"
+    assert RulesConfig.from_dict({"package": "rps.rules", "screen": "none"}).screen == "none"
+    with pytest.raises(ConfigError, match=r"rules\.screen: expected 'module:name'"):
+        RulesConfig.from_dict({"package": "rps.rules", "screen": "screen_item"})
+    assert RulesConfig.from_dict(RulesConfig(package="rps.rules", screen="none").to_dict()).screen == "none"
+
+
 def test_the_whole_configuration_round_trips_with_its_rules_section():
     config = make_config(rules={"package": "rps.rules"})
     again = Config.from_dict(json.loads(json.dumps(config.to_dict())))

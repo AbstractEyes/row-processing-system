@@ -16,6 +16,10 @@ Event kinds and their payloads:
     call_prepared        call_id, task_id, line, attempt, route, purpose, est_usd,
                          est_input_tokens, max_output_tokens, image_size, feedback, retry_of
     budget_refused       call_id, route, purpose, est_usd, reason, and the spend and caps
+    line_screened        task_id, line, item_id, route, class (other), reason (a spec line the rule
+                         set's screen set aside before its first call: no call was made for it, and
+                         it is counted apart from `row_set_aside`, which is a writer's own skip or the
+                         assessor's set-aside of a written row)
     batch_submitted      handle_id, handle, route, call_ids (recorded before any wait)
     call_returned        call_id, handle_id, usage, usd, price_table_date, minutes, rows, skips,
                          tier (the price tier the call was billed at, when the route has tiers)
@@ -62,6 +66,7 @@ EVENT_KINDS: tuple[str, ...] = (
     "task_created",
     "call_prepared",
     "budget_refused",
+    "line_screened",
     "batch_submitted",
     "call_returned",
     "call_failed",

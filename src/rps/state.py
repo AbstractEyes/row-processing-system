@@ -27,7 +27,7 @@ from .ids import canonical_json
 
 TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside"})
 WAITING_ROW_STATUSES = frozenset({"written", "failed", "passed", "in_review", "in_question", "hand"})
-TERMINAL_LINE_OUTCOMES = frozenset({"accepted", "set_aside", "rejected", "exhausted"})
+TERMINAL_LINE_OUTCOMES = frozenset({"accepted", "set_aside", "rejected", "exhausted", "screened"})
 
 
 @dataclass
@@ -173,7 +173,8 @@ class LineStatus:
     """Where a spec line stands. `outcome` is one of:
 
     new, retry (a new call is due), in_flight, active (rows still moving),
-    accepted, set_aside, rejected, exhausted.
+    accepted, set_aside, rejected, exhausted, screened (set aside by the rule set's screen before
+    any call; `set_aside` is a line whose writer or assessor set it aside after a call).
     """
 
     outcome: str
@@ -233,6 +234,7 @@ class State:
         self.events_applied = 0
         self._spend: dict[tuple[str, str], list[float]] = {}
         self._lines: dict[tuple[str, str], list[str]] = {}
+        self._screened: dict[tuple[str, str], dict[str, Any]] = {}  # (task id, line id) -> class, reason, route
 
     # ------------------------------------------------------------------ building
 
@@ -327,6 +329,18 @@ class State:
         if p["call_id"] in self.calls:
             return
         self.refusals[p["call_id"]] = dict(p)
+
+    def _on_line_screened(self, event: Event) -> None:
+        p = event.payload
+        key = (p["task_id"], p["line"])
+        task = self.tasks.get(key[0])
+        if key in self._screened or task is None or key[1] not in task.lines or self._lines.get(key):
+            return  # already recorded, not a line of the state, or a line that has a call (the call decides where it stands)
+        self._screened[key] = {
+            "route": str(p.get("route") or task.route),
+            "class": str(p.get("class", "other")),
+            "reason": str(p.get("reason", "")),
+        }
 
     def _on_batch_submitted(self, event: Event) -> None:
         p = event.payload
@@ -595,6 +609,7 @@ class State:
         "task_created": _on_task_created,
         "call_prepared": _on_call_prepared,
         "budget_refused": _on_budget_refused,
+        "line_screened": _on_line_screened,
         "batch_submitted": _on_batch_submitted,
         "call_returned": _on_call_returned,
         "call_failed": _on_call_failed,
@@ -682,6 +697,8 @@ class State:
     def line_status(self, task_id: str, line: str, max_attempts: int) -> LineStatus:
         attempts = self._lines.get((task_id, line), [])
         if not attempts:
+            if (task_id, line) in self._screened:
+                return LineStatus("screened")
             return LineStatus("new", next_attempt=1)
         latest = self.calls[attempts[-1]]
         if latest.status in ("prepared", "submitted"):
@@ -708,6 +725,14 @@ class State:
         if any(row.status == "rejected" for row in rows):
             return LineStatus("rejected")
         return LineStatus("set_aside")
+
+    def is_screened(self, task_id: str, line: str) -> bool:
+        """True when the rule set's screen set the line aside before any call."""
+        return (task_id, line) in self._screened
+
+    def screened_lines(self) -> dict[tuple[str, str], dict[str, Any]]:
+        """The lines the screen set aside before any call, by (task id, line id): their route, class and reason."""
+        return {key: dict(value) for key, value in self._screened.items()}
 
     def lines_needing_calls(self, max_attempts: int) -> list[tuple[TaskState, LineState, LineStatus]]:
         """Spec lines that are due a call: never called, or a retry is due."""
@@ -861,6 +886,7 @@ class State:
             "packets_open": len(self.open_packets()),
             "hand_queue": len(self.hand_queue()),
             "refused_calls": len(self.refusals),
+            "screened_lines": len(self._screened),
         }
 
     def snapshot(self) -> dict[str, Any]:
@@ -876,6 +902,7 @@ class State:
                         pid: {**asdict(packet), "burned": sorted(packet.burned)} for pid, packet in self.packets.items()
                     },
                     "refusals": self.refusals,
+                    "screened": {f"{task_id}|{line}": value for (task_id, line), value in self._screened.items()},
                     "halts": self.halts,
                     "caches": {f"{route}|{key}": value for (route, key), value in self.caches.items()},
                     "storage": self.storage,

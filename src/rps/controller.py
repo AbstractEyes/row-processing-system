@@ -5,7 +5,9 @@ the state rebuilt from events and records what it did as events, so a stage that
 interrupted and run again repeats only the unfinished part.
 
     plan       tasks from the planner become task_created events
-    submit     due calls are prepared (budget checked first) and submitted as batches
+    submit     due calls are prepared (budget checked first) and submitted as batches; a spec
+               line the rule set's screen names a problem with is set aside before its first
+               call (line_screened) and no call is made for it
     poll       submitted batches are polled; finished ones are collected into rows
     assess     each written row goes through the assess function
     review     verdicts are read, rows are settled by the review policy, rows that
@@ -55,7 +57,7 @@ from .images import ImageError, load_picture
 from .keys import redact
 from .layout import controller_actor
 from .ledger import Ledger, PriceError, PriceTable, effective_purpose
-from .prompting import WriterRules, assignment_data, assignment_for, load_writer_rules, render_task_text
+from .prompting import ScreenFn, WriterRules, assignment_data, assignment_for, load_writer_rules, render_task_text
 from .provenance import (
     ProvenanceError,
     SourceLabel,
@@ -298,9 +300,11 @@ class Controller:
     same store when omitted) receives accepted rows and the ledger. `writers` maps each
     configured route to its writer. `assess`, `assess_call` and `planner` are the
     pluggable hooks: `assess` judges one row, `assess_call` judges all the rows one call
-    returned together (and wins when both are given). `rules` are the writing rules
-    (system prompt, row schema, version); when omitted they are read from the
-    configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
+    returned together (and wins when both are given). `screen` reads a spec line before its
+    first call and returns the reason to set the line aside with no call, or None (it is
+    never asked about a retry); when omitted it is the rules' own, if they bring one.
+    `rules` are the writing rules (system prompt, row schema, version); when omitted they
+    are read from the configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
     (UTC datetime) and `sleep` can be replaced in tests; `on_event` is called after
     every event is written and applied. Without a `sleep`, the pause between passes ends
     early when a one-call route finishes a call, so its free worker is given the next one
@@ -319,6 +323,7 @@ class Controller:
         prices: PriceTable | None = None,
         assess: AssessFn | None = None,
         assess_call: AssessCallFn | None = None,
+        screen: ScreenFn | None = None,
         rules: WriterRules | None = None,
         planner: Planner | None = None,
         image_loader: ImageLoader | None = None,
@@ -354,6 +359,7 @@ class Controller:
                 self.assess_call = checker.assess_call
             if callable(checker):
                 self.assess = checker
+        self.screen: ScreenFn | None = screen if screen is not None else (self.rules.screen if self.rules is not None else None)
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
         self.planner: Planner | None = planner or self._tasks_planner(state_store, tasks_check_seconds)
@@ -375,6 +381,8 @@ class Controller:
         self._started = False
         self._events = 0
         self._parked: set[str] = set()
+        # The lines the screen has read and let through in this run: it reads a line once, and never a retry.
+        self._screen_passed: set[tuple[str, str]] = set()
         # Calls a cap cannot hold yet wait here instead of being refused. `_blocked` remembers, for each
         # (route, purpose) whose next call did not fit, what that call needed and the cap that held it back,
         # so the lines behind it are not built again until the money it needs is free. `_held_back` counts
@@ -910,6 +918,8 @@ class Controller:
 
         Left out are the lines whose call was refused for good this run, and the lines of a (route, purpose)
         whose next call does not fit yet: they are not built again until the money that call needs is free.
+        A line about to get its first call is screened here, so a line the screen sets aside is never built
+        into a call and does not use up a free worker.
         """
         waiting = self._purposes_still_waiting(route_name)
         taken: list[tuple[TaskState, LineState, Any]] = []
@@ -919,10 +929,47 @@ class Controller:
                 continue
             if ids.call_id(task.task_id, line.line_id, status.next_attempt) in self._parked:
                 continue
+            if self._screened_out(task, line, status):
+                continue
             taken.append(item)
             if room is not None and len(taken) >= room:
                 break
         return taken
+
+    def _screened_out(self, task: TaskState, line: LineState, status: Any) -> bool:
+        """Read a line with the screen before its first call. True when the screen set it aside: the line
+        is recorded as screened and no call is ever made for it.
+
+        Only a line with no call yet is read, once per run (a restart reads it again if the event was
+        not written); a retry is never screened. A screen that fails on a line lets the line through,
+        and the failure is noted once.
+        """
+        key = (task.task_id, line.line_id)
+        if self.screen is None or status.outcome != "new" or key in self._screen_passed:
+            return False
+        try:
+            reason = self.screen(line.spec)
+        except Exception as error:  # a rule function must not stop the run
+            text = f"the screen could not read a spec line ({type(error).__name__}: {redact(str(error))[:200]})"
+            if text not in self._reported:
+                self._warn(f"{text}; a line it cannot read goes to the writer")
+            self._note_problem(text)
+            reason = None
+        if not reason:
+            self._screen_passed.add(key)
+            return False
+        self._emit(
+            "line_screened",
+            {
+                "task_id": task.task_id,
+                "line": line.line_id,
+                "item_id": line.item_id or line.line_id,
+                "route": task.route,
+                "class": "other",
+                "reason": str(reason)[:300],
+            },
+        )
+        return True
 
     def _purposes_still_waiting(self, route_name: str) -> set[str]:
         """The purposes of a route whose next call still does not fit. One whose call now fits, or never will, is let go."""
@@ -950,7 +997,7 @@ class Controller:
             if purpose not in blocked:
                 continue
             call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
-            if call_id in approved or call_id in self._parked:
+            if call_id in approved or call_id in self._parked or self.state.is_screened(task.task_id, line.line_id):
                 continue
             entry = self._held_back.setdefault((route_name, purpose), {"cap": blocked[purpose], "count": 0})
             entry["count"] += 1
@@ -2384,9 +2431,10 @@ class Controller:
             self._progress_line(None, None),
             f"rows: {counts['rows']}  calls: {counts['calls']}",
             f"batches waiting: {counts['batches_waiting']}  packets open: {counts['packets_open']}  hand queue: {counts['hand_queue']}",
-            "",
-            self.ledger.format_status(self.state),
         ]
+        if counts["screened_lines"]:
+            lines.append(f"lines the screen set aside before any call: {counts['screened_lines']}")
+        lines.extend(["", self.ledger.format_status(self.state)])
         waiting = self._waiting_for_room()
         if waiting:
             lines.append(f"{sum(count for _cap, count in waiting)} call(s) waiting for room under a cap")

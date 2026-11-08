@@ -314,6 +314,10 @@ class RulesConfig:
     called with a row and its context, and may have an `assess_call` method for all the
     rows of one call). Left out, the rule pool shipped in this package (`rps.rules`)
     brings its own assessor and any other rule set has none; "none" turns it off.
+
+    `screen` names the function that reads a spec line before its first call, as "module:name":
+    it returns the reason to set the line aside with no call, or None. Left out, the rule pool
+    brings its own (`rps.assessor.screen_item`) and any other rule set has none; "none" turns it off.
     """
 
     system_file: str | None = None
@@ -322,6 +326,7 @@ class RulesConfig:
     version_file: str | None = None
     package: str | None = None
     assessor: str | None = None
+    screen: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -331,6 +336,7 @@ class RulesConfig:
             "version_file": self.version_file,
             "package": self.package,
             "assessor": self.assessor,
+            "screen": self.screen,
         }
 
     @classmethod
@@ -338,7 +344,7 @@ class RulesConfig:
         where = "rules"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"system_file", "schema_file", "version", "version_file", "package", "assessor"}, where)
+        _check_keys(data, {"system_file", "schema_file", "version", "version_file", "package", "assessor", "screen"}, where)
         rules = cls(
             system_file=_text(data.get("system_file"), f"{where}.system_file", allow_none=True),
             schema_file=_text(data.get("schema_file"), f"{where}.schema_file", allow_none=True),
@@ -346,9 +352,12 @@ class RulesConfig:
             version_file=_text(data.get("version_file"), f"{where}.version_file", allow_none=True),
             package=_text(data.get("package"), f"{where}.package", allow_none=True),
             assessor=_text(data.get("assessor"), f"{where}.assessor", allow_none=True),
+            screen=_text(data.get("screen"), f"{where}.screen", allow_none=True),
         )
         if rules.assessor is not None and rules.assessor.lower() != "none" and ":" not in rules.assessor:
             _fail(f"{where}.assessor: expected 'module:name' or 'none', got {rules.assessor!r}")
+        if rules.screen is not None and rules.screen.lower() != "none" and ":" not in rules.screen:
+            _fail(f"{where}.screen: expected 'module:name' or 'none', got {rules.screen!r}")
         if rules.package is None and (rules.system_file is None or rules.schema_file is None):
             _fail(f"{where}: name both system_file and schema_file, or a package that holds them")
         return rules

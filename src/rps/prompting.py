@@ -18,6 +18,9 @@ A rule set can also bring some functions and an object:
                                                turn into rows cannot be read: one line for each row,
                                                "<row id>: <what is wrong and the form it needs>"
     assessor                                   checks the rows a call returned (see rps.assess)
+    screen(spec) -> reason|None                reads a spec line before its first call: a reason sets
+                                               the line aside with no call (see the README, "Plugging
+                                               in"); None sends the line on
 
 Without them, a spec is sent as text (a string as it is, anything else as JSON) and the
 answer is read as it comes. When an earlier attempt failed its checks, the check
@@ -58,11 +61,14 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 # Rule sets that come with a checker of their own, by package name.
 DEFAULT_ASSESSORS: Mapping[str, str] = {"rps.rules": "rps.assessor:Assessor"}
+# Rule sets that come with a screen of their own (a function of one spec line), by package name.
+DEFAULT_SCREENS: Mapping[str, str] = {"rps.rules": "rps.assessor:screen_item"}
 
 TaskTextFn = Callable[..., str]
 AssignFn = Callable[[Any, int], Any]
 NormalizeFn = Callable[[str | None, Any, str], str | None]
 ExplainFn = Callable[[str | None, Any, str], Sequence[str]]
+ScreenFn = Callable[[Any], str | None]
 
 
 def clean_json_format(text: str | None) -> str | None:
@@ -78,8 +84,8 @@ class WriterRules:
 
     `schema_name` is the name some providers want beside a schema. `json_format` is the format
     block (see the module notes), already without its comments; None when the rule set has none.
-    `task_text`, `assign`, `normalize`, `explain` and `assessor` are the optional parts described in
-    the module notes.
+    `task_text`, `assign`, `normalize`, `explain`, `assessor` and `screen` are the optional parts
+    described in the module notes.
     """
 
     system: str
@@ -92,6 +98,7 @@ class WriterRules:
     assessor: Any = field(default=None, compare=False, repr=False)
     json_format: str | None = field(default=None, repr=False)
     explain: ExplainFn | None = field(default=None, compare=False, repr=False)
+    screen: ScreenFn | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.system, str) or not self.system.strip():
@@ -128,6 +135,7 @@ def make_rules(
     assessor: Any = None,
     json_format: str | None = None,
     explain: ExplainFn | None = None,
+    screen: ScreenFn | None = None,
 ) -> WriterRules:
     """Build rules from text, with a content-hash version when none is given."""
     return WriterRules(
@@ -141,6 +149,7 @@ def make_rules(
         assessor=assessor,
         json_format=json_format,
         explain=explain,
+        screen=screen,
     )
 
 
@@ -185,6 +194,20 @@ def make_assessor(path: str) -> Any:
         raise ConfigError(f"rules.assessor {path!r} could not be built: {type(error).__name__}: {error}") from None
 
 
+def make_screen(path: str) -> ScreenFn:
+    """The screen function a "module:name" path names: called with a spec line, it returns the reason to set the line aside, or None."""
+    module_name, _, attribute = path.partition(":")
+    if not module_name or not attribute:
+        raise ConfigError(f"rules.screen: expected 'module:name', got {path!r}")
+    try:
+        found = getattr(importlib.import_module(module_name), attribute)
+    except (ImportError, AttributeError) as error:
+        raise ConfigError(f"rules.screen {path!r} cannot be loaded: {error}") from None
+    if not callable(found):
+        raise ConfigError(f"rules.screen {path!r} is not a function")
+    return found
+
+
 def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None) -> WriterRules:
     """Read the rules a `RulesConfig` names.
 
@@ -195,7 +218,8 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     `task_text.build_task_text`, `balance.assign`, `form.normalize_output` and
     `form.explain_failures`. The
     checker comes from `config.assessor`, or from the package's default (see
-    `DEFAULT_ASSESSORS`).
+    `DEFAULT_ASSESSORS`); the screen comes from `config.screen`, or from the package's default
+    (see `DEFAULT_SCREENS`).
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     task_text: TaskTextFn | None = None
@@ -243,6 +267,10 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     assessor = None
     if assessor_path and assessor_path.lower() != "none":
         assessor = make_assessor(assessor_path)
+    screen_path = config.screen if config.screen is not None else DEFAULT_SCREENS.get(config.package or "")
+    screen = None
+    if screen_path and screen_path.lower() != "none":
+        screen = make_screen(screen_path)
     return WriterRules(
         system=system,
         schema=schema,
@@ -253,6 +281,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         assessor=assessor,
         json_format=json_format,
         explain=explain,
+        screen=screen,
     )
 
 
