@@ -141,6 +141,22 @@ def test_a_request_is_a_json_mode_chat_completion_with_the_rules_as_the_system_m
         assert forbidden not in arguments
 
 
+@pytest.mark.parametrize("effort", ["none", "low", "high", "max", "medium"])
+def test_a_route_with_an_effort_sends_it_as_reasoning_effort_and_the_thinking_settings_are_the_providers_otherwise(effort):
+    writer = DeepSeekWriter("deepseek-sync", route("deepseek", MODEL, "api", effort=effort, enabled=True))
+    [request] = writer.prepare([call("001", provider="deepseek", model=MODEL, kind="api", effort=effort)])
+    arguments = request.payload["arguments"]
+    assert arguments["reasoning_effort"] == effort
+    assert set(arguments) == {"model", "messages", "response_format", "max_tokens", "reasoning_effort"}
+    [plain] = DeepSeekWriter("deepseek-sync", make_route()).prepare([make_call()])
+    assert "reasoning_effort" not in plain.payload["arguments"]  # a route with no effort leaves the provider's default alone
+
+
+def test_an_effort_the_provider_does_not_take_is_refused_before_a_run():
+    with pytest.raises(ConfigError, match="effort"):
+        DeepSeekWriter("deepseek-sync", route("deepseek", MODEL, "api", effort="turbo", enabled=True))
+
+
 def test_a_picture_goes_in_the_user_message_with_the_configured_detail_when_its_class_is_allowed():
     for image_class in ("public_common", "coco", "ffhq"):
         writer = DeepSeekWriter("deepseek-sync", make_route(options={"detail": "high"}))

@@ -8,6 +8,12 @@ user message holds the task text and, where the routing table allows, a picture 
 checks the answer, since the provider does not. Blank content, even with a normal finish, counts
 as a failed parse and is sent once more.
 
+DeepSeek's models think before they answer unless told not to (effort `high`), and the thinking
+counts toward `max_tokens` and is billed as output, at the same rate. The route's `effort` is sent as
+`reasoning_effort` when it is set: `none` turns the thinking off, `low`, `high` and `max` set how long it
+goes on (the provider also takes `minimal`, `medium` and `xhigh` and maps them to `low` and `high`). Left
+out, nothing is sent and the provider's own default applies.
+
 Calls go out only off-peak: not in Monday to Friday 01:00 to 04:00 or 06:00 to 10:00 UTC, when
 tokens cost double. The route reports itself closed "for now" during those hours, calls already
 queued wait at the edge, and every result is marked with the tier it was billed at (`peak` or
@@ -55,6 +61,7 @@ from .schemas import DEEPSEEK
 API_KEY_ENV = "DEEPSEEK_API_KEY"
 BASE_URL = "https://api.deepseek.com"
 DETAILS = ("low", "high")
+EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 IMAGE_TOKENS = 1024  # the provider's cap per picture
 TIER_PEAK = "peak"
 TIER_OFFPEAK = "offpeak"
@@ -149,6 +156,8 @@ class DeepSeekWriter(PoolWriter):
     ) -> None:
         super().__init__(route_name, route)
         check_options(route, route_name, {"detail", "offpeak_only"})
+        if route.effort is not None and route.effort not in EFFORTS:
+            raise ConfigError(f"route {route_name!r}: effort must be one of {list(EFFORTS)}, got {route.effort!r}")
         self._detail = option(route, route_name, "detail", "low", choices=DETAILS, kind=str)
         self._offpeak_only = bool(option(route, route_name, "offpeak_only", True, kind=bool))
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -210,12 +219,15 @@ class DeepSeekWriter(PoolWriter):
                 {"type": "text", "text": text},
                 {"type": "image_url", "image_url": {"url": data_url(*picture), "detail": self._detail}},
             ]
-        return {
+        arguments: dict[str, Any] = {
             "model": call.model,
             "messages": [{"role": "system", "content": call.rules.system}, {"role": "user", "content": user}],
             "response_format": {"type": "json_object"},
             "max_tokens": call.max_output_tokens,
         }
+        if call.effort:
+            arguments["reasoning_effort"] = call.effort
+        return arguments
 
     def prepare(self, calls: Sequence[CallSpec]) -> list[Request]:
         requests = []
