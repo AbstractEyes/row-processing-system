@@ -141,6 +141,41 @@ def test_a_request_is_a_json_mode_chat_completion_with_the_rules_as_the_system_m
         assert forbidden not in arguments
 
 
+FORMAT = 'Answer with a json object. Give depth as a word (shallow, medium or deep), never as a number.'
+
+
+def test_a_rule_sets_format_block_follows_the_rules_in_the_system_message():
+    writer = DeepSeekWriter("deepseek-sync", make_route())
+    [plain] = writer.prepare([make_call()])
+    [shaped] = writer.prepare([make_call(rules=rules(json_format=FORMAT))])
+    system, user = shaped.payload["arguments"]["messages"]
+    assert system == {"role": "system", "content": rules().system.rstrip() + "\n\n" + FORMAT}
+    assert user == {"role": "user", "content": "Write the row for 001."}  # the task text is not touched
+    assert shaped.est_input_tokens > plain.est_input_tokens  # the block is part of what the call is billed for
+    others = {key: value for key, value in shaped.payload["arguments"].items() if key != "messages"}
+    assert others == {key: value for key, value in plain.payload["arguments"].items() if key != "messages"}
+
+
+def test_a_rule_set_without_a_format_block_is_sent_as_it_is():
+    for found in (None, "", "   \n", "<!-- to be written -->", "<!-- a note\nover two lines -->\n"):
+        [request] = DeepSeekWriter("deepseek-sync", make_route()).prepare([make_call(rules=rules(json_format=found))])
+        assert request.payload["arguments"]["messages"][0] == {"role": "system", "content": rules().system}
+
+
+def test_notes_in_html_comments_are_not_sent_with_the_format_block():
+    block = "<!-- placeholder: the text is written elsewhere -->\nGive depth as a word.\n<!-- end -->"
+    [request] = DeepSeekWriter("deepseek-sync", make_route()).prepare([make_call(rules=rules(json_format=block))])
+    assert request.payload["arguments"]["messages"][0]["content"] == rules().system.rstrip() + "\n\nGive depth as a word."
+
+
+def test_the_word_json_may_come_from_the_format_block():
+    writer = DeepSeekWriter("deepseek-sync", make_route())
+    plain = "Write the rows as plain text."
+    writer.check_rules(rules(system=plain, json_format=FORMAT))
+    with pytest.raises(ConfigError, match="format block"):
+        writer.check_rules(rules(system=plain, json_format="Give depth as a word."))
+
+
 @pytest.mark.parametrize("effort", ["none", "low", "high", "max", "medium"])
 def test_a_route_with_an_effort_sends_it_as_reasoning_effort_and_the_thinking_settings_are_the_providers_otherwise(effort):
     writer = DeepSeekWriter("deepseek-sync", route("deepseek", MODEL, "api", effort=effort, enabled=True))

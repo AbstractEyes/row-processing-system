@@ -79,6 +79,90 @@ def test_a_package_that_does_not_exist_is_a_configuration_error():
         load_writer_rules(RulesConfig(package="rps.no_such_rules"))
 
 
+# ------------------------------------------------------------------ the format block
+
+
+def make_package(tmp_path, monkeypatch, name, *, init="", format_file=None):
+    """A rules package in a folder of its own: the two files every package has, an `__init__` and, optionally, a format file."""
+    import importlib
+
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "__init__.py").write_text(init, encoding="utf-8")
+    (folder / "writer_system.md").write_text("Write json rows.", encoding="utf-8")
+    (folder / "row_schema.json").write_text(json.dumps(SCHEMA), encoding="utf-8")
+    if format_file is not None:
+        (folder / "json_format.md").write_text(format_file, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    importlib.invalidate_caches()
+    return RulesConfig(package=name)
+
+
+def test_a_rule_set_has_no_format_block_unless_it_brings_one():
+    assert make_rules("x", SCHEMA).json_format is None
+    assert make_rules("x", SCHEMA, json_format="Give depth as a word.").json_format == "Give depth as a word."
+    with pytest.raises(ConfigError, match="format block"):
+        WriterRules(system="x", schema=SCHEMA, version="v", json_format=3)  # type: ignore[arg-type]
+
+
+def test_the_format_block_is_cleaned_of_notes_and_a_block_with_nothing_in_it_is_no_block():
+    shaped = make_rules("x", SCHEMA, json_format="<!-- note -->\n\n  Give depth as a word.  \n<!-- more\nnotes -->\n")
+    assert shaped.json_format == "Give depth as a word."
+    for empty in ("", "  \n", "<!-- only a placeholder -->", "<!-- a -->  <!-- b -->"):
+        assert make_rules("x", SCHEMA, json_format=empty).json_format is None
+    assert make_rules("x", SCHEMA, json_format=shaped.json_format) == shaped
+
+
+def test_a_hash_version_changes_with_the_format_block_and_is_unchanged_without_one():
+    assert make_rules("x", SCHEMA).version == rules_version("x", SCHEMA)
+    assert make_rules("x", SCHEMA, json_format="<!-- note -->").version == rules_version("x", SCHEMA)
+    shaped = make_rules("x", SCHEMA, json_format="Give depth as a word.")
+    other = make_rules("x", SCHEMA, json_format="Give depth as a digit.")
+    assert len({rules_version("x", SCHEMA), shaped.version, other.version}) == 3
+    assert make_rules("x", SCHEMA, "pinned", json_format="Give depth as a word.").version == "pinned"
+
+
+def test_a_package_brings_its_format_block_as_a_file(tmp_path, monkeypatch):
+    config = make_package(tmp_path, monkeypatch, "rules_with_format_file", format_file="<!-- note -->\nGive depth as a word.\n")
+    rules = load_writer_rules(config)
+    assert rules.json_format == "Give depth as a word."
+    assert rules.version == rules_version("Write json rows.", SCHEMA, "Give depth as a word.")
+
+
+def test_a_package_brings_its_format_block_as_a_function_which_wins_over_a_file(tmp_path, monkeypatch):
+    init = 'def json_format():\n    return "Depth is a word."\n'
+    config = make_package(tmp_path, monkeypatch, "rules_with_format_function", init=init, format_file="Depth is a number.")
+    assert load_writer_rules(config).json_format == "Depth is a word."
+
+
+def test_a_package_with_no_format_block_or_only_a_placeholder_has_none(tmp_path, monkeypatch):
+    bare = make_package(tmp_path, monkeypatch, "rules_without_format")
+    assert load_writer_rules(bare).json_format is None
+    placeholder = make_package(tmp_path, monkeypatch, "rules_with_placeholder", format_file="<!-- to be written -->\n")
+    assert load_writer_rules(placeholder).json_format is None
+    empty_function = make_package(tmp_path, monkeypatch, "rules_with_empty_function", init="def json_format():\n    return None\n")
+    assert load_writer_rules(empty_function).json_format is None
+
+
+def test_a_format_function_that_fails_or_returns_no_text_is_a_configuration_error(tmp_path, monkeypatch):
+    failing = make_package(tmp_path, monkeypatch, "rules_with_failing_format", init='def json_format():\n    raise ValueError("no")\n')
+    with pytest.raises(ConfigError, match=r"json_format\(\) failed: ValueError: no"):
+        load_writer_rules(failing)
+    wrong = make_package(tmp_path, monkeypatch, "rules_with_wrong_format", init="def json_format():\n    return 3\n")
+    with pytest.raises(ConfigError, match=r"must return text"):
+        load_writer_rules(wrong)
+
+
+def test_the_rule_pool_package_hands_over_its_format_block_when_it_has_one():
+    from pathlib import Path
+
+    from rps.prompting import clean_json_format
+
+    path = Path(pool.__file__).resolve().parent / "json_format.md"
+    expected = clean_json_format(path.read_text(encoding="utf-8")) if path.exists() else None
+    assert load_writer_rules(RulesConfig(package="rps.rules")).json_format == expected
+
+
 def test_the_assessor_can_be_named_replaced_or_turned_off():
     named = load_writer_rules(RulesConfig(package="rps.rules", assessor="rps.assessor:SimilarityIndex"))
     assert type(named.assessor).__name__ == "SimilarityIndex"

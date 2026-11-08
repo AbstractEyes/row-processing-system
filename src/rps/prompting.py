@@ -21,6 +21,13 @@ answer is read as it comes. When an earlier attempt failed its checks, the check
 messages follow the task text so the writer can fix them. The choices are also handed
 to the assessor (`AssessContext.assignment`), as plain data, so a check can compare a
 row with what the writer was told.
+
+A rule set can also carry a format block (`json_format`): text that shows the form of the
+answer to a provider that has no schema mode. A package supplies it as a file called
+`json_format.md`, or as a function `json_format()` that returns the text. Notes in HTML
+comments are left out, and a block with nothing else in it is no block. Only a provider
+that needs it sends it (the DeepSeek writer appends it to the system message); the others
+have a schema and ignore it.
 """
 
 from __future__ import annotations
@@ -40,8 +47,10 @@ from .ids import canonical_json
 DEFAULT_SYSTEM_FILE = "writer_system.md"
 DEFAULT_SCHEMA_FILE = "row_schema.json"
 DEFAULT_VERSION_FILE = "VERSION"
+DEFAULT_JSON_FORMAT_FILE = "json_format.md"
 
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 
 # Rule sets that come with a checker of their own, by package name.
 DEFAULT_ASSESSORS: Mapping[str, str] = {"rps.rules": "rps.assessor:Assessor"}
@@ -51,12 +60,21 @@ AssignFn = Callable[[Any, int], Any]
 NormalizeFn = Callable[[str | None, Any, str], str | None]
 
 
+def clean_json_format(text: str | None) -> str | None:
+    """A format block as it is sent: without the notes in HTML comments, or None when nothing is left."""
+    if text is None:
+        return None
+    return _HTML_COMMENT.sub("", str(text)).strip() or None
+
+
 @dataclass(frozen=True)
 class WriterRules:
     """What every writer call is told: the system prompt, the answer schema and the version.
 
-    `schema_name` is the name some providers want beside a schema. `task_text`, `assign`,
-    `normalize` and `assessor` are the optional parts described in the module notes.
+    `schema_name` is the name some providers want beside a schema. `json_format` is the format
+    block (see the module notes), already without its comments; None when the rule set has none.
+    `task_text`, `assign`, `normalize` and `assessor` are the optional parts described in the module
+    notes.
     """
 
     system: str
@@ -67,6 +85,7 @@ class WriterRules:
     normalize: NormalizeFn | None = field(default=None, compare=False, repr=False)
     assign: AssignFn | None = field(default=None, compare=False, repr=False)
     assessor: Any = field(default=None, compare=False, repr=False)
+    json_format: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.system, str) or not self.system.strip():
@@ -77,12 +96,18 @@ class WriterRules:
             raise ConfigError("the writer rules need a version")
         if not _NAME_PATTERN.match(self.schema_name):
             raise ConfigError(f"schema name {self.schema_name!r} must be letters, digits, '_' or '-' (up to 64)")
+        if self.json_format is not None and not isinstance(self.json_format, str):
+            raise ConfigError("the format block of the writer rules must be text")
+        object.__setattr__(self, "json_format", clean_json_format(self.json_format))
 
 
-def rules_version(system: str, schema: Mapping[str, Any]) -> str:
-    """A short content hash of a system prompt and a schema."""
-    digest = hashlib.sha256(f"{system}\n{canonical_json(schema)}".encode("utf-8")).hexdigest()
-    return digest[:12]
+def rules_version(system: str, schema: Mapping[str, Any], json_format: str | None = None) -> str:
+    """A short content hash of a system prompt and a schema (and of the format block, when there is one)."""
+    text = f"{system}\n{canonical_json(schema)}"
+    block = clean_json_format(json_format)
+    if block is not None:
+        text += f"\n{block}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 def make_rules(
@@ -95,17 +120,19 @@ def make_rules(
     normalize: NormalizeFn | None = None,
     assign: AssignFn | None = None,
     assessor: Any = None,
+    json_format: str | None = None,
 ) -> WriterRules:
     """Build rules from text, with a content-hash version when none is given."""
     return WriterRules(
         system=system,
         schema=dict(schema),
-        version=version or rules_version(system, schema),
+        version=version or rules_version(system, schema, json_format),
         schema_name=schema_name,
         task_text=task_text,
         normalize=normalize,
         assign=assign,
         assessor=assessor,
+        json_format=json_format,
     )
 
 
@@ -155,7 +182,8 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
 
     Relative file names are taken from `base_dir` (the current folder when omitted).
     A package supplies `writer_system.md`, `row_schema.json` and, optionally, a version
-    (its `rules_version()` function, else a `VERSION` file) and the functions
+    (its `rules_version()` function, else a `VERSION` file), a format block (its
+    `json_format()` function, else a `json_format.md` file) and the functions
     `task_text.build_task_text`, `balance.assign` and `form.normalize_output`. The
     checker comes from `config.assessor`, or from the package's default (see
     `DEFAULT_ASSESSORS`).
@@ -164,6 +192,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     task_text: TaskTextFn | None = None
     normalize: NormalizeFn | None = None
     assign: AssignFn | None = None
+    json_format: str | None = None
     if config.package:
         try:
             module = importlib.import_module(config.package)
@@ -187,6 +216,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         task_text = _hook(config.package, "task_text", "build_task_text")
         normalize = _hook(config.package, "form", "normalize_output")
         assign = _hook(config.package, "balance", "assign")
+        json_format = _package_json_format(config.package, module, root)
     else:
         system = _read(base / str(config.system_file), "system prompt file")
         schema_text = _read(base / str(config.schema_file), "schema file")
@@ -197,7 +227,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         raise ConfigError(f"the row schema is not valid JSON: {error}") from None
     if not isinstance(schema, dict):
         raise ConfigError("the row schema must be a JSON object")
-    version = config.version or version_text or rules_version(system, schema)
+    version = config.version or version_text or rules_version(system, schema, json_format)
     assessor_path = config.assessor if config.assessor is not None else DEFAULT_ASSESSORS.get(config.package or "")
     assessor = None
     if assessor_path and assessor_path.lower() != "none":
@@ -210,7 +240,25 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         normalize=normalize,
         assign=assign,
         assessor=assessor,
+        json_format=json_format,
     )
+
+
+def _package_json_format(package: str, module: Any, root: Any) -> str | None:
+    """The format block a rules package carries: its `json_format()` function, else its `json_format.md` file."""
+    provided = getattr(module, "json_format", None)
+    if callable(provided):
+        try:
+            text = provided()
+        except Exception as error:
+            raise ConfigError(f"{package}.json_format() failed: {type(error).__name__}: {error}") from None
+        if text is not None and not isinstance(text, str):
+            raise ConfigError(f"{package}.json_format() must return text, got {type(text).__name__}")
+        return clean_json_format(text)
+    try:
+        return clean_json_format((root / DEFAULT_JSON_FORMAT_FILE).read_text(encoding="utf-8"))
+    except OSError:
+        return None  # the package has no format block
 
 
 def spec_text(spec: Any) -> str:

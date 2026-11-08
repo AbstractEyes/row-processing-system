@@ -305,7 +305,9 @@ class RulesConfig:
     The rules are inputs. Name the two files, or a Python package that holds files
     called `writer_system.md` and `row_schema.json` (and `VERSION`). The version is
     recorded on every row; when none is given it is a hash of the two files, so a
-    changed rule set always has a new version.
+    changed rule set always has a new version. A package may also hold a format block
+    for the provider that has no schema mode, as a file called `json_format.md` or a
+    function `json_format()` (see rps.prompting).
 
     `assessor` names the checker for rows written under these rules, as "module:name"
     (a class or a function that is called with no arguments and returns an object that is

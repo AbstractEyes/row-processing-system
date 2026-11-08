@@ -2,11 +2,16 @@
 
 DeepSeek has no batch service and no schema mode. Each call is one chat completion in JSON mode
 (`response_format: json_object`): the system message holds the writing rules, which must contain
-the word "json" and an example row (the rules are checked for the word before a run starts); the
-user message holds the task text and, where the routing table allows, a picture as a data URL
-(user messages only; the `detail` route option, "low" or "high", default "low"). The assessor
-checks the answer, since the provider does not. Blank content, even with a normal finish, counts
-as a failed parse and is sent once more.
+the word "json" and show the form of the answer (the rules are checked for the word before a run
+starts); the user message holds the task text and, where the routing table allows, a picture as a
+data URL (user messages only; the `detail` route option, "low" or "high", default "low"). The
+assessor checks the answer, since the provider does not. Blank content, even with a normal finish,
+counts as a failed parse and is sent once more.
+
+JSON mode only guarantees valid JSON, not the keys or the kinds of value, so a rule set that has a
+format block (`WriterRules.json_format`, see rps.prompting) has it appended to the system message
+after the rules text. A rule set without one is sent as it is. The other providers take a schema and
+never send the block.
 
 DeepSeek's models think before they answer unless told not to (effort `high`), and the thinking
 counts toward `max_tokens` and is billed as output, at the same rate. The route's `effort` is sent as
@@ -143,6 +148,12 @@ def parse_completion(
 # ---------------------------------------------------------------------------- the writer
 
 
+def system_text(rules: WriterRules) -> str:
+    """The system message: the writing rules, then the rule set's format block when it has one."""
+    block = rules.json_format
+    return rules.system if not block else f"{rules.system.rstrip()}\n\n{block}"
+
+
 class DeepSeekWriter(PoolWriter):
     """Synchronous chat completions with an off-peak gate. See the module description."""
 
@@ -186,9 +197,10 @@ class DeepSeekWriter(PoolWriter):
         return max(1.0, (ends - moment).total_seconds())
 
     def check_rules(self, rules: WriterRules) -> None:
-        if "json" not in rules.system.lower():
+        if "json" not in system_text(rules).lower():
             raise ConfigError(
-                f"route {self.route_name!r}: DeepSeek's JSON mode needs the word 'json' (and an example row) in the writing rules"
+                f"route {self.route_name!r}: DeepSeek's JSON mode needs the word 'json' (and the form of the answer) "
+                "in the writing rules or in their format block"
             )
 
     def _client(self) -> Any:
@@ -221,7 +233,7 @@ class DeepSeekWriter(PoolWriter):
             ]
         arguments: dict[str, Any] = {
             "model": call.model,
-            "messages": [{"role": "system", "content": call.rules.system}, {"role": "user", "content": user}],
+            "messages": [{"role": "system", "content": system_text(call.rules)}, {"role": "user", "content": user}],
             "response_format": {"type": "json_object"},
             "max_tokens": call.max_output_tokens,
         }
@@ -241,7 +253,7 @@ class DeepSeekWriter(PoolWriter):
                     call_id=call.call_id,
                     custom_id=call.custom_id,
                     payload={"arguments": arguments},
-                    est_input_tokens=estimate_text_tokens(rules.system, call_text(call)) + picture_tokens,
+                    est_input_tokens=estimate_text_tokens(system_text(rules), call_text(call)) + picture_tokens,
                     max_output_tokens=call.max_output_tokens,
                     attempt=call.attempt,
                     size_bytes=len(canonical_json(arguments).encode("utf-8")),
