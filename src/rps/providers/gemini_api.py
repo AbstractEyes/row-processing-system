@@ -7,8 +7,9 @@ from the route's effort; and, for a picture, a media resolution. Inline batches 
 provider's size limit by splitting.
 
 Route options: `schema` ("plain", "exact" or "none", default "plain": the form in which the row schema
-is sent, see `rps.providers.schemas.gemini_schema`), `media_resolution` ("low", "medium" or "high",
-default "medium"), `cache` (true to keep the writing rules in an explicit cache for batches; default
+is sent, see `rps.providers.schemas.gemini_schema`), `schema_field` ("response_json_schema", the default, or
+"response_schema": the request field that carries it), `batch_form` (see below), `media_resolution` ("low",
+"medium" or "high", default "medium"), `cache` (true to keep the writing rules in an explicit cache for batches; default
 false) and `cache_ttl_seconds` (default 21600). With the cache on, a batch refers to the cache by name instead of repeating the
 rules in every request; the cache is created once per model and rules version, its name is
 recorded (a `cache_created` event) so a restart reuses it, and its lifetime is extended while a
@@ -19,13 +20,25 @@ one-time cost of making the cache is not stated on the provider's page and is no
 
 A batch carries a digest of its calls in its display name, so a batch created just before a crash
 can be found again. Results come back in the order of the requests, each with the metadata of its
-request; they are matched to calls by the `custom_id` in it.
+request; they are matched to calls by the `custom_id` (or `key`) in it.
+
+The form of a batch request. The batch service validates a request apart from the one-call endpoint, and
+a live run had every request of a batch refused ("3: Request contains an invalid argument.") by the batch
+service although the one-call endpoint took the same request. The batch pages show an inline request with
+the schema in `response_schema`, the request's own metadata under the name `key`, and a cache only by name;
+they say nothing of `response_json_schema`, `thinking_config` or a `custom_id`. So a batch route has a
+second form, the documented one: the schema in `response_schema`, the metadata key `key`, no explicit
+cache. The route option `batch_form` is "auto" (the default: the first form, and when every request of a
+batch comes back refused as an invalid argument, the same calls again in the documented form, once for the
+run), "documented" (always the documented form) or "full" (always the first form, never a second).
+`python -m rps.geminiprobe --batch` sends the variants and says which part the service refuses.
 
 The key is read from GEMINI_API_KEY and never logged.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import threading
 from datetime import datetime, timedelta, timezone
@@ -66,6 +79,12 @@ API_KEY_ENV = "GEMINI_API_KEY"
 THINKING_LEVELS = ("minimal", "low", "medium", "high")
 RESOLUTIONS = ("low", "medium", "high")
 DEFAULT_SCHEMA_MODE = "plain"
+SCHEMA_FIELDS = ("response_json_schema", "response_schema")  # the request field that carries the schema
+DEFAULT_SCHEMA_FIELD = "response_json_schema"
+BATCH_FORMS = ("auto", "documented", "full")
+DEFAULT_BATCH_FORM = "auto"
+FORM_FULL = 0  # the request the writer is built to send
+FORM_DOCUMENTED = 1  # the request the batch pages show (see the module description)
 BATCH_MAX_BYTES = 19 * 1024 * 1024  # inline jobs must stay under 20 MB in total
 # A generous count of tokens for one picture, for the cost estimate (the estimate is an upper bound).
 IMAGE_TOKENS = {"low": 300, "medium": 600, "high": 1200}
@@ -132,6 +151,8 @@ def parse_response(call_id: str, response: Any, *, max_tokens: int | None = None
 _ITEM_BAD_REQUEST = frozenset({3, 5, 9, 11, 400, 404, 413, 422})  # invalid argument, not found, failed precondition, out of range
 _ITEM_AUTH = frozenset({7, 16, 401, 403})  # permission denied, unauthenticated
 _ITEM_CANCELED = frozenset({1, 499})
+# A request the batch service refuses as a whole is reported as an invalid argument: gRPC code 3, or HTTP 400.
+_INVALID_ARGUMENT = frozenset({3, 400})
 
 
 def inlined_error_text(error: Any) -> str:
@@ -163,6 +184,25 @@ def parse_inlined(item: Any, call_id: str) -> CallResult:
     return parse_response(call_id, lookup(item, "response"))
 
 
+def _refused_as_invalid(item: Any) -> bool:
+    """True for a batch item that came back with no answer and an invalid-argument error."""
+    error = lookup(item, "error")
+    return error is not None and lookup(item, "response") is None and lookup(error, "code") in _INVALID_ARGUMENT
+
+
+def _with_note(result: CallResult, note: str, *, retry: bool = False) -> CallResult:
+    """A refused item's result with a note after the words of the provider (within the length an error keeps).
+
+    With `retry` the refusal is read as a passing trouble, so the controller sends the call again.
+    """
+    suffix = f" | {note}"
+    base = (result.error or "")[: max(0, PROVIDER_ERROR_CHARS - len(suffix))]
+    changes: dict[str, Any] = {"error": base + suffix}
+    if retry:
+        changes.update(retryable=True, kind=KIND_PROVIDER)
+    return dataclasses.replace(result, **changes)
+
+
 def digest_of(custom_ids: Sequence[str]) -> str:
     """A short digest of a group of custom ids, kept in the batch's display name so the batch can be found again."""
     return hashlib.sha256("\n".join(sorted(custom_ids)).encode("utf-8")).hexdigest()[:24]
@@ -189,9 +229,16 @@ class _GeminiCommon:
     route: RouteConfig
     route_name: str
 
-    def _setup(self, client: Any | None) -> None:
-        check_options(self.route, self.route_name, {"schema", "media_resolution", "cache", "cache_ttl_seconds"})
+    def _setup(self, client: Any | None, *, batch: bool = False) -> None:
+        allowed = {"schema", "schema_field", "media_resolution", "cache", "cache_ttl_seconds"}
+        check_options(self.route, self.route_name, allowed | ({"batch_form"} if batch else set()))
         self._schema_mode = option(self.route, self.route_name, "schema", DEFAULT_SCHEMA_MODE, choices=GEMINI_SCHEMA_MODES, kind=str)
+        self._schema_field = option(self.route, self.route_name, "schema_field", DEFAULT_SCHEMA_FIELD, choices=SCHEMA_FIELDS, kind=str)
+        self._batch_form = (
+            option(self.route, self.route_name, "batch_form", DEFAULT_BATCH_FORM, choices=BATCH_FORMS, kind=str)
+            if batch
+            else DEFAULT_BATCH_FORM
+        )
         self._resolution = option(self.route, self.route_name, "media_resolution", "medium", choices=RESOLUTIONS, kind=str)
         self._use_cache = bool(option(self.route, self.route_name, "cache", False, kind=bool))
         self._cache_ttl = int(option(self.route, self.route_name, "cache_ttl_seconds", 21600, kind=int))
@@ -232,6 +279,16 @@ class _GeminiCommon:
                 self._client_obj = genai.Client(api_key=key, http_options=types.HttpOptions(**http))
             return self._client_obj
 
+    def _form(self) -> int:
+        """The form requests are built in now (a batch route may step down to the documented one)."""
+        return FORM_FULL
+
+    def _schema_field_name(self) -> str:
+        return self._schema_field
+
+    def _metadata_key(self) -> str:
+        return "custom_id"
+
     def inlined_request_for(self, call: CallSpec) -> Any:
         """The `InlinedRequest` for one call. A Gemini request is a plain contents list plus a config."""
         from google.genai import types
@@ -249,7 +306,7 @@ class _GeminiCommon:
         }
         form = self.answer_schema(call.rules)
         if form is not None:
-            settings["response_json_schema"] = form
+            settings[self._schema_field_name()] = form
         if call.effort:
             settings["thinking_config"] = types.ThinkingConfig(thinking_level=types.ThinkingLevel(call.effort.upper()))
         if picture is not None:
@@ -257,7 +314,7 @@ class _GeminiCommon:
         return types.InlinedRequest(
             contents=[types.Content(role="user", parts=parts)],
             config=types.GenerateContentConfig(**settings),
-            metadata={"custom_id": call.custom_id},
+            metadata={self._metadata_key(): call.custom_id},
         )
 
     def prepare(self, calls: Sequence[CallSpec]) -> list[Request]:
@@ -272,7 +329,13 @@ class _GeminiCommon:
                 Request(
                     call_id=call.call_id,
                     custom_id=call.custom_id,
-                    payload={"request": inlined, "model": call.model, "rules_version": rules.version, "system": rules.system},
+                    payload={
+                        "request": inlined,
+                        "model": call.model,
+                        "rules_version": rules.version,
+                        "system": rules.system,
+                        "form": self._form(),
+                    },
                     est_input_tokens=estimate_text_tokens(rules.system, call_text(call), canonical_json(form) if form is not None else "")
                     + picture_tokens,
                     max_output_tokens=call.max_output_tokens,
@@ -291,8 +354,9 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
 
     def __init__(self, route_name: str, route: RouteConfig, *, client: Any | None = None, now: Any = None) -> None:
         Writer.__init__(self, route_name, route)
-        self._setup(client)
+        self._setup(client, batch=True)
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self._step = FORM_DOCUMENTED if self._batch_form == "documented" else FORM_FULL
         self._caches: dict[str, dict[str, Any]] = {}  # "model|rules version" -> {name, expires, tokens}
         self._notes: list[tuple[str, dict[str, Any]]] = []
 
@@ -303,6 +367,21 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
 
     def split(self, requests: Sequence[Request]) -> list[list[Request]]:
         return split_requests(requests, self.route.max_batch_calls, BATCH_MAX_BYTES)
+
+    # -- the form of a request
+
+    def _form(self) -> int:
+        return self._step
+
+    def _schema_field_name(self) -> str:
+        return "response_schema" if self._step >= FORM_DOCUMENTED else self._schema_field
+
+    def _metadata_key(self) -> str:
+        return "key" if self._step >= FORM_DOCUMENTED else "custom_id"
+
+    def use_form(self, form: int) -> None:
+        """Build the requests that follow in this form (0 the first one, 1 the documented one)."""
+        self._step = form
 
     # -- the explicit cache
 
@@ -404,9 +483,10 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
         from google.genai import types
 
         inlined = [request.payload["request"] for request in requests]
-        data: dict[str, Any] = {}
+        form = min(int(request.payload.get("form", FORM_FULL)) for request in requests)
+        data: dict[str, Any] = {"form": form}
         try:
-            if self._use_cache:
+            if self._use_cache and form == FORM_FULL:
                 first = requests[0].payload
                 cache_name = self._ensure_cache(first["model"], first["rules_version"], first["system"])
                 inlined = [self._with_cache(item, cache_name) for item in inlined]
@@ -460,13 +540,40 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
     def results(self, handle: Handle) -> list[CallResult]:
         job = self._client().batches.get(name=handle.data["name"])
         call_of = {custom_id(call_id): call_id for call_id in handle.call_ids}
-        found: list[CallResult] = []
+        items: list[tuple[Any, str]] = []
         for item in lookup(job, "dest", "inlined_responses") or []:
-            key = (lookup(item, "metadata") or {}).get("custom_id")
-            call_id = call_of.get(str(key))
+            metadata = lookup(item, "metadata") or {}
+            call_id = call_of.get(str(metadata.get("custom_id") or metadata.get("key")))
             if call_id is not None:
-                found.append(parse_inlined(item, call_id))
+                items.append((item, call_id))
+        found = [parse_inlined(item, call_id) for item, call_id in items]
+        if items and all(_refused_as_invalid(item) for item, _call_id in items):
+            return self._refused_as_a_whole(handle, found)
         return found
+
+    def _refused_as_a_whole(self, handle: Handle, found: list[CallResult]) -> list[CallResult]:
+        """Every request of a batch came back refused as an invalid argument: the form of the request is at fault.
+
+        The calls are sent again in the documented form, unless the batch already was in it or the route is
+        meant to stay in the first form: then the refusal is final and says where to look. A batch in which
+        some requests came back and others did not is never read this way; that is the requests' own fault.
+        """
+        form = int(handle.data.get("form", FORM_FULL) or FORM_FULL)
+        if form >= FORM_DOCUMENTED:
+            note = (
+                "the batch was in the form the batch pages document (schema in response_schema, metadata key, no explicit "
+                f"cache); python -m rps.geminiprobe --batch --route {self.route_name} says which part of the request the service refuses"
+            )
+            return [_with_note(result, note) for result in found]
+        if self._batch_form == "full":
+            note = 'the route option "batch_form" is "full", so the calls are not sent again in the documented form'
+            return [_with_note(result, note) for result in found]
+        self._step = FORM_DOCUMENTED
+        note = (
+            "every request of the batch was refused as sent; the calls are sent again in the form the batch pages "
+            "document (schema in response_schema, metadata key, no explicit cache)"
+        )
+        return [_with_note(result, note, retry=True) for result in found]
 
     def recover(
         self, requests: Sequence[Request], *, since: datetime | None = None, recorded: Collection[str] = ()

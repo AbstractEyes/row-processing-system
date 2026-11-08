@@ -207,7 +207,7 @@ def test_submit_sends_the_inline_requests_with_a_digest_in_the_display_name():
     assert sent["model"] == MODEL and len(sent["src"]) == 2
     assert [item.metadata["custom_id"] for item in sent["src"]] == [r.custom_id for r in requests]
     assert sent["config"].display_name == f"rps-{digest_of([r.custom_id for r in requests])}"
-    assert handle.handle_id == "batches/job-1" and handle.mode == "batch" and handle.data == {"name": "batches/job-1"}
+    assert handle.handle_id == "batches/job-1" and handle.mode == "batch" and handle.data == {"form": 0, "name": "batches/job-1"}
     assert Handle.from_dict(json.loads(json.dumps(handle.to_dict()))) == handle  # plain data
 
 
