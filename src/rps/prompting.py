@@ -35,10 +35,30 @@ answer to a provider that has no schema mode. A package supplies it as a file ca
 comments are left out, and a block with nothing else in it is no block. Only a provider
 that needs it sends it (the DeepSeek writer appends it to the system message); the others
 have a schema and ignore it.
+
+Prompt profiles. A rules package may hold other wordings of its prompt, one folder each under
+`profiles/<name>/`, and a route names the one it writes with (`profile` in the route's settings;
+`default` is the package's own files). A profile folder holds:
+
+    writer_system.md      the system prompt
+    task.tpl.txt          the user message, with named fields in braces ({series_id}, ...), filled
+                          by the package's `task_text.profile_task_text(name, layout, hint_layout)`
+    retry.tpl.txt         the block that follows the user message after a failed answer;
+                          {check_messages} is the check lines, each "- " + the message
+    VERSION               the profile's version (a content hash of its files when missing)
+    hint.tpl.txt          optional: the block that holds a real picture's hint, for the layout
+    json_format.md        optional: the profile's own format block, in place of the package's
+    openapi_schema.json   optional: the row schema in the OpenAPI form with field descriptions, sent
+                          where a provider takes that form (Gemini's `response_schema`)
+
+Everything else (the schema, the per-call choices, the conversion of answers into rows, the
+checker and the screen) is the package's own and shared by every profile. `profile_rules` gives
+the rules of a named profile; an unknown name is a ConfigError.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import importlib
 import json
@@ -48,7 +68,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from .config import ConfigError, RulesConfig
+from .config import DEFAULT_PROFILE, ConfigError, RulesConfig
 from .ids import canonical_json
 
 DEFAULT_SYSTEM_FILE = "writer_system.md"
@@ -56,8 +76,18 @@ DEFAULT_SCHEMA_FILE = "row_schema.json"
 DEFAULT_VERSION_FILE = "VERSION"
 DEFAULT_JSON_FORMAT_FILE = "json_format.md"
 
+# Prompt profiles (see the module notes); DEFAULT_PROFILE is the rule set's own prompt.
+PROFILES_FOLDER = "profiles"
+PROFILE_TASK_FILE = "task.tpl.txt"
+PROFILE_RETRY_FILE = "retry.tpl.txt"
+PROFILE_HINT_FILE = "hint.tpl.txt"
+PROFILE_OPENAPI_FILE = "openapi_schema.json"
+CHECK_MESSAGES_FIELD = "check_messages"
+
 _NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+# A named field of a layout: a lower-case name in braces. Other braces (JSON in the text) are left alone.
+FIELD_PATTERN = re.compile(r"\{([a-z_]+)\}")
 
 # Rule sets that come with a checker of their own, by package name.
 DEFAULT_ASSESSORS: Mapping[str, str] = {"rps.rules": "rps.assessor:Assessor"}
@@ -78,6 +108,14 @@ def clean_json_format(text: str | None) -> str | None:
     return _HTML_COMMENT.sub("", str(text)).strip() or None
 
 
+def fill_fields(template: str, fields: Mapping[str, str]) -> str:
+    """A layout with each named field ({name}) replaced by its text; a name not in `fields` and other braces stay.
+
+    The layout is read once, so braces inside a filled text are never read as fields.
+    """
+    return FIELD_PATTERN.sub(lambda match: fields.get(match.group(1), match.group(0)), template)
+
+
 @dataclass(frozen=True)
 class WriterRules:
     """What every writer call is told: the system prompt, the answer schema and the version.
@@ -86,6 +124,12 @@ class WriterRules:
     block (see the module notes), already without its comments; None when the rule set has none.
     `task_text`, `assign`, `normalize`, `explain`, `assessor` and `screen` are the optional parts
     described in the module notes.
+
+    `profile` names the prompt profile these rules are (see the module notes). `retry` is the
+    profile's retry block, with the field {check_messages}; None writes the check messages as
+    `feedback_text` does. `openapi_schema` is the schema in the OpenAPI form with field descriptions,
+    for a provider that takes that form; None lets the provider build the form from `schema`.
+    `profile_loader` gives the rules of another profile of the same rule set (see `profile_rules`).
     """
 
     system: str
@@ -99,6 +143,10 @@ class WriterRules:
     json_format: str | None = field(default=None, repr=False)
     explain: ExplainFn | None = field(default=None, compare=False, repr=False)
     screen: ScreenFn | None = field(default=None, compare=False, repr=False)
+    profile: str = DEFAULT_PROFILE
+    retry: str | None = field(default=None, repr=False)
+    openapi_schema: Mapping[str, Any] | None = field(default=None, repr=False)
+    profile_loader: Callable[[str], "WriterRules"] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.system, str) or not self.system.strip():
@@ -111,7 +159,26 @@ class WriterRules:
             raise ConfigError(f"schema name {self.schema_name!r} must be letters, digits, '_' or '-' (up to 64)")
         if self.json_format is not None and not isinstance(self.json_format, str):
             raise ConfigError("the format block of the writer rules must be text")
+        if not isinstance(self.profile, str) or not _NAME_PATTERN.match(self.profile):
+            raise ConfigError(f"profile name {self.profile!r} must be letters, digits, '_' or '-' (up to 64)")
+        if self.retry is not None and (not isinstance(self.retry, str) or not self.retry.strip()):
+            raise ConfigError("the retry block of the writer rules must be text")
+        if self.openapi_schema is not None and (not isinstance(self.openapi_schema, Mapping) or not self.openapi_schema):
+            raise ConfigError("the OpenAPI form of the schema must be an object")
         object.__setattr__(self, "json_format", clean_json_format(self.json_format))
+
+
+def profile_rules(rules: WriterRules, name: str) -> WriterRules:
+    """The rules of the named prompt profile of the rule set `rules` belongs to.
+
+    The rules themselves when they are that profile. A rule set with no such profile (or no profiles
+    at all) raises ConfigError, naming the profiles it has.
+    """
+    if name == rules.profile:
+        return rules
+    if rules.profile_loader is None:
+        raise ConfigError(f"unknown prompt profile {name!r}: these writing rules have no prompt profiles")
+    return rules.profile_loader(name)
 
 
 def rules_version(system: str, schema: Mapping[str, Any], json_format: str | None = None) -> str:
@@ -219,7 +286,8 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     `form.explain_failures`. The
     checker comes from `config.assessor`, or from the package's default (see
     `DEFAULT_ASSESSORS`); the screen comes from `config.screen`, or from the package's default
-    (see `DEFAULT_SCREENS`).
+    (see `DEFAULT_SCREENS`). The rules returned are the package's default profile; the other
+    profiles of a package (see the module notes) are read when `profile_rules` first asks for one.
     """
     base = Path(base_dir) if base_dir is not None else Path.cwd()
     task_text: TaskTextFn | None = None
@@ -271,7 +339,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     screen = None
     if screen_path and screen_path.lower() != "none":
         screen = make_screen(screen_path)
-    return WriterRules(
+    rules = WriterRules(
         system=system,
         schema=schema,
         version=version,
@@ -283,6 +351,97 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         explain=explain,
         screen=screen,
     )
+    if config.package:
+        return _with_profiles(rules, config.package, root)
+    return rules
+
+
+def _package_profiles(root: Any) -> list[str]:
+    """The prompt profiles a rules package holds: the folders under profiles/ that hold a system prompt."""
+    folder = root / PROFILES_FOLDER
+    try:
+        if not folder.is_dir():
+            return []
+        return sorted(child.name for child in folder.iterdir() if child.is_dir() and (child / DEFAULT_SYSTEM_FILE).is_file())
+    except OSError:
+        return []
+
+
+def _with_profiles(rules: WriterRules, package: str, root: Any) -> WriterRules:
+    """A package's rules with the loader of its prompt profiles; each profile is read once, when first asked for."""
+    loaded: dict[str, WriterRules] = {}
+
+    def loader(name: str) -> WriterRules:
+        if name == DEFAULT_PROFILE:
+            return base
+        if name not in loaded:
+            loaded[name] = _package_profile(package, root, base, name)
+        return loaded[name]
+
+    base = dataclasses.replace(rules, profile_loader=loader)
+    return base
+
+
+def _profile_text(folder: Any, name: str, where: str, *, optional: bool = False) -> str | None:
+    path = folder / name
+    try:
+        if optional and not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ConfigError(f"{where}: cannot read {name}: {error}") from None
+
+
+def _package_profile(package: str, root: Any, base: WriterRules, name: str) -> WriterRules:
+    """The rules of one prompt profile of a package: the profile's own texts on the package's shared parts."""
+    known = _package_profiles(root)
+    if name not in known:
+        raise ConfigError(f"unknown prompt profile {name!r}; the rules package {package!r} has {', '.join([DEFAULT_PROFILE, *known])}")
+    where = f"prompt profile {name!r} of the rules package {package!r}"
+    folder = root / PROFILES_FOLDER / name
+    system = _profile_text(folder, DEFAULT_SYSTEM_FILE, where) or ""
+    layout = _profile_text(folder, PROFILE_TASK_FILE, where) or ""
+    retry = _profile_text(folder, PROFILE_RETRY_FILE, where) or ""
+    hint = _profile_text(folder, PROFILE_HINT_FILE, where, optional=True)
+    own_format = _profile_text(folder, DEFAULT_JSON_FORMAT_FILE, where, optional=True)
+    openapi_text = _profile_text(folder, PROFILE_OPENAPI_FILE, where, optional=True)
+    version_text = _profile_text(folder, DEFAULT_VERSION_FILE, where, optional=True)
+    if not layout.strip():
+        raise ConfigError(f"{where}: the task layout ({PROFILE_TASK_FILE}) is empty")
+    if CHECK_MESSAGES_FIELD not in FIELD_PATTERN.findall(retry):
+        raise ConfigError(f"{where}: the retry block has no {{{CHECK_MESSAGES_FIELD}}} field for the check messages")
+    openapi: dict[str, Any] | None = None
+    if openapi_text is not None:
+        try:
+            openapi = json.loads(openapi_text)
+        except json.JSONDecodeError as error:
+            raise ConfigError(f"{where}: {PROFILE_OPENAPI_FILE} is not valid JSON: {error}") from None
+        if not isinstance(openapi, dict):
+            raise ConfigError(f"{where}: {PROFILE_OPENAPI_FILE} must hold a JSON object")
+    builder = _hook(package, "task_text", "profile_task_text")
+    if builder is None:
+        raise ConfigError(f"{where}: the package has no task_text.profile_task_text to fill the profile's layout")
+    task_text = builder(name, layout, hint)
+    json_format = clean_json_format(own_format) if own_format is not None else base.json_format
+    version = (version_text or "").strip() or _profile_hash(system, base.schema, json_format, layout, retry, hint, openapi)
+    return dataclasses.replace(
+        base,
+        system=system,
+        version=version,
+        json_format=json_format,
+        task_text=task_text,
+        profile=name,
+        retry=retry,
+        openapi_schema=openapi,
+    )
+
+
+def _profile_hash(system: str, schema: Mapping[str, Any], json_format: str | None, *texts: Any) -> str:
+    """A short content hash of a profile's texts, for a profile folder without a VERSION file."""
+    digest = hashlib.sha256(rules_version(system, schema, json_format).encode("utf-8"))
+    for text in texts:
+        digest.update(b"\0" + (canonical_json(text) if isinstance(text, Mapping) else str(text or "")).encode("utf-8"))
+    return digest.hexdigest()[:12]
 
 
 def _package_json_format(package: str, module: Any, root: Any) -> str | None:
@@ -317,6 +476,14 @@ def feedback_text(feedback: Sequence[str]) -> str:
     return f"\n\nYour previous answer for this task failed these checks. Answer again and fix every one of them:\n{lines}"
 
 
+def retry_text(template: str, feedback: Sequence[str]) -> str:
+    """A profile's retry block with the check messages in it, each "- " + the message, as `feedback_text` writes
+    them (empty when there are none)."""
+    if not feedback:
+        return ""
+    return fill_fields(template, {CHECK_MESSAGES_FIELD: "\n".join(f"- {line}" for line in feedback)})
+
+
 def assignment_for(spec: Any, ordinal: int, rules: WriterRules | None) -> Any:
     """The runner's choices for one call, as the rule set's `assign` function returns them (or None)."""
     if rules is None or rules.assign is None:
@@ -337,11 +504,17 @@ def render_task_text(spec: Any, feedback: Sequence[str] = (), *, ordinal: int = 
     """The user text of one call: the task text for the spec line, then any check messages.
 
     The runner's choices (`assign`) are worked out once here and handed to the task text,
-    so the text and the assessor's `AssessContext.assignment` carry the same values.
+    so the text and the assessor's `AssessContext.assignment` carry the same values. Rules with a
+    retry block of their own (a prompt profile) follow the task text with it, after one blank line.
     """
     if rules is not None and rules.task_text is not None:
         choices = assignment_for(spec, ordinal, rules)
         text = rules.task_text(spec, ordinal) if choices is None else rules.task_text(spec, ordinal, choices)
     else:
         text = spec_text(spec)
+    if rules is not None and rules.retry is not None:
+        block = retry_text(rules.retry, feedback)
+        if not block:
+            return text
+        return text + ("\n" if text.endswith("\n") else "\n\n") + block
     return text + feedback_text(feedback)

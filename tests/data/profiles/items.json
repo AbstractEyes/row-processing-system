@@ -1,0 +1,106 @@
+{
+ "note": "Invented spec items for the prompt-profile tests, one of each shape a task text takes; ordinal is the item's place in its batch. The drawn series of the sample is the item the profiles' filled samples were written for.",
+ "feedback": ["rule_3: medium: 2 thoughts, the depth wants 3-5", "spec_kept: records of the given spec missing or changed: [('thing colour', 'teal')]"],
+ "items": [
+  {
+   "name": "drawn_series",
+   "ordinal": 0,
+   "item": {
+    "kind": "series", "series": "s-t0001", "ids": ["art-t00001", "art-t00002", "art-t00003"], "domain": "illustration", "genre": null,
+    "specs": {
+     "simple": {"thing": {"name": "kite", "colour": "teal"}},
+     "medium": {"thing": {"name": "kite", "colour": "teal", "count": "2"}, "scene": {"setting": "cliff", "weather": "wind"}, "shot": {"framing": "wide"}, "form": {"palette": "teal and rust"}},
+     "deep": {"thing": {"name": "kite", "colour": "teal", "count": "2"}, "scene": {"setting": "cliff", "weather": "wind", "time": "dusk"}, "shot": {"framing": "wide", "angle": "worm's eye"}, "form": {"palette": "teal and rust", "line": "diagonal", "space": "vast"}}
+    },
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "drawn_series_relations",
+   "ordinal": 1,
+   "item": {
+    "kind": "series", "series": "s-t0002", "ids": ["art-t00004", "art-t00005", "art-t00006"], "domain": "painting", "genre": "still life",
+    "specs": {
+     "simple": {"thing": {"name": "bottle"}, "form": {"medium": "gouache"}},
+     "medium": {"thing": {"name": "bottle", "colour": "olive"}, "form": {"medium": "gouache", "texture": "matte"}, "shot": {"light": "soft window"}, "relation": [{"a": "bottle", "rel": "beside", "b": "clock"}]},
+     "deep": {"thing": {"name": "bottle", "colour": "olive"}, "form": {"medium": "gouache", "texture": "matte", "compose": "left third"}, "shot": {"light": "soft window", "angle": "eye level"}, "relation": [{"a": "bottle", "rel": "beside", "b": "clock"}, {"a": "clock", "rel": "below", "b": "lamp"}]}
+    },
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "seeded_series",
+   "ordinal": 2,
+   "item": {
+    "kind": "series", "series": "s-t0003", "ids": ["art-t00007", "art-t00008", "art-t00009"], "domain": "photograph", "genre": "architecture",
+    "specs": {"deep": {"thing": {"name": "fountain"}, "scene": {"setting": "courtyard"}, "relation": [{"a": "bench", "rel": "facing", "b": "fountain"}]}},
+    "seed_id": "fixture:0003",
+    "hint": "A three-tiered fountain of pale stone rises from a courtyard paved in hexagonal tiles. Two iron benches face it under a lime tree, and a striped awning flaps above a shuttered doorway.",
+    "license": "CC BY 4.0"
+   }
+  },
+  {
+   "name": "seeded_single_off_list_genre",
+   "ordinal": 3,
+   "item": {
+    "kind": "single", "series": "s-t0004", "ids": ["art-t00010"], "domain": "photograph", "genre": "teapot", "depth": "medium",
+    "spec": {"thing": {"name": "cup", "colour": "mint"}, "shot": {"framing": "macro"}},
+    "seed_id": "fixture:0004",
+    "hint": "A mint green cup with a chipped rim cradles a sprig of dried lavender, and shortbread crumbs freckle its saucer.",
+    "license": "CC BY 4.0"
+   }
+  },
+  {
+   "name": "drawn_single_relation",
+   "ordinal": 4,
+   "item": {
+    "kind": "single", "series": "s-t0005", "ids": ["art-t00011"], "domain": "photograph", "genre": "animal study", "depth": "deep",
+    "spec": {"thing": {"name": "dog", "colour": "ginger", "state": "asleep"}, "scene": {"setting": "attic", "time": "afternoon"}, "relation": [{"a": "dog", "rel": "under", "b": "table"}]},
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "seeded_single_simple",
+   "ordinal": 5,
+   "item": {
+    "kind": "single", "series": "s-t0006", "ids": ["art-t00012"], "domain": "painting", "genre": null, "depth": "simple",
+    "spec": {"thing": {"name": "violin"}},
+    "seed_id": "fixture:0006",
+    "hint": "A violin with one slack string lies across a page of hand-ruled music, a yellow ribbon knotted around its scroll.",
+    "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "empty_single",
+   "ordinal": 6,
+   "item": {
+    "kind": "single", "series": "s-t0007", "ids": ["art-t00013"], "domain": "design", "genre": "product", "depth": "medium",
+    "spec": {},
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "relations_only_single",
+   "ordinal": 7,
+   "item": {
+    "kind": "single", "series": "s-t0008", "ids": ["art-t00014"], "domain": "illustration", "genre": "illustration", "depth": "medium",
+    "spec": {"relation": [{"a": "cat", "rel": "inside", "b": "basket"}]},
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  },
+  {
+   "name": "drawn_series_sample",
+   "ordinal": 8,
+   "sample_assignment": {"relation_part": null, "unknown_keys": {"medium": "form texture", "deep": "story before"}},
+   "item": {
+    "kind": "series", "series": "s-16606", "ids": ["art-166018", "art-166019", "art-166020"], "domain": "painting", "genre": null,
+    "specs": {
+     "simple": {"person": {"gender": "boy"}, "look": {"hair": "braided"}},
+     "medium": {"person": {"gender": "boy", "count": "1"}, "look": {"hair": "braided", "expression": "mournful"}, "scene": {"setting": "swamp", "time": "night"}, "wear": {"clothing": "apron"}, "shot": {"framing": "extreme close", "light": "candle"}},
+     "deep": {"person": {"gender": "boy", "age": "teen", "count": "1"}, "look": {"hair": "braided", "expression": "mournful"}, "scene": {"setting": "swamp", "time": "night", "weather": "fog"}, "wear": {"clothing": "apron"}, "shot": {"framing": "extreme close", "light": "candle", "angle": "high angle"}, "form": {"compose": "s-curve", "palette": "plum and indigo"}, "thing": {"name": "basket", "colour": "light brown"}}
+    },
+    "seed_id": null, "license": "Apache-2.0"
+   }
+  }
+ ]
+}

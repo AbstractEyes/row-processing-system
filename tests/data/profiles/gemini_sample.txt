@@ -1,0 +1,57 @@
+<task_spec>
+Task: Write one series.
+Series ID: s-16606
+Row IDs in order: art-166018, art-166019, art-166020
+Ranks and depths: 1 = simple, 2 = medium, 3 = deep
+Domain: painting
+Genre rule: choose the one that fits, from the genre list.
+</task_spec>
+
+<seed_records>
+Records to keep (key = value; copy verbatim in exact order and spelling—none dropped, changed, or reordered):
+simple:
+  person gender = boy
+  look hair = braided
+medium:
+  person gender = boy
+  person count = 1
+  look hair = braided
+  look expression = mournful
+  scene setting = swamp
+  scene time = night
+  wear clothing = apron
+  shot framing = extreme close
+  shot light = candle
+deep:
+  person gender = boy
+  person age = teen
+  person count = 1
+  look hair = braided
+  look expression = mournful
+  scene setting = swamp
+  scene time = night
+  scene weather = fog
+  wear clothing = apron
+  shot framing = extreme close
+  shot light = candle
+  shot angle = high angle
+  form compose = s-curve
+  form palette = plum and indigo
+  thing name = basket
+  thing colour = light brown
+</seed_records>
+
+<assigned_constraints>
+Assigned for this call:
+- Relation constraint: This item holds no relation: write no relation and ask no relation question.
+- Unknown question key by depth: medium = 'form texture'; deep = 'story before' (the row must not hold these keys: add no record under them).
+- Wordings by depth: simple = caption; medium = caption, prompt, tags; deep = caption, prompt, tags, critique.
+</assigned_constraints>
+
+<pre_output_checklist>
+Before emitting JSON, verify:
+1. If a Hint is present and implies an unrecorded person, contradicts a record/period year, or never mentions the recorded main subject, return skip=true.
+2. Nesting & counts: simple=1-4 (add nothing), medium=6-14 (keep all simple + add mood feeling & mood from), deep=14-30 (keep all medium unchanged + add intent purpose, intent for, story moment, and one of story before [<=15B] / story after [<=16B] / story cause [<=16B]).
+3. Questions: "record" copies a key=value in this row's records; "chain" uses a valid 2-word key NOT in this row's records whose value (<=20B) appears word-for-word in this row's thoughts; "unknown" uses the exact assigned unknown key with value="unknown" (and that key is never added to records or answered in text).
+Return the json output object described in the rules: {"skip", "reason", "class", "rows"}.
+</pre_output_checklist>

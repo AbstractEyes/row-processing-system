@@ -57,7 +57,16 @@ from .images import ImageError, load_picture
 from .keys import redact
 from .layout import controller_actor
 from .ledger import Ledger, PriceError, PriceTable, effective_purpose
-from .prompting import ScreenFn, WriterRules, assignment_data, assignment_for, load_writer_rules, render_task_text
+from .prompting import (
+    DEFAULT_PROFILE,
+    ScreenFn,
+    WriterRules,
+    assignment_data,
+    assignment_for,
+    load_writer_rules,
+    profile_rules,
+    render_task_text,
+)
 from .provenance import (
     ProvenanceError,
     SourceLabel,
@@ -304,7 +313,11 @@ class Controller:
     first call and returns the reason to set the line aside with no call, or None (it is
     never asked about a retry); when omitted it is the rules' own, if they bring one.
     `rules` are the writing rules (system prompt, row schema, version); when omitted they
-    are read from the configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
+    are read from the configuration's `rules` section if it has one. A route that names a prompt
+    profile (`profile` in its settings) writes with that profile's rules: its system prompt, task
+    text, retry block, format block and schema form; the checker, the screen, the per-call choices
+    and the answer's form stay those of `rules`. A profile the rules do not have is a ConfigError
+    here. `clock` (monotonic seconds), `now`
     (UTC datetime) and `sleep` can be replaced in tests; `on_event` is called after
     every event is written and applied. Without a `sleep`, the pause between passes ends
     early when a one-call route finishes a call, so its free worker is given the next one
@@ -350,6 +363,9 @@ class Controller:
         self.rules: WriterRules | None = rules if rules is not None else (
             load_writer_rules(config.rules) if config.rules is not None else None
         )
+        # The rules of each prompt profile a route names (one object per profile), and each route's own.
+        self.profiles: dict[str, WriterRules] = {}
+        self._route_rules: dict[str, WriterRules] = self._rules_by_route()
         self.assess: AssessFn = assess or default_assess
         self.assess_call: AssessCallFn | None = assess_call
         checker = self.rules.assessor if self.rules is not None else None
@@ -414,6 +430,40 @@ class Controller:
 
     # ------------------------------------------------------------------ setup
 
+    def _rules_by_route(self) -> dict[str, WriterRules]:
+        """The writing rules each route writes with: the rules' own prompt, or the prompt profile the route names.
+
+        Routes that name the same profile share one set of rules (kept in `profiles`). A route that names a
+        profile the rules do not have, or any profile when no rules are set, is a ConfigError.
+        """
+        found: dict[str, WriterRules] = {}
+        if self.rules is not None:
+            self.profiles[self.rules.profile] = self.rules
+        for name, route in self.config.routes.items():
+            profile = route.profile
+            if self.rules is None:
+                if profile != DEFAULT_PROFILE:
+                    raise ConfigError(f"route {name!r} names the prompt profile {profile!r}, but no writing rules are set")
+                continue
+            if profile not in self.profiles:
+                try:
+                    self.profiles[profile] = profile_rules(self.rules, profile)
+                except ConfigError as error:
+                    raise ConfigError(f"route {name!r}: {error}") from None
+            found[name] = self.profiles[profile]
+        return found
+
+    def rules_for(self, route_name: str) -> WriterRules | None:
+        """The writing rules a route writes with (None when no rules are set)."""
+        return self._route_rules.get(route_name, self.rules)
+
+    def _rules_fields(self, route_name: str) -> dict[str, Any]:
+        """The version and the prompt profile of a route's rules, for the events that record a call (empty without rules)."""
+        rules = self.rules_for(route_name)
+        if rules is None:
+            return {}
+        return {"rules_version": rules.version, "rules_profile": rules.profile}
+
     def start(self) -> None:
         """Rebuild the state from the event logs and record that this run has started."""
         if self._started:
@@ -427,8 +477,9 @@ class Controller:
                     f"route {name!r} sends the writing rules to a model, but no rules are set "
                     "(pass `rules`, or add a `rules` section to the configuration)"
                 )
-            if self.rules is not None and route.is_enabled:
-                self.writers[name].check_rules(self.rules)
+            route_rules = self.rules_for(name)
+            if route_rules is not None and route.is_enabled:
+                self.writers[name].check_rules(route_rules)
             if route.is_enabled and self.writers[name].bills_cache_storage:
                 if self.ledger.storage_rate(name, on=self._today_date()) is None:
                     raise ConfigError(
@@ -793,6 +844,7 @@ class Controller:
             max_output_tokens = route.max_output_tokens
             if boost:
                 max_output_tokens = max(max_output_tokens + 1, int(max_output_tokens * route.truncation_factor))
+        rules = self.rules_for(task.route)
         spec = CallSpec(
             call_id=ids.call_id(task.task_id, line.line_id, attempt),
             task_id=task.task_id,
@@ -811,8 +863,8 @@ class Controller:
             image=image,
             image_ext=ext,
             image_class=line.image_class if line.image else None,
-            task_text=render_task_text(line.spec, feedback, ordinal=line.ordinal, rules=self.rules),
-            rules=self.rules,
+            task_text=render_task_text(line.spec, feedback, ordinal=line.ordinal, rules=rules),
+            rules=rules,
         )
         return spec, size
 
@@ -1087,6 +1139,7 @@ class Controller:
                     "image_size": sizes[spec.call_id],
                     "feedback": list(spec.feedback),
                     "retry_of": retry_of[spec.call_id],
+                    **self._rules_fields(route_name),
                 },
             )
             self._prepared_here.add(spec.call_id)
@@ -1148,6 +1201,7 @@ class Controller:
                 "image_size": None,
                 "feedback": [],
                 "retry_of": status.retry_of,
+                **self._rules_fields(task.route),
             },
         )
         self._emit(
@@ -1695,6 +1749,7 @@ class Controller:
     ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
         route = self.config.routes[task.route]
         line = task.lines[line_id]
+        rules = self.rules_for(task.route)
         writer = WriterLabel(
             provider=route.provider,
             model=route.model,
@@ -1704,8 +1759,9 @@ class Controller:
             task_id=task.task_id,
             pool_version=task.pool_version,
             image_size=image_size,
-            rules_version=self.rules.version if self.rules is not None else None,
+            rules_version=rules.version if rules is not None else None,
             package_version=__version__,
+            rules_profile=rules.profile if rules is not None else None,
         )
         source = SourceLabel(
             dataset=task.dataset or task.source,
@@ -2150,7 +2206,11 @@ class Controller:
         self.state_store.flush(force=True)
         items = []
         for entry, (row, round_, audit) in zip(packet.items(), chunk):
-            items.append({**entry, "round": round_, "audit": audit})
+            # The rules each row was written with stay in this record: packet.json is the reviewer's blind view,
+            # and a profile's name would say which provider wrote the row.
+            label = row.record.get("writer") or {}
+            written = {key: label[key] for key in ("rules_version", "rules_profile") if label.get(key) is not None}
+            items.append({**entry, "round": round_, "audit": audit, **written})
         self._emit(
             "packet_published",
             {
@@ -2167,7 +2227,8 @@ class Controller:
 
         When writing rules are loaded (the rule pool, say) it is their version, which a reviewer
         compares with the pool's VERSION file; the configured `review.brief_version` applies
-        only when no rules are loaded.
+        only when no rules are loaded. It is the rules' own version whatever prompt profile a row
+        was written with: the review brief is the same for every profile.
         """
         return self.rules.version if self.rules is not None else self.config.review.brief_version
 

@@ -1,0 +1,53 @@
+TASK
+Write one series.
+Series id: s-16606
+Row ids in output order: art-166018, art-166019, art-166020
+Ranks and depths in the same order: 1 = simple, 2 = medium, 3 = deep
+Domain: painting
+Genre: choose the fitting genre from the allowed genre choices.
+Record layout: per-depth records
+
+PICTURE EVIDENCE
+Drawn item; no real-picture hint.
+
+RECORDS TO KEEP
+simple:
+  person gender = boy
+  look hair = braided
+medium:
+  person gender = boy
+  person count = 1
+  look hair = braided
+  look expression = mournful
+  scene setting = swamp
+  scene time = night
+  wear clothing = apron
+  shot framing = extreme close
+  shot light = candle
+deep:
+  person gender = boy
+  person age = teen
+  person count = 1
+  look hair = braided
+  look expression = mournful
+  scene setting = swamp
+  scene time = night
+  scene weather = fog
+  wear clothing = apron
+  shot framing = extreme close
+  shot light = candle
+  shot angle = high angle
+  form compose = s-curve
+  form palette = plum and indigo
+  thing name = basket
+  thing colour = light brown
+
+RELATIONS TO KEEP
+None.
+
+ASSIGNMENTS
+Relation question: no relations; write none and ask no relation question.
+Unknown questions by depth: medium = 'form texture'; deep = 'story before'. Keep each key absent and unanswered in its assigned row.
+Wordings by depth: simple = caption; medium = caption, prompt, tags; deep = caption, prompt, tags, critique.
+
+Write the complete result for this item.

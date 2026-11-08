@@ -12,7 +12,9 @@ once, before anything is sent. They cover the rules the specifications state:
     DeepSeek    takes no schema (JSON mode); the answer is checked by the assessor
 
 Nothing is rewritten by the checks: a schema that fails is reported with the path of each problem.
-`gemini_schema` is the one translation here: the form of a schema that is sent to Gemini.
+`gemini_schema` is the one translation here: the form of a schema that is sent to Gemini. A prompt
+profile may bring that OpenAPI form with field descriptions of its own; `described_openapi_problems`
+says where its structure (the descriptions set aside) differs from the form built from the row schema.
 """
 
 from __future__ import annotations
@@ -260,6 +262,40 @@ def _openapi(node: Any, root: Mapping[str, Any], stack: tuple[str, ...], path: s
         elif "items" in out:
             out["type"] = "array"
     return out
+
+
+def without_descriptions(node: Any) -> Any:
+    """A schema with every `description` taken out, at every depth: its structure alone."""
+    if isinstance(node, Mapping):
+        return {key: without_descriptions(value) for key, value in node.items() if key != "description"}
+    if isinstance(node, list):
+        return [without_descriptions(value) for value in node]
+    return node
+
+
+def described_openapi_problems(described: Mapping[str, Any], schema: Mapping[str, Any]) -> list[str]:
+    """Where a described OpenAPI form (a prompt profile's, with field descriptions) differs from the OpenAPI form
+    of `schema` once the descriptions are set aside (empty when the two have the same structure)."""
+    problems: list[str] = []
+
+    def walk(mine: Any, built: Any, path: str) -> None:
+        if len(problems) >= _MAX_PROBLEMS:
+            return
+        if type(mine) is not type(built):
+            problems.append(f"{path or '(root)'}: {type(mine).__name__} where the row schema has {type(built).__name__}")
+        elif isinstance(mine, dict):
+            for key in sorted(set(mine) | set(built)):
+                if key not in built:
+                    problems.append(f"{path or '(root)'}: {key!r} is not in the row schema")
+                elif key not in mine:
+                    problems.append(f"{path or '(root)'}: {key!r} of the row schema is missing")
+                else:
+                    walk(mine[key], built[key], f"{path}.{key}" if path else key)
+        elif mine != built:
+            problems.append(f"{path or '(root)'}: {json.dumps(mine)[:80]} where the row schema has {json.dumps(built)[:80]}")
+
+    walk(without_descriptions(described), without_descriptions(_openapi(schema, schema, (), "")), "")
+    return problems
 
 
 def gemini_schema(schema: Mapping[str, Any], mode: str = "plain") -> dict[str, Any] | None:

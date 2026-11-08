@@ -50,7 +50,7 @@ from . import ids
 from .config import ConfigError, RouteConfig, RulesConfig
 from .keys import redact
 from .ledger import PriceError, PriceTable, Usage
-from .prompting import WriterRules, load_writer_rules, render_task_text
+from .prompting import WriterRules, load_writer_rules, profile_rules, render_task_text
 from .providers.base import CallSpec
 from .providers.common import lookup
 from .providers.gemini_api import API_VERSIONS, CACHE_API_VERSION, GeminiBatchWriter, api_version_of, parse_response
@@ -128,8 +128,8 @@ def probe_gemini(
     """Send the writer's request in each form of the schema as one call, and report what Gemini said.
 
     `item` is a spec item as the tasks file holds it (the first worked example of the rule pool when
-    omitted); `rules` are the writing rules (the rule pool when omitted). `client` replaces the SDK
-    client (the tests use it). The report holds one outcome per form tried.
+    omitted); `rules` are the writing rules (when omitted, the rule pool in the prompt profile the route
+    names). `client` replaces the SDK client (the tests use it). The report holds one outcome per form tried.
     """
 
     def refuse(reason: str, **extra: Any) -> ProbeReport:
@@ -150,7 +150,10 @@ def probe_gemini(
         prices.price(config.model)
     except PriceError as error:
         return refuse(str(error))
-    rules = rules or load_writer_rules(RulesConfig(package="rps.rules"))
+    try:
+        rules = rules or profile_rules(load_writer_rules(RulesConfig(package="rps.rules")), config.profile)
+    except ConfigError as error:
+        return refuse(str(error))
     if item is None:
         from . import rules as pool
 
@@ -496,7 +499,10 @@ def probe_gemini_batch(
         prices.price(config.model)
     except PriceError as error:
         return refuse(str(error))
-    rules = rules or load_writer_rules(RulesConfig(package="rps.rules"))
+    try:
+        rules = rules or profile_rules(load_writer_rules(RulesConfig(package="rps.rules")), config.profile)
+    except ConfigError as error:
+        return refuse(str(error))
     if item is None:
         from . import rules as pool
 

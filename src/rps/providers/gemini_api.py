@@ -6,6 +6,10 @@ the row schema (`response_json_schema`, in the form the `schema` option names); 
 from the route's effort; and, for a picture, a media resolution. Inline batches stay under the
 provider's size limit by splitting.
 
+Writing rules of a prompt profile that bring the OpenAPI form with field descriptions of their own (see
+rps.prompting) send it wherever the OpenAPI form goes out; at setup its structure is checked against the form
+built from the row schema. Each profile has its own rules version, so its explicit cache is its own.
+
 Route options: `schema` ("plain", "exact", "none" or "openapi", default "plain": the form in which the row schema
 is sent, see `rps.providers.schemas.gemini_schema`), `schema_field` ("response_json_schema", the default, or
 "response_schema": the request field that carries it), `batch_form` (see below), `media_resolution` ("low",
@@ -50,6 +54,7 @@ The key is read from GEMINI_API_KEY and never logged.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import threading
@@ -85,7 +90,7 @@ from .common import (
     picture_for,
 )
 from .pool import PoolWriter
-from .schemas import GEMINI, GEMINI_SCHEMA_MODES, SchemaError, check_schema, gemini_schema
+from .schemas import GEMINI, GEMINI_SCHEMA_MODES, SchemaError, check_schema, described_openapi_problems, gemini_schema
 
 API_KEY_ENV = "GEMINI_API_KEY"
 THINKING_LEVELS = ("minimal", "low", "medium", "high")
@@ -290,6 +295,13 @@ class _GeminiCommon:
             # be written so is found at the start and not in the middle of a run.
             if self._may_send_openapi():
                 gemini_schema(rules.schema, "openapi")
+                # A prompt profile's described form goes out in its place, so it must hold the same structure.
+                if rules.openapi_schema is not None:
+                    problems = described_openapi_problems(rules.openapi_schema, rules.schema)
+                    if problems:
+                        raise SchemaError(
+                            f"the OpenAPI form of prompt profile {rules.profile!r} differs from the row schema: " + "; ".join(problems)
+                        )
         except SchemaError as error:
             raise ConfigError(f"route {self.route_name!r}: {error}") from None
 
@@ -302,8 +314,14 @@ class _GeminiCommon:
         return self._schema_mode
 
     def answer_schema(self, rules: WriterRules) -> dict[str, Any] | None:
-        """The row schema in the form this route sends (None when the route sends none)."""
-        return gemini_schema(rules.schema, self._schema_mode_now())
+        """The row schema in the form this route sends (None when the route sends none).
+
+        Where the OpenAPI form goes out, rules that bring a described one (a prompt profile's) send theirs.
+        """
+        mode = self._schema_mode_now()
+        if mode == "openapi" and rules.openapi_schema is not None:
+            return copy.deepcopy(dict(rules.openapi_schema))
+        return gemini_schema(rules.schema, mode)
 
     def resolved_api_version(self) -> str | None:
         """The API version this route's requests go to: the option, else v1beta with the explicit cache, else None (the SDK's own)."""

@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -106,6 +107,9 @@ def _reject_secret_values(value: Any, where: str = "config") -> None:
 
 # Providers whose routes stay off until a configuration turns them on.
 DISABLED_BY_DEFAULT: frozenset[str] = frozenset({"deepseek"})
+# The prompt profile a route writes with unless it names another: the writing rules' own prompt (see rps.prompting).
+DEFAULT_PROFILE = "default"
+PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 # The most calls a synchronous route may keep in flight at once.
 MAX_WORKERS = 2500
 # How many calls a synchronous (api) route sends at once unless its configuration says otherwise.
@@ -141,7 +145,9 @@ class RouteConfig:
     sends at once (`DEFAULT_WORKERS`; a batch route ignores it). `truncation_factor` scales
     the token limit of the one retry that follows an answer cut off at the limit. `options`
     holds settings that belong to one provider (picture detail, media resolution, cache
-    use); the adapter checks them.
+    use); the adapter checks them. `profile` names the prompt profile of the writing rules
+    the route writes with (`DEFAULT_PROFILE` is the rules' own prompt; see rps.prompting); a
+    name the rules do not have is refused when the controller is set up.
     """
 
     provider: str
@@ -158,6 +164,7 @@ class RouteConfig:
     workers: int = DEFAULT_WORKERS
     truncation_factor: float = 2.0
     options: Mapping[str, Any] = field(default_factory=dict)
+    profile: str = DEFAULT_PROFILE
 
     @property
     def is_enabled(self) -> bool:
@@ -188,6 +195,7 @@ class RouteConfig:
             "workers": self.workers,
             "truncation_factor": self.truncation_factor,
             "options": {key: self.options[key] for key in sorted(self.options)},
+            "profile": self.profile,
         }
 
     @classmethod
@@ -202,10 +210,13 @@ class RouteConfig:
             {
                 "provider", "model", "kind", "effort", "budget_usd", "purpose_caps", "max_output_tokens",
                 "max_batch_calls", "enabled", "max_retries", "timeout_seconds", "workers", "truncation_factor",
-                "options",
+                "options", "profile",
             },
             where,
         )
+        profile = data.get("profile", DEFAULT_PROFILE)
+        if not isinstance(profile, str) or not PROFILE_PATTERN.match(profile):
+            _fail(f"{where}.profile: a prompt profile name is letters, digits, '_' or '-' (up to 64), got {profile!r}")
         kind = data.get("kind", "api")
         if kind not in ROUTE_KINDS:
             _fail(f"{where}.kind: must be one of {list(ROUTE_KINDS)}, got {kind!r}")
@@ -250,6 +261,7 @@ class RouteConfig:
                 _number(data.get("truncation_factor", 2.0), f"{where}.truncation_factor", minimum=1, maximum=16)
             ),
             options=options,
+            profile=profile,
         )
 
 

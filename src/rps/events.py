@@ -14,7 +14,9 @@ Event kinds and their payloads:
     task_created         task_id, source, batch, variant, route, purpose, effort,
                          pool_version, lines [{line_id, spec, item_id, image, image_class, license}]
     call_prepared        call_id, task_id, line, attempt, route, purpose, est_usd,
-                         est_input_tokens, max_output_tokens, image_size, feedback, retry_of
+                         est_input_tokens, max_output_tokens, image_size, feedback, retry_of,
+                         rules_version and rules_profile (the version and the prompt profile of the
+                         writing rules the call is built from, when rules are set)
     budget_refused       call_id, route, purpose, est_usd, reason, and the spend and caps
     line_screened        task_id, line, item_id, route, class (other), reason (a spec line the rule
                          set's screen set aside before its first call: no call was made for it, and
@@ -40,7 +42,9 @@ Event kinds and their payloads:
     row_rejected         row_id, call_id, by (assessor or reviewers), reason, errors, retry
     row_set_aside        call_id, row_id (optional), class, reason
     packet_published     packet_id, reviewer_id, family, brief_version,
-                         items [{row_id, image, round, audit}]
+                         items [{row_id, image, round, audit, rules_version, rules_profile}] (the
+                         rules each row was written with, from its writer label; packet.json itself
+                         stays blind to them)
     verdict_received     packet_id, row_id, reviewer_id, family, verdict, reasons, notes
     row_escalated        row_id, call_id, reason (in_question or audit_reject), round, families_used
     row_to_hand          row_id, call_id, reason, verdicts (the owner's hand queue)
