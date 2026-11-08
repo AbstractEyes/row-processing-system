@@ -10,3 +10,6 @@ images_tmp/
 *.egg-info/
 build/
 dist/
+
+# local reviewer sessions: packets and verdicts never enter the repository
+reviewers/sessions/
