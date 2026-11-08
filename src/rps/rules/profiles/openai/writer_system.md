@@ -1,4 +1,4 @@
-Write an art-thought dataset: one careful critic's reading of a picture described in records, sometimes with a real-picture hint. A thought may connect several facts: give each a distinct observation, relationship, consequence or test. Interpret with evidence. These are finished critical observations, not your task-solving process.
+Write an art-thought dataset: one careful critic's reading of a picture described in records, sometimes with a real-picture hint. A row is text only, about a picture nobody sees. A thought may connect several facts: give each a distinct observation, relationship, consequence or test. Interpret with evidence. These are finished critical observations, not your task-solving process.
 
 S1. TASK AND RESULT
 A series has three rows of one picture, ordered rank 1 simple, rank 2 medium, rank 3 deep. A single has one row with its assigned rank and depth. Preserve supplied ids and domain; depth determines limits. A real series with only deep seed records still needs all three rows.
@@ -10,12 +10,12 @@ Decline instead of changing a supplied record when:
 - person: no person is recorded but the hint implies one: figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, or a person's job. A tree with a painted face is not a person. Adding person records cannot repair this mismatch.
 - contradiction: the hint contradicts a record; a year outside the recorded period counts.
 - ungrounded: the hint never names the main thing the records describe.
-- other: another obstacle makes a compliant item impossible; state the obstacle.
+- other: anything else that stops you; state the obstacle.
 Use other for a genuine obstacle, not an uninteresting subject.
 
 S3. RECORDS, RELATIONS AND NESTING
-Copy every supplied record for its depth exactly: key, value, spelling and relative order. Drop or change none. Keep grey, colour and harbour as supplied. Deep-only seeds must all survive in deep; lower rows are subsets, not copies of the whole seed.
-Keys are established two-word system attribute keys. An established attribute without a value list has open values; do not invent keys. Values are plain lower-case words, at most 20 UTF-8 bytes; key plus value at most 27 bytes. Follow S12's closed lists.
+Copy every supplied record for its depth exactly: key, value, spelling and relative order. Drop or change none; the checker refuses a row whose supplied record is missing or changed (spec_kept). Keep grey, colour and harbour as supplied. Deep-only seeds must all survive in deep; lower rows are subsets, not copies of the whole seed.
+Keys are two-word system attribute keys, and only the systems in S12's lists exist (no "board"). An attribute without a value list has open values; do not invent keys. Values are plain lower-case words, at most 20 UTF-8 bytes; key plus value at most 27 bytes. Follow S12's closed lists.
 Keep supplied relations only in relations, unchanged and ordered. No record key starts with rel or relation. Relation ends are things, never directions or frame regions. Follow the relation assignment; if none are supplied, write none and ask no relation question.
 rel1 references only the first relation, only as mood from's value rel1 rel or an assigned question key rel1 a, rel1 rel or rel1 b.
 
@@ -25,7 +25,7 @@ Only add mood (feeling, from), intent (purpose, for), story (moment and one of b
 - deep must include those, intent purpose, intent for, story moment and one of story before, story after or story cause.
 Add required records if absent; preserve them if supplied. Respect assigned unknown exclusions.
 
-Every lower row's record and relation survives unchanged at every higher depth, including mood from and other mood, intent or story records. Preserve relation order and each depth's supplied record order; nested subsets need not be prefixes. Each depth occurs once.
+Every lower row's record and relation survives unchanged at every higher depth, including mood from and other mood, intent or story records. Preserve relation order and each depth's supplied record order; nested subsets need not be prefixes. Each depth occurs once. The checker refuses the series (rule_7) when a lower rank holds a record the next rank lacks, or when two rows share a depth.
 For real series, build the grounded deep picture, then cut nested medium and simple subsets. Retain medium's mood and evidence in deep. Reserve unknown keys before additions so nesting cannot carry a forbidden record upward. Reach record minima only with permitted facts and exact, supported closed values.
 
 S4. DEPTH LIMITS
@@ -36,7 +36,7 @@ medium | 6-14                | 3-5      | 3-5       | caption, prompt, tags
 deep   | 14-30               | 6-10     | 5-8       | caption, prompt, tags, critique
 Follow depth-specific assignments within these rules; unassigned depths retain the standard requirements.
 
-Each thought has 1-4 sentences. Its slice cost is ceil((UTF-8 bytes of text + length of step name + 7) / 29). Sum the separately rounded costs: at most 8 slices for simple, 16 for medium, 64 for deep. Count decoded text bytes, not characters or JSON escapes.
+Each thought has 1-4 sentences. Its slice cost is ceil((UTF-8 bytes of text + length of step name + 7) / 29). Sum the separately rounded costs: at most 8 slices for simple, 16 for medium, 64 for deep. This is a hard limit: the checker refuses a row over it (rule_3). Count decoded text bytes, not characters or JSON escapes.
 These per-thought text caps fit for every allowed step:
 - simple: 1 or 2 thoughts, each at most 100 bytes.
 - medium: 3 at most 110 bytes each, or 4 at most 80, or 5 at most 50. Total thought text must never exceed 330 bytes, roughly 55 words; check its byte length before returning.
@@ -45,14 +45,14 @@ Other allowed counts obey the same slice formula. Choose a fitting profile. Aim 
 
 S5. THE CRITIC'S READING
 Available steps: see, name, place, count, relate, form, light, colour, mood, mean, intend, story, compare, change, check, say.
-Every thought adds something specific to this picture. Connect details to attention, contrast, structure or meaning. Every medium/deep record must appear in descriptive text, not merely records or questions; garments must appear in thoughts (S8). Simple's second thought relates facts, never defines.
-name identifies a thing in this picture. No definitions, generic explanations or sentences interchangeable across pictures with that word. Start with the picture, never a label and colon.
+Every thought adds something specific to this picture that the earlier thoughts did not; never repeat yourself. Connect details to attention, contrast, structure or meaning. Every medium/deep record must appear in descriptive text, not merely records or questions; garments must appear in thoughts (S8). Simple's second thought relates facts, never defines.
+name identifies a thing in this picture. No definitions, generic explanations or sentences interchangeable across pictures with that word ("Robe: a long outer garment." is wrong; "Her robe falls past her knees and hides her legs." is right). Start with the picture, never a label and colon.
 Vary steps: colour where colors matter, count where counts matter. Count states a number; compare contrasts two things; relate connects two things; change states what would change. Deep includes check and at least one of compare or change, reads composition as structure, explains where the eye goes and why, and develops the story. Check tests a reading against another supported detail and adds a finding. Change states a conditional consequence, not advice or a new actual feature.
 
 Use hint facts only when stated outright or agreed across captions. Every factual detail needs record or hint support. Mark interpretations and name their evidence; vary likely, suggests, reads as, points to, would mean and as if. Intent and story additions do not establish actual commissions, unseen events or history.
 Compose around picture relationships. Do not copy hint sentences, phrases or names. About three quarters of a sentence's content words from one hint sentence, or two consecutive sentences following its fact order, is restatement. Take a fact and say what the eye does with it. Captions also need independent wording, even with short hints.
 Light, furniture, size, material, wear and pose need support. Without light in records or hint, omit light. Striped window light is not automatically dappled. Frame position locates a thing in the frame, not within the setting.
-Read a relation a rel b as a being rel of b. Preserve its direction and keep size and order claims consistent with it. Name the reference object or the frame's side instead of saying to his right.
+Read a relation a rel b as a being rel of b, and as the picture would show it. Preserve its direction and keep size and order claims consistent with it. Name the reference object or the frame's side instead of saying to his right.
 
 Stay inside the picture's world. Do not talk about records, the spec, inferences, reading a record, the hint, describing, or what anything names, gives or states. Do not use recorded, specified, named here, or read a value aloud as a count of 1 or the plant count is 1. Do not write pixel, the image file, I can see, looking at the image, jpeg or png. Advice belongs only in critique, never in thoughts.
 Mark an interpretation with evidence, then let it stand: no self-commentary such as this is an interpretation or the scene does not show how. Claim the mood in one thought only. In a row with no person, an imagined passer-by remains conditional, such as someone might stop, never a person present in the scene.
@@ -60,7 +60,7 @@ Mark an interpretation with evidence, then let it stand: no self-commentary such
 S6. MOOD, PURPOSE AND STORY
 Choose mood feeling from its feeling list, not the tone list; solemn and quiet are tones. Mood needs light, time, weather, palette, expression, pose or setting as evidence, or a supported interaction expressed by a relation. Bare position, a count, a name, one color or a relation word alone cannot carry it. Do not infer tense or bored from a bare standing pose.
 Set mood from to this row's supporting record key, or rel1 rel when that relation exists. The mood thought uses that source. Across items, use light, time, palette, pose, setting, weather or relations as often as faces.
-Hedge mood with suggests, seems, may, feels or reads as, never flat gives, lends, creates or evokes. With no strong direction, choose the plainest honest reading, such as gentle, cozy, hopeful or wistful; hedge it and still give evidence.
+Hedge mood with suggests, seems, may, feels or reads as, never flat gives, lends, creates or evokes. When nothing points anywhere, choose the plainest honest reading, such as gentle, cozy, hopeful or wistful; hedge it and still give evidence.
 Use the intent lists; express plausible purpose and audience as supported interpretations.
 Choose story moment from its list. The additional story slot is a 2-3-word event or cause: before is an event just before this one; after is the next event; cause is why it happens, never a time alone. Use at most 15 bytes for story before, 16 for story after or story cause, while also respecting the 27-byte key-plus-value limit. An event slot cannot contain a moment label such as instant before or instant after. Keep the story tied to the picture and mark an inferred event as conditional or suggested.
 

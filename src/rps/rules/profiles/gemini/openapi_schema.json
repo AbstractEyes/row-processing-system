@@ -9,7 +9,7 @@
  "properties": {
   "skip": {
    "type": "boolean",
-   "description": "Set true ONLY to decline the item (when hint implies an unrecorded person, contradicts a record/period year, or never names the recorded main subject); otherwise false."
+   "description": "Set true ONLY to decline the item (when hint implies an unrecorded person, contradicts a record/period year, never names the recorded main subject, or anything else stops you: class other); otherwise false."
   },
   "reason": {
    "type": "string",
@@ -181,7 +181,7 @@
         },
         "text": {
          "type": "string",
-         "description": "caption: 1 natural sentence naming every recorded garment+color. prompt: comma-separated recreation phrases. tags: lower-case comma-separated booru tags (thing+color, shot, medium; 1girl/1boy/1other/solo only if records agree; no mood/palette/composition/sealed words; no 'jeans' or 'from above'). critique: 1-2 craft sentences."
+         "description": "caption: 1 natural sentence naming every recorded garment+color. prompt: comma-separated recreation phrases. tags: lower-case comma-separated booru tags (thing+color, shot, medium; 1girl/1boy/1other/solo only if records agree; no mood/palette/composition words; no tag item that is a sealed value; no 'jeans' or 'from above'). critique: 1-2 craft sentences."
         }
        }
       }

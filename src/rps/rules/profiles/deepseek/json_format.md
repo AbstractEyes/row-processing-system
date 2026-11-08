@@ -4,7 +4,7 @@ Return one JSON object and nothing else. No markdown around it.
 {"skip": false, "reason": "", "class": "", "rows": [ROW, ...]}
 
 To decline an item, return exactly:
-{"skip": true, "reason": "<one sentence>", "class": "person", "rows": []}
+{"skip": true, "reason": "<one sentence>", "class": "<person, contradiction, ungrounded or other>", "rows": []}
 The class is one of: person, contradiction, ungrounded, other.
 
 ROW:
