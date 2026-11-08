@@ -11,7 +11,7 @@ RECORDS
 - A value is plain lower-case words, at most 20 bytes; key and value together at most 27 bytes. Take values from the lists below; an attribute with no list is open.
 - Each relation counts as one toward these totals, though it is written only in "relations": simple holds 1-4 records and relations together, medium 6-14, deep 14-30.
 - You add records only for these: mood (feeling, from), intent (purpose, for), story (moment, plus one of before, after, cause), and, for a real picture, facts its hint states plainly. A drawn item gets no other new facts.
-- Simple rows add nothing. Medium adds mood. Deep adds mood, intent and story. "mood from" is the key of a record of the same row that shows the mood (look expression, shot light; for a relation, "rel1 rel"). Draw the evidence from light, time, palette, pose, setting, weather or a relation as often as from the face.
+- Simple rows add nothing. Medium always adds mood. Deep always adds mood, intent and a story with its moment and one of before, after or cause. "mood from" is the key of a record of the same row that shows the mood (look expression, shot light; for a relation, "rel1 rel"). Draw the evidence from light, time, palette, pose, setting, weather or a relation as often as from the face.
 - A SERIES NESTS: every record and relation of a lower rank appears in the next rank up, with the same key and value and the relations in the same order, and a mood, intent or story record written at one rank repeats at every rank above it. The checker refuses the series (rule_7) when a lower rank holds a record the next rank lacks, or when two rows share a depth. For a real picture the deep records are the picture; cut the medium and simple ranks from them as subsets.
 - Never use these values in a record, a relation end, a question value or a tag item: 60s, a church, a newspaper, above, abstract, aqua, armour, bicycle, bird, bomber jacket, calm, camouflage, chinos, classroom, clogs, cluttered, cool, coral, crown, curious, dark, dawn, defiant, delicate, door, etching, evil smile, extreme wide, family record, flag, flowing, food, from above, futuristic, greenhouse, harsh, haze, holding, horizon low, horizontal, intimate, jeans, jersey, kneeling, light, locs, low angle, lyrical, marble, mask, mid action, moonlight, musician, pencil, person, photorealism, pink, playful, propaganda, romanticism, serene, settled, soft, still, studio, telephoto, tie-dye, touching, traveller, triangular, tube top, two-tone, underwater, velvet, vineyard, walking, weary, wet, wide-eyed, worried. Prose may say any word.
 
@@ -22,12 +22,15 @@ THOUGHTS
 - Never open a thought with a label and a colon ("Count one:", "Colour:"). Say it as the picture: "A single finch, the only bird in view."
 - The "name" step names what a thing in THIS picture is ("The cloth wrapped from her shoulder to her ankles is a sari").
 - Every record appears in the text of a medium or deep row at least once. A simple row never pads: a second thought relates records to each other and never defines.
-- A hint is evidence, not text: never copy a sentence or phrase from it, never take a name from it, and use a fact from it only where several captions agree or it is stated outright.
+- A hint is evidence, not text: never copy a sentence or phrase from it, never take a name from it, and use a fact from it only where several captions agree or it is stated outright. A sentence of yours restates the hint when three quarters of its content words come from one hint sentence; take one fact and say what the eye does with it. A year in the hint outside the period record means skip (class contradiction).
+- Light, furniture, size and wear are facts: write them only when a record or the hint gives them. With no light record and none in the hint, leave the light step out. A position record (center, left third) says where in the frame, never a place in the scene ("the middle of a stream").
+- Never repeat yourself: every thought adds something the earlier ones did not, the mood is claimed in one thought, and no clause hedges your own claim ("this is an interpretation", "the scene does not show how").
+- A step does what its name says: count gives a number, compare sets two things against each other, relate ties two things, change says what would change.
 - Every fact is a record or is an inference marked as one in plain words with its evidence (likely, suggests, reads as, points to, would mean, as if; vary them). Never invent a detail, a color, a garment, a name, a date or a history that no record or hint supports.
-- Never talk about the records, the spec, inferences, "reading" a record, the hint, describing, or what anything "names", "gives" or "states". Never write "pixel", "the image file", "I can see", "looking at the image", jpeg, png. Never write advice in a thought ("A painter would crop"); advice belongs only in the critique.
+- Never talk about the records, the spec, inferences, "reading" a record, the hint, describing, or what anything "names", "gives" or "states". The words "recorded", "specified" and "named here" are out too, and so is reading a value aloud ("a count of 1", "the plant count is 1"). Never write "pixel", "the image file", "I can see", "looking at the image", jpeg, png. Never write advice in a thought ("A painter would crop"); advice belongs only in the critique.
 - A relation is read as the picture would show it. A size or order claim must agree with the relations. A relation end names a thing, never a direction or a part of the frame.
 - Spread the step kinds: colour (the step's spelling) where colors matter, count where a count matters, a check in every deep row, compare or change in deep rows. Deep rows read the composition as a structure: where the eye goes and why, a "what if the light came from the left", the story.
-- A mood needs evidence. When nothing points anywhere, take the plainest honest reading (gentle, cozy, hopeful, wistful) and hedge it. No "tense" or "bored" from a bare standing pose.
+- A mood is read from light, time, palette, pose, setting, weather or a relation, never from a count, a name or one color alone, and it is hedged. A mood needs evidence. When nothing points anywhere, take the plainest honest reading (gentle, cozy, hopeful, wistful) and hedge it. No "tense" or "bored" from a bare standing pose.
 - In a row with no person, an imagined passer-by stays conditional ("someone might stop"), never present tense.
 
 WORDINGS
@@ -35,6 +38,7 @@ WORDINGS
 - caption: one natural sentence. prompt: a comma-separated list of phrases that would recreate the picture. tags: comma-separated lower-case booru tags, each thing with its color (red bicycle, white mug), materials, patterns, the shot (close-up, high angle), the medium; 1girl, 1boy, 1other and solo only where the person records agree. Use booru color words (peach is orange, golden is yellow, maroon is red); say "high angle", never "from above". Do not use a sealed value as a tag item.
 - critique: what a craft-minded artist would say in one or two specific sentences.
 - Spell in American English everywhere in prose and tags: color, gray, center, favorite, jewelry, harbor, armor, theater, cozy. Record values and step kinds keep the lists' spellings (grey, harbour, colour block, "colour" step). A chain question's value is spelled as your thoughts spell it.
+- A style or period names the painting, never the scene (not "a Baroque garden"). Never paste a record value as a tag (wide, layered depth). The caption is one natural sentence that names every recorded garment, not the hint's list of things.
 - Capitalize style, period and nationality names in prose, caption, prompt and critique (Renaissance, Baroque, Italian); lower-case them in tags.
 - No real person's name. Nothing romantic, sexual or suggestive about anyone under 18; describe their clothes and bodies plainly.
 
@@ -45,6 +49,7 @@ QUESTIONS
 - Counts: simple 1-2, medium 3-5, deep 5-8.
 - needs "record": the value is a record's own value under that key. A relation question uses the key you are assigned ("rel1 a", "rel1 rel" or "rel1 b") and answers with that relation's own part.
 - needs "chain": the value is not a record but your thoughts state it, word for word, under a spec key. needs "unknown": the value is "unknown" and the key is one the row's records do not hold; use the unknown key you are assigned and add no record under it.
+- A chain or unknown question key is a record key (system attribute), never a made-up name; a chain value is a short phrase of at most 20 bytes, not a sentence.
 - A deep row asks at least one chain and one unknown question. Never ask the same unknown key twice in a series.
 
 GENRE
@@ -55,7 +60,7 @@ Photographs: a careful photo critic (light, moment, framing, what the eye finds 
 
 SKIP (decline the item instead of writing)
 class person: no person is in the records but the hint implies one (a figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, a person's job). A tree with a painted face is not a person.
-class contradiction: the hint contradicts a record.
+class contradiction: the hint contradicts a record (a year outside the period record counts).
 class ungrounded: the hint never names the main thing the records describe.
 class other: anything else that stops you; say what.
 Put the reason in one sentence. Never adjust a record to make an item work.

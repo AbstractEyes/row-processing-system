@@ -118,6 +118,28 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 64 | The unknown key rotates through a fixed list and skips keys the item's spec holds. | WRITER |
 | 65 | Wordings come from the depth. | WRITER |
 
+## J. Faults a reviewer found in rows that passed the first checks
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 66 | No talk about the records beyond the first word filter: not "recorded", "named here", "specified", and no record value read aloud ("a count of 1"). A ship named X is fine. | ASSESSOR | self_talk |
+| 67 | No clause hedges the row's own claims ("this is an interpretation", "the scene does not show how"). | ASSESSOR | self_hedge (flag) |
+| 68 | A thought adds something the earlier ones did not; the mood is claimed in one thought. | ASSESSOR | thought_repeat, mood_repeat (flags); READER padding |
+| 69 | Light, furniture, size, wear, shot, pose appear only when a record or the hint gives them. | ASSESSOR | unrecorded_thing, unrecorded_light, unrecorded_detail, unrecorded_shot, unrecorded_pose, state_conflict (flags); READER invented |
+| 70 | A mood is never read from a count; thin evidence (a name, a color, a position, a state) is hedged; the mood thoughts credit the evidence the mood record names. | ASSESSOR | mood_weak_evidence (count: error), mood_unhedged, mood_cause_differs (flags) |
+| 71 | A medium row holds a mood record; a deep row holds mood, intent and a story with its moment and one of before, after or cause. | ASSESSOR | required_record, story_incomplete |
+| 72 | A chain or unknown question key is a record key; a chain value is a short phrase (at most 20 bytes), never a sentence. | ASSESSOR | question_key, question_value |
+| 73 | A year in the hint outside the period record contradicts it: the item is skipped (class contradiction). | ASSESSOR | hint_contradicts_record (sets the item aside) |
+| 74 | A position record (center, left third) places a thing in the frame, never at a place in the scene. | ASSESSOR | position_as_place (flag) |
+| 75 | A sentence restates the hint when three quarters of its content words come from one hint sentence; one fact with a critic's reading is fine. | ASSESSOR | hint_paraphrase (flag); READER hint_copy |
+| 76 | A fact only one of several captions gives is not used as if they agreed. | ASSESSOR | single_caption_fact (flag); READER invented |
+| 77 | A step does what its name says: count gives a number; compare, relate and change need two things, a relation or a change. | ASSESSOR | step_count (error), step_compare, step_relate, step_change (flags); READER |
+| 78 | Tags use booru color words: never maroon, burgundy, crimson, scarlet, vermilion, peach or golden. | ASSESSOR | tag_color |
+| 79 | A record value is not pasted as a tag (wide, layered depth). | ASSESSOR | tag_value (flag) |
+| 80 | The caption names every recorded garment. | ASSESSOR | caption_garment |
+| 81 | A style or period names the painting, never the scene (not "a Baroque garden"). | ASSESSOR | style_on_scene (flag) |
+| 82 | The caption is one natural sentence, not the hint's list of depicted things. | ASSESSOR | caption_hint_list (flag); READER wording |
+
 ## Open
 
 Version 1 covers text items. Rows written with the picture attached (photo sources sent to routes that accept images) need their own grounding rules in a later pool version.
