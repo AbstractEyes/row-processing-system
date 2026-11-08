@@ -15,12 +15,13 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from ..assess import AssessContext, Assessment
-from . import checks, review_checks, validator
+from . import checks, invention_checks, reading_checks, review_checks, validator
+from .seed_checks import screen_item
 from .problems import ERROR, Problem, errors, flags
 from .report import Report, balance_problems, row_stats
 from .similarity import SimilarityIndex
 
-__all__ = ["Assessor", "Problem", "Report", "SimilarityIndex", "check_row", "check_series", "report"]
+__all__ = ["Assessor", "Problem", "Report", "SimilarityIndex", "check_row", "check_series", "report", "screen_item"]
 
 
 def _item(spec: Any) -> Mapping[str, Any] | None:
@@ -29,7 +30,7 @@ def _item(spec: Any) -> Mapping[str, Any] | None:
 
 # Findings raised as flags by their check that stop a row: each names the word to remove, and each
 # had almost no hits on the released rows (see tools/parity.py).
-ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "unrecorded_detail", "unrecorded_shot"})
+ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "state_conflict", "unrecorded_detail", "unrecorded_shot", "mood_cause_differs", "caption_hint_list", "relation_side", "position_as_place", "unknown_stated"})
 
 
 def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:
@@ -40,6 +41,8 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
         *validator.name_warnings(row),
         *checks.run_row_checks(row, item),
         *[p for check in review_checks.REVIEW_CHECKS for p in check(row, item)],
+        *[p for check in invention_checks.INVENTION_CHECKS for p in check(row, item)],
+        *[p for check in reading_checks.READING_CHECKS for p in check(row, item)],
     ]
     return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED else p for p in found]
 

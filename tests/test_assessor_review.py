@@ -37,7 +37,7 @@ def deep():
 
 
 def found(row, item, code, severity=None):
-    problems = [p for check in rc.REVIEW_CHECKS for p in check(row, item) if p.code == code]
+    problems = [p for p in assessor.check_row(row, item) if p.code == code]
     return [p for p in problems if severity is None or p.severity == severity]
 
 
@@ -46,7 +46,7 @@ def test_the_clean_examples_raise_no_review_error():
         item = example["item"]
         for r in example["output"]["rows"]:
             row = form.to_row(r, item, MODEL)
-            errors = [p for check in rc.REVIEW_CHECKS for p in check(row, item) if p.severity == ERROR]
+            errors = [p for p in assessor.check_row(row, item) if p.severity == ERROR]
             assert not errors, (example["name"], errors)
 
 
@@ -95,14 +95,14 @@ def test_invented_details_are_flags(medium):
     assert found(row, item, "unrecorded_light", FLAG)
     item, row = medium[0], copy.deepcopy(medium[1])
     row["thoughts"][1]["text"] = "A small bench sits by the door."
-    assert found(row, item, "unrecorded_detail", FLAG)
+    assert found(row, item, "unrecorded_detail", ERROR)
     item, row = medium[0], copy.deepcopy(medium[1])
     row["spec"]["shot"] = {}
     row["thoughts"][1]["text"] = "A tight crop of the sweater."
-    assert found(row, item, "unrecorded_shot", FLAG)
+    assert found(row, item, "unrecorded_shot", ERROR)
     item, row = medium[0], copy.deepcopy(medium[1])
     row["wordings"]["caption"] = "A woman kneeling in a cafe."
-    assert found(row, item, "unrecorded_pose", FLAG)
+    assert found(row, item, "unrecorded_pose", ERROR)
 
 
 def test_the_hint_grounds_the_details(medium):
@@ -127,7 +127,7 @@ def test_mood_checks(deep):
     for t in row["thoughts"]:
         if t["step"] in ("mood", "mean"):
             t["text"] = "The cloudy sky keeps the cafe cozy."
-    assert found(row, item, "mood_cause_differs", FLAG)
+    assert found(row, item, "mood_cause_differs", ERROR)
 
 
 def test_required_records(medium, deep):
@@ -174,7 +174,7 @@ def test_a_frame_position_is_not_a_place():
     row = copy.deepcopy(rows[0])
     row["spec"]["thing"]["position"] = "centre"
     row["thoughts"][0]["text"] = "The beetle rests near the centre of a river of light."
-    assert found(row, item, "position_as_place", FLAG)
+    assert found(row, item, "position_as_place", ERROR)
     row["thoughts"][0]["text"] = "The beetle rests near the centre of the frame."
     assert not found(row, item, "position_as_place")
 
@@ -239,7 +239,7 @@ def test_a_caption_that_lists_the_hint(medium):
     item, row = medium
     item = dict(item, hint="Gouache work. It depicts a birch, a barn, a moon and a meadow.")
     row["wordings"]["caption"] = "A birch, barn, and moon fill a meadow."
-    assert found(row, item, "caption_hint_list", FLAG)
+    assert found(row, item, "caption_hint_list", ERROR)
 
 
 def test_the_assessor_reports_the_new_errors_as_lines(medium):
@@ -313,17 +313,17 @@ def test_an_unknown_question_the_text_answers_is_flagged(deep):
     unknown["key"] = "scene weather"
     row["thoughts"][0]["text"] = "A rainy afternoon outside the glass."
     row["thoughts"][0]["text"] = "A foggy morning outside the glass."
-    assert found(row, item, "unknown_stated", FLAG)
+    assert found(row, item, "unknown_stated", ERROR)
 
 
 def test_relation_readings(deep):
     item, row = deep
     row["thoughts"][0]["text"] = "The bottle stands to his right."
-    assert found(row, item, "relation_side", FLAG)
-    row["spec"]["relation"] = [{"a": "woman", "rel": "beside", "b": "table"}]
-    row["thoughts"][0]["text"] = "The table stays beside the woman."
+    assert found(row, item, "relation_side", ERROR)
+    row["spec"]["relation"] = [{"a": "woman", "rel": "behind", "b": "table"}]
+    row["thoughts"][0]["text"] = "The table stays behind the woman."
     assert found(row, item, "relation_reversed", FLAG)
-    row["thoughts"][0]["text"] = "The woman stays beside the table."
+    row["thoughts"][0]["text"] = "The woman stays behind the table."
     assert not found(row, item, "relation_reversed")
 
 

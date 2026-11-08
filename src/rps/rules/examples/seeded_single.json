@@ -166,7 +166,7 @@
     "wordings": [
      {
       "kind": "caption",
-      "text": "A close-up photograph of a green grasshopper sitting on a glass window, its slightly white underside showing, with small gold circles and white sheets to its right."
+      "text": "A close-up photograph of a green grasshopper sitting on a glass window, its slightly white underside showing, with small gold circles and white sheets on the right of the frame."
      },
      {
       "kind": "prompt",
@@ -174,7 +174,7 @@
      },
      {
       "kind": "tags",
-      "text": "no humans, grasshopper, insect, green, glass, window, antennae, legs, gold circles, white sheet, close-up"
+      "text": "no humans, green grasshopper, insect, glass, window, antennae, legs, gold circles, white sheet, close-up"
      },
      {
       "kind": "critique",
