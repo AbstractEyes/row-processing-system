@@ -177,3 +177,32 @@ def test_naming_an_example_puts_its_row_back():
     medium = next(r for r in next(e for e in rules.examples() if e["name"] == "people_series")["output"]["rows"] if r["depth"] == "medium")
     assert text.endswith("\n") and not text.endswith("\n\n")
     assert medium["thoughts"][0]["text"] in text
+
+
+def test_the_length_caps_in_the_prompt_fit_the_validators_frames():
+    text = rules.writer_system()
+    for phrase in ("HARD LENGTH LIMIT", "at most 8 slices (simple), 16 (medium) or 64 (deep)", "KEEP THE GIVEN RECORDS", "RELATIONS LIVE ONLY", "A SERIES NESTS"):
+        assert phrase in text
+    assert tp.SLICE_ROOM == 29 and {d: tp.CHAIN_MAX[d] // tp.SLICE for d in tp.DEPTHS} == {"simple": 8, "medium": 16, "deep": 64}
+    longest_step = max(tp.STEPS, key=len)
+    caps = {
+        "simple": [(1, 100), (2, 100)],
+        "medium": [(3, 110), (4, 80), (5, 50)],
+        "deep": [(6, 270), (8, 185), (10, 150)],
+    }
+    for depth, options in caps.items():
+        for count, size in options:
+            thoughts = [{"step": longest_step, "text": "x" * size} for _ in range(count)]
+            assert tp.chain_slices(thoughts) * tp.SLICE <= tp.CHAIN_MAX[depth], (depth, count, size)
+            assert str(size) in text
+
+
+def test_relations_are_not_records_in_the_prompt():
+    text = rules.writer_system()
+    assert "no record key starts with" in text
+    assert "Count the relations as records" not in text
+
+
+def test_the_deep_floor_is_reachable_within_the_caps():
+    assert "at least 1,100 bytes of thoughts in all" in rules.writer_system()
+    assert all(count * size >= 1100 for count, size in ((6, 270), (8, 185), (10, 150)))
