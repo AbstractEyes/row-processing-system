@@ -12,13 +12,14 @@ from rps.routing import (
 )
 
 ALLOWED = {
-    "public_common": {"openai", "gemini", "deepseek"},
-    "coco": {"openai", "gemini", "deepseek"},
-    "ffhq": {"openai", "gemini", "deepseek"},
+    "public_common": {"claude", "openai", "gemini", "deepseek"},
+    "coco": {"claude", "openai", "gemini", "deepseek"},
+    "ffhq": {"claude", "openai", "gemini", "deepseek"},
     "deepfashion": set(),
     "hico": set(),
     "synthetic": set(),
 }
+CLAUDE_ROUTES = ("anthropic", "claude", "haiku", "sonnet", "haiku-batch", "haiku-sync", "claude-haiku-5-5")
 
 
 @pytest.mark.parametrize("source_class", SOURCE_CLASSES)
@@ -27,10 +28,23 @@ def test_the_table_matches_the_specification_for_every_class_and_provider(source
     assert allowed_image(source_class, provider) is (column in ALLOWED[source_class])
 
 
-def test_a_claude_route_never_gets_a_picture_of_any_class():
-    for source_class in SOURCE_CLASSES:
-        for route in ("anthropic", "claude", "haiku", "sonnet", "haiku-batch", "claude-haiku-5-5"):
-            assert allowed_image(source_class, route) is False
+@pytest.mark.parametrize("source_class", ["public_common", "coco", "ffhq"])
+def test_a_claude_route_gets_the_publicly_viewable_pictures_of_public_datasets(source_class):
+    for route in CLAUDE_ROUTES:
+        assert allowed_image(source_class, route) is True
+        check_image_allowed(source_class, route)  # raises nothing
+
+
+@pytest.mark.parametrize("source_class", ["deepfashion", "hico", "synthetic"])
+def test_a_claude_route_still_gets_no_picture_of_the_closed_classes(source_class):
+    for route in CLAUDE_ROUTES:
+        assert allowed_image(source_class, route) is False
+        with pytest.raises(ImageRoutingError, match="claude routes|synthetic"):
+            check_image_allowed(source_class, route)
+
+
+def test_opening_the_public_classes_to_claude_changed_no_other_cell_of_the_table():
+    assert {name: {column for column, allowed in row.items() if allowed} for name, row in IMAGE_POLICY.items()} == ALLOWED
 
 
 def test_deepfashion_and_hico_never_reach_any_route():

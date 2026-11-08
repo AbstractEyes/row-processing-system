@@ -1,6 +1,8 @@
 """Anthropic writers: Message Batches (route kind "batch") and one call at a time (kind "api").
 
-Claude routes take text only: a call that carries a picture is refused. The system prompt
+A call carries a picture only where the routing table allows its class for Claude (the publicly
+viewable pictures of public datasets); any other class is refused, as is a picture with no class. The
+picture goes first in the user message, as a base64 image block, and the text after it. The system prompt
 (the writing rules) is sent as one block with a cache mark, the answer is constrained by
 the row schema (`output_config.format`), and `temperature`, `top_p`, `top_k`, a prefill
 and a forced `tool_choice` are never sent.
@@ -41,6 +43,7 @@ from .common import (
     STOP_REFUSED,
     STOP_TRUNCATED,
     api_key,
+    base64_text,
     call_text,
     check_options,
     classify_error_type,
@@ -52,14 +55,18 @@ from .common import (
     http_status,
     key_acceptance,
     lookup,
+    mime_type,
     option,
-    require_text_only,
+    picture_for,
 )
 from .pool import PoolWriter
 from .schemas import ANTHROPIC, SchemaError, check_schema
 
 API_KEY_ENV = "ANTHROPIC_API_KEY"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# A generous count of tokens for one picture, for the cost estimate (an upper bound; the real count comes with the
+# answer). Anthropic counts an image as width x height / 750 tokens and scales a larger one down to about this many.
+IMAGE_TOKENS = 1600
 BATCH_MAX_REQUESTS = 100_000
 BATCH_MAX_BYTES = 240 * 1024 * 1024  # the limit is 256 MB; stay clear of it
 DEFAULT_SYNC_TIMEOUT = 600.0
@@ -204,9 +211,14 @@ class _AnthropicCommon:
 
     def params_for(self, call: CallSpec) -> dict[str, Any]:
         """The `messages.create` arguments for one call; nothing the specification forbids is in them."""
-        require_text_only(call, ANTHROPIC)
+        picture = picture_for(call, ANTHROPIC)  # raises ImageRoutingError for a picture the routing table does not allow
         if call.rules is None:
             raise ValueError("the call carries no writing rules")
+        content: list[dict[str, Any]] = []
+        if picture is not None:
+            source = {"type": "base64", "media_type": mime_type(picture[1]), "data": base64_text(picture[0])}
+            content.append({"type": "image", "source": source})
+        content.append({"type": "text", "text": call_text(call)})
         output_config: dict[str, Any] = {"format": {"type": "json_schema", "schema": dict(call.rules.schema)}}
         if call.effort:
             output_config["effort"] = call.effort
@@ -216,7 +228,7 @@ class _AnthropicCommon:
             "system": [
                 {"type": "text", "text": call.rules.system, "cache_control": {"type": "ephemeral", "ttl": self._cache_ttl}}
             ],
-            "messages": [{"role": "user", "content": [{"type": "text", "text": call_text(call)}]}],
+            "messages": [{"role": "user", "content": content}],
             "output_config": output_config,
         }
 
@@ -232,7 +244,8 @@ class _AnthropicCommon:
                     call_id=call.call_id,
                     custom_id=call.custom_id,
                     payload=payload,
-                    est_input_tokens=estimate_text_tokens(rules.system, call_text(call), canonical_json(rules.schema)),
+                    est_input_tokens=estimate_text_tokens(rules.system, call_text(call), canonical_json(rules.schema))
+                    + (IMAGE_TOKENS if call.image is not None else 0),
                     max_output_tokens=call.max_output_tokens,
                     attempt=call.attempt,
                     size_bytes=len(canonical_json(payload).encode("utf-8")) + 1,

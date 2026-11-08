@@ -6,20 +6,22 @@ SDK's field names fails here and not in a run.
 
 from __future__ import annotations
 
+import base64
 import json
 import typing
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from anthropic.types import Message
+from anthropic.types import ImageBlockParam, Message
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages import MessageBatch, MessageBatchIndividualResponse
+from pydantic import TypeAdapter
 
 from rps import ids
 from rps.config import ConfigError
 from rps.ledger import Usage
 from rps.providers import AnthropicBatchWriter, AnthropicSyncWriter, Handle, RouteRejected
-from rps.providers.anthropic_api import parse_batch_item, parse_message, usage_of
+from rps.providers.anthropic_api import IMAGE_TOKENS, parse_batch_item, parse_message, usage_of
 from rps.routing import ImageRoutingError
 
 from adapter_helpers import ANSWER, ApiError, Namespace, Recorder, SCHEMA, call, route, rules
@@ -116,11 +118,49 @@ def test_without_an_effort_none_is_sent():
     assert "effort" not in params["output_config"]
 
 
-def test_a_call_that_carries_a_picture_is_refused_whatever_its_class():
+PICTURE = b"\xff\xd8\xff\xe0 pretend jpeg bytes"
+
+
+@pytest.mark.parametrize("image_class", ["public_common", "coco", "ffhq"])
+@pytest.mark.parametrize("make_writer", [lambda: AnthropicBatchWriter("haiku-batch", make_route()), lambda: AnthropicSyncWriter("haiku-sync", make_route("api"))])
+def test_a_picture_of_a_class_the_table_allows_goes_first_in_the_user_message_as_an_image_block(make_writer, image_class):
+    writer = make_writer()
+    [plain] = writer.prepare([make_call()])
+    [request] = writer.prepare([make_call(image=PICTURE, image_ext="jpg", image_class=image_class)])
+    params = request.payload["params"]
+    [message] = params["messages"]
+    assert [block["type"] for block in message["content"]] == ["image", "text"]  # the picture first, then the words
+    image, text = message["content"]
+    assert image["source"] == {"type": "base64", "media_type": "image/jpeg", "data": base64.b64encode(PICTURE).decode("ascii")}
+    assert text == {"type": "text", "text": "Write the row for 001."}
+    TypeAdapter(ImageBlockParam).validate_python(image)  # the SDK's own type reads the block
+    assert set(params) <= set(typing.get_type_hints(MessageCreateParamsNonStreaming))
+    assert request.est_input_tokens == plain.est_input_tokens + IMAGE_TOKENS  # the picture is part of what the call is held at
+    assert request.size_bytes > plain.size_bytes + len(PICTURE)  # and of the size that splits a batch
+
+
+def test_the_media_type_follows_the_picture_and_the_system_block_and_schema_are_as_without_one():
     writer = AnthropicBatchWriter("haiku-batch", make_route())
-    for image_class in ("public_common", "coco", "ffhq", "deepfashion", None):
+    for extension, media_type in (("jpg", "image/jpeg"), ("jpeg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp"), ("gif", "image/gif")):
+        [request] = writer.prepare([make_call(image=PICTURE, image_ext=extension, image_class="coco")])
+        assert request.payload["params"]["messages"][0]["content"][0]["source"]["media_type"] == media_type
+    [plain] = writer.prepare([make_call()])
+    params = request.payload["params"]
+    assert params["system"] == plain.payload["params"]["system"] and params["output_config"] == plain.payload["params"]["output_config"]
+    with pytest.raises(ValueError, match="unsupported picture type"):
+        writer.prepare([make_call(image=PICTURE, image_ext="tiff", image_class="coco")])
+
+
+@pytest.mark.parametrize("image_class", ["deepfashion", "hico", "synthetic", None, "mystery"])
+def test_a_picture_of_a_closed_class_or_with_no_class_is_refused(image_class):
+    for writer in (AnthropicBatchWriter("haiku-batch", make_route()), AnthropicSyncWriter("haiku-sync", make_route("api"))):
         with pytest.raises(ImageRoutingError):
-            writer.prepare([make_call(image=b"\xff\xd8bytes", image_ext="jpg", image_class=image_class)])
+            writer.prepare([make_call(image=PICTURE, image_ext="jpg", image_class=image_class)])
+
+
+def test_a_call_with_no_picture_is_text_only_as_it_was():
+    [request] = AnthropicBatchWriter("haiku-batch", make_route()).prepare([make_call(image_class="coco")])
+    assert request.payload["params"]["messages"][0]["content"] == [{"type": "text", "text": "Write the row for 001."}]
 
 
 def test_the_estimate_and_size_are_filled_in_for_every_request():

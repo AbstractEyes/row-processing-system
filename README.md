@@ -295,7 +295,7 @@ last change has gone out, within one commit interval; `controller.is_idle()` is 
 
 | Route | Provider and model | Path | Pictures |
 |---|---|---|---|
-| `haiku-batch` | Anthropic `claude-haiku-5-5` | Message Batches | never |
+| `haiku-batch` | Anthropic `claude-haiku-5-5` | Message Batches | public common, COCO, FFHQ |
 | `luna-sync` | OpenAI `gpt-6-luna` | `/v1/responses`, one call at a time (route kind `api`): how GPT is used here, at any size | public common, COCO, FFHQ |
 | `luna-batch` | OpenAI `gpt-6-luna` | Batch API on `/v1/responses` (in the package; this project does not use it) | public common, COCO, FFHQ |
 | `flash-batch` | Gemini `gemini-3.8-flash` | batch mode, inline requests | public common, COCO, FFHQ |
@@ -332,8 +332,8 @@ as it lands. GPT is used this way here.
 
 | Part | Form |
 |---|---|
-| Request | `model`, `max_tokens`, the rules as one `system` block marked for a cache (`cache_control` `ephemeral`, one hour), one user message of text, `output_config` with the row schema (`json_schema`) and the effort |
-| Text only | A call that carries a picture is refused, whatever its class |
+| Request | `model`, `max_tokens`, the rules as one `system` block marked for a cache (`cache_control` `ephemeral`, one hour), one user message, `output_config` with the row schema (`json_schema`) and the effort |
+| Pictures | A call carries a picture only where the routing table allows its class for Claude: `public_common`, `coco` and `ffhq`, the publicly viewable pictures of public datasets. The picture goes first in the user message as a base64 image block (`image/jpeg`, `image/png`, `image/webp` or `image/gif`) and the text after it; the cost estimate adds 1,600 tokens for it, and its bytes count toward the size that splits a batch. A call with a picture of any other class (`deepfashion`, `hico`, `synthetic`), of an unknown class or of none is refused, as for every provider |
 | Batch | `messages.batches.create`; results from `messages.batches.results`, matched by `custom_id` in any order. At most 100,000 requests and 240 MB per batch (the limit is 256 MB). A batch can expire after 24 hours; its unfinished calls come back as `expired` and are sent again as rebounds |
 | Answer | `end_turn` (and `stop_sequence`) is parsed; `max_tokens` is a truncation; `refusal` is recorded and not retried on the route; any other stop is a failure that is not retried |
 | Usage | input, cache write and cache read tokens as given; output minus thinking tokens, thinking apart |
@@ -394,9 +394,9 @@ own origin (a narration written for a COCO picture is COCO class).
 
 | Class | Claude | OpenAI | Gemini | DeepSeek |
 |---|---|---|---|---|
-| `public_common` | no | yes | yes | yes |
-| `coco` | no | yes | yes | yes |
-| `ffhq` | no | yes | yes | yes |
+| `public_common` | yes | yes | yes | yes |
+| `coco` | yes | yes | yes | yes |
+| `ffhq` | yes | yes | yes | yes |
 | `deepfashion` | no | no | no | no |
 | `hico` | no | no | no | no |
 | `synthetic` (no picture) | no | no | no | no |

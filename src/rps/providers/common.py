@@ -24,7 +24,7 @@ from ..failures import (
 )
 from ..ledger import Usage
 from ..prompting import render_task_text
-from ..routing import ImageRoutingError, check_image_allowed
+from ..routing import check_image_allowed
 from ..store.remote import describe_error
 from .base import Acceptance, CallResult, CallSpec
 
@@ -93,12 +93,6 @@ def picture_for(call: CallSpec, provider: str) -> tuple[bytes, str] | None:
         return None
     check_image_allowed(call.image_class, provider)
     return call.image, call.image_ext or "jpg"
-
-
-def require_text_only(call: CallSpec, provider: str) -> None:
-    """For routes that never take a picture: refuse a call that carries one."""
-    if call.image is not None:
-        raise ImageRoutingError(f"{provider} routes take text only; this call carries a picture")
 
 
 def check_options(route: RouteConfig, route_name: str, allowed: Collection[str]) -> None:

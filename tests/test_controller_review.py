@@ -488,7 +488,7 @@ def test_pictures_are_burned_in_the_shared_store_after_the_verdicts_are_read(tmp
 
 
 def test_a_packet_carries_a_picture_only_to_a_family_the_routing_table_allows(tmp_path):
-    # Claude reviewers take text only, and a family the table does not know gets no picture either.
+    # The pictures of a public dataset go to Claude and OpenAI reviewers; a family the table does not know gets none.
     reviewers = [
         {"id": "rev-claude", "family": "anthropic"},
         {"id": "rev-o", "family": "openai"},
@@ -506,8 +506,8 @@ def test_a_packet_carries_a_picture_only_to_a_family_the_routing_table_allows(tm
         document = json.loads(world.state_store.read_text(layout.packet_json_path(reviewer_id, packet_id)))
         images = [p for p in world.state_store.list(f"{layout.packet_dir(reviewer_id, packet_id)}/") if "/images/" in p]
         (entry,) = document["rows"]
-        if reviewer_id == "rev-o":
-            assert entry["image"] and not entry["image_withheld"] and len(images) == 1
+        if reviewer_id in ("rev-o", "rev-claude"):
+            assert entry["image"] and not entry["image_withheld"] and len(images) == 1, reviewer_id
         else:
             assert entry["image"] is None and entry["image_withheld"] and images == []
 

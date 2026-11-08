@@ -22,7 +22,7 @@ rewrite a row.
 
 For each row in `packet.json`: read the row, read its task (the specification and, for rows that start from a real
 picture, the hint text), and look at the picture when the row has one. A row marked `"image_withheld": true` has a
-picture your model family may not see (Claude reviewers see none): judge it from its text and its task, and never fault
+picture your model family may not see (the pictures of some datasets go to no outside reviewer): judge it from its text and its task, and never fault
 it for something only the picture could show. Then decide:
 
 | Verdict | Meaning |

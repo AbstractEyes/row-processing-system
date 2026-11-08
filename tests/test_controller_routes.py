@@ -413,6 +413,36 @@ def test_a_task_whose_pictures_may_not_go_to_the_route_is_refused_before_anythin
     assert not world.events_of("task_created")
 
 
+def claude_config():
+    route = {"provider": "anthropic", "model": "claude-haiku-5-5", "kind": "batch", "effort": "low", "budget_usd": 10.0}
+    return make_config(routes={"haiku-batch": {**route, "purpose_caps": {"production": 10.0}}})
+
+
+@pytest.mark.parametrize("image_class", ["public_common", "coco", "ffhq"])
+def test_the_pictures_of_a_public_dataset_go_to_a_claude_route_as_they_do_to_the_others(tmp_path, image_class):
+    seen = []
+
+    class Spy(FakeWriter):
+        def prepare(self, calls):
+            seen.extend((call.provider, call.image is not None, call.image_class) for call in calls)
+            return super().prepare(calls)
+
+    world = World(tmp_path, config=claude_config(), behavior=ok_behavior, writer_class=Spy)
+    controller = world.controller()
+    controller.add_task(photo_task(image_class, route="haiku-batch"))
+    assert world.events_of("task_created")  # taken: nothing refused the task
+    controller.step()
+    assert seen == [("anthropic", True, image_class)]  # and the picture was loaded for the call
+
+
+@pytest.mark.parametrize("image_class", ["deepfashion", "hico", "synthetic"])
+def test_the_closed_classes_are_refused_for_a_claude_route_before_anything_is_recorded(tmp_path, image_class):
+    world = World(tmp_path, config=claude_config(), behavior=ok_behavior)
+    with pytest.raises(ConfigError, match="claude routes|synthetic"):
+        world.controller().add_task(photo_task(image_class, route="haiku-batch"))
+    assert not world.events_of("task_created")
+
+
 def test_a_picture_with_no_class_anywhere_is_refused(tmp_path):
     config = make_config(sources={"photos": {"license": "CC BY-NC", "dataset": "photos"}})
     world = World(tmp_path, config=config, behavior=ok_behavior)

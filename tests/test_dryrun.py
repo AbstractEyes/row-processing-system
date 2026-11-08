@@ -213,9 +213,14 @@ def test_a_picture_goes_only_to_a_route_that_may_see_it(tmp_path):
     assert blocked.refused and "deepfashion" in blocked.refused and writer.provider.submit_count == 0
     claude = fake_route(provider="anthropic", model="claude-haiku-5-5")
     claude_run, _printed, _writer, _clock = run(
-        tmp_path, image=picture, image_class="coco", config=claude, writer=FakeWriter("haiku-batch", claude, behavior=good)
+        tmp_path, image=picture, image_class="coco", config=claude, writer=FakeWriter("haiku-batch", claude, behavior=good), calls=2
     )
-    assert claude_run.refused and "claude routes" in claude_run.refused
+    assert claude_run.refused is None and claude_run.ok  # the table lets a Claude route see the pictures of a public dataset
+    for closed in ("deepfashion", "hico"):
+        claude_closed, _printed, _writer, _clock = run(
+            tmp_path, image=picture, image_class=closed, config=claude, writer=FakeWriter("haiku-batch", claude, behavior=good), calls=2
+        )
+        assert claude_closed.refused and "claude routes" in claude_closed.refused and closed in claude_closed.refused
     missing, _printed, _writer, _clock = run(tmp_path, image=tmp_path / "nope.jpg")
     assert missing.refused and "cannot read" in missing.refused
 
