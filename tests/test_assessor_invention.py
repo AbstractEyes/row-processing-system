@@ -36,7 +36,7 @@ def codes(problems):
 # ------------------------------------------------------------------ poses
 
 def test_a_default_pose_is_an_error_for_a_person_and_an_animal():
-    for text in ("A girl stands in the alley.", "An elephant standing in the middle of the frame.", "She sits by the window."):
+    for text in ("A girl stands in the alley.", "A heron standing on one leg in shallow reeds.", "She sits by the window."):
         assert ("unrecorded_pose", ERROR) in codes(assessor.check_row(_row(caption=text)))
     assert ("unrecorded_pose", ERROR) in codes(assessor.check_row(_row(thoughts=[("see", "The girl stands quietly.")])))
 
@@ -49,7 +49,7 @@ def test_a_pose_the_record_or_hint_gives_is_fine():
 
 
 def test_objects_and_idioms_do_not_take_a_pose():
-    for text in ("A lamp stands beside the fence.", "The tall pole stands out against the sky.", "Green leaves stand around the gate."):
+    for text in ("A lamp stands beside the fence.", "The tall chimney stands out over the slate roofs.", "Green leaves stand around the gate."):
         assert not [p for p in assessor.check_row(_row(caption=text)) if p.code in ("unrecorded_pose", "state_conflict")]
 
 
@@ -98,31 +98,31 @@ def test_a_color_only_relation_does_not_place_the_thing():
 # ------------------------------------------------------------------ the hint
 
 def test_a_record_the_hint_does_not_support_is_an_error():
-    item = {"kind": "single", "hint": "A cat on a couch in a living room.", "spec": {"thing": {"name": "cat"}}}
-    row = _row(spec={"thing": {"name": "cat"}, "form": {"space": "vast"}})
+    item = {"kind": "single", "hint": "A dog asleep on a rug by the stove.", "spec": {"thing": {"name": "dog"}}}
+    row = _row(spec={"thing": {"name": "dog"}, "form": {"space": "vast"}})
     assert ("added_record", ERROR) in codes(assessor.check_row(row, item))
-    weather = _row(spec={"thing": {"name": "cat"}, "scene": {"weather": "clear"}})
-    cloudy = dict(item, hint="A cat under a cloudy sky.")
+    weather = _row(spec={"thing": {"name": "dog"}, "scene": {"weather": "clear"}})
+    cloudy = dict(item, hint="A dog on a jetty under a cloudy sky.")
     assert ("added_record", ERROR) in codes(assessor.check_row(weather, cloudy))
 
 
 def test_a_name_taken_from_the_hint_is_an_error():
-    item = {"kind": "single", "hint": "A pajama cardinal fish in a tank.", "spec": {"thing": {"name": "fish"}}}
-    row = _row(spec={"thing": {"name": "fish"}}, caption="A pajama fish drifts in a tank.")
+    item = {"kind": "single", "hint": "A banded goby fish in a tank.", "spec": {"thing": {"name": "fish"}}}
+    row = _row(spec={"thing": {"name": "fish"}}, caption="A banded fish hovers in a tank.")
     assert ("hint_name", ERROR) in codes(assessor.check_row(row, item))
 
 
 def test_a_caption_that_restates_the_hints_first_sentence_is_an_error():
-    item = {"kind": "single", "hint": "A brown wooden fence with a metal star attached to the fence. Two black hinges are on a gate.", "spec": {}}
-    row = _row(caption="A brown wooden fence with a metal star attached to the fence.")
+    item = {"kind": "single", "hint": "A green door with a brass knocker set in its upper panel. Two narrow windows flank the door.", "spec": {}}
+    row = _row(caption="A green door with a brass knocker set in its upper panel.")
     assert ("caption_hint_copy", ERROR) in codes(assessor.check_row(row, item))
 
 
 def test_a_garbled_seed_is_screened():
-    item = {"kind": "single", "hint": "A close view of a five point start with a band. The star is on a pole.", "spec": {"thing": {"name": "start"}}}
+    item = {"kind": "single", "hint": "A round metal plate bolted to a post. The metal has gone dull.", "spec": {"thing": {"name": "medal"}}}
     assert screen_item(item)
-    assert screen_item(dict(item, spec={"thing": {"name": "star"}})) is None
-    assert screen_item({"kind": "single", "spec": {"thing": {"name": "start"}}}) is None
+    assert screen_item(dict(item, spec={"thing": {"name": "plate"}})) is None
+    assert screen_item({"kind": "single", "spec": {"thing": {"name": "medal"}}}) is None
 
 
 # ------------------------------------------------------------------ moods and minors
@@ -135,7 +135,7 @@ def test_a_mood_from_a_framing_is_an_error_and_from_an_angle_a_flag():
 
 
 def test_makes_it_is_a_flat_verb():
-    row = _row(spec={"mood": {"feeling": "wistful", "from": "scene time"}}, thoughts=[("mood", "Candle against blue hour makes it wistful.")])
+    row = _row(spec={"mood": {"feeling": "wistful", "from": "scene time"}}, thoughts=[("mood", "The dusk over the harbor makes it wistful.")])
     assert ("mood_flat", ERROR) in codes(assessor.check_row(row))
 
 
@@ -185,7 +185,7 @@ def test_an_unknown_keys_answer_may_not_appear_in_the_row():
 
 # ------------------------------------------------------------------ record talk and stock openings
 
-@pytest.mark.parametrize("text", ["The blue-hour scene time reads cool.", "The shot light is a screen glow.", "That relation holds the pair together.", "These relations tie it together."])
+@pytest.mark.parametrize("text", ["The dusk scene time reads cool.", "Its shot light falls from one bare bulb.", "That relation holds the pair together.", "These relations tie it together."])
 def test_record_talk_is_an_error(text):
     assert ("spec_talk", ERROR) in codes(assessor.check_row(_row(thoughts=[("see", text)])))
 

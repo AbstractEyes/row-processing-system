@@ -43,7 +43,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | # | Rule | Tag | Code |
 |---|---|---|---|
 | 21 | Every thought looks at this picture. No gloss: no sentence that would read the same for any picture holding the word. | ASSESSOR | gloss (flag) |
-| 22 | No thought opens with a label formula ("Count one:", "Colour:"). | ASSESSOR | label_opener |
+| 22 | No thought opens with a label formula ("Count one:", "Colour:") or a stock opening ("Check the X:", "Compare X with Y:"). | ASSESSOR | label_opener, stock_opening |
 | 23 | The name step names what a thing in this picture is. | READER | |
 | 24 | A simple row never pads; a second thought relates records to each other. | READER | |
 | 25 | Every record surfaces in the text of a medium or deep row at least once. | READER | |
@@ -105,7 +105,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 56 | Hints are evidence, never text to copy; no names from a hint; facts only where captions agree or a narration says it outright. | ASSESSOR | hint_copy (flag) |
 | 57 | Voice: photographs get a photo critic's voice; museum works a gallery looker's; generated or written-prompt sources are written as about any picture. | READER | |
 | 58 | Real people's names stay out; a capitalized word is a place, a style or a period. | ASSESSOR | names (flag) |
-| 59 | Nothing romantic, sexual or suggestive about anyone under 18; plain clothes and bodies. | READER | |
+| 59 | Nothing romantic, sexual or suggestive about anyone under 18; plain clothes and bodies, never appraised. | ASSESSOR | minor_fit (fit, appraisal and intimacy words); READER minor |
 | 60 | No people in a seeded row whose records hold none: when the hint implies a person (human, figure, portrait, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, a person's job) the item is skipped, class person. A drawn series may hold a person. | ASSESSOR | person_in_hint |
 | 61 | Skip when the hint contradicts a record (class contradiction) or never names the main thing (class ungrounded). | READER | |
 | 62 | An object whose decoration is a depicted person stays an object; a tree with a painted face is not a person. | READER | |
@@ -122,9 +122,9 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 
 | # | Rule | Tag | Code |
 |---|---|---|---|
-| 66 | No talk about the records beyond the first word filter: not "recorded", "named here", "specified", and no record value read aloud ("a count of 1"). A ship named X is fine. | ASSESSOR | self_talk |
+| 66 | No talk about the records beyond the first word filter: not "recorded", "named here", "specified", and no record value read aloud ("a count of 1"). A ship named X is fine. | ASSESSOR | self_talk, spec_talk (a record key used as a phrase) |
 | 67 | No clause hedges the row's own claims ("this is an interpretation", "the scene does not show how"). | ASSESSOR | self_hedge (flag) |
-| 68 | A thought adds something the earlier ones did not; the mood is claimed in one thought. | ASSESSOR | thought_repeat, mood_repeat (flags); READER padding |
+| 68 | A thought adds something the earlier ones did not; the mood is claimed in one thought. | ASSESSOR | check_repeat (error); thought_repeat, mood_repeat, second_mood (flags); READER padding |
 | 69 | Light, furniture, size, wear, shot, pose appear only when a record or the hint gives them. | ASSESSOR | unrecorded_thing, unrecorded_light, unrecorded_detail, unrecorded_shot, unrecorded_pose, state_conflict (flags); READER invented |
 | 70 | A mood is never read from a count; thin evidence (a name, a color, a position, a state) is hedged; the mood thoughts credit the evidence the mood record names. | ASSESSOR | mood_weak_evidence (count: error), mood_unhedged, mood_cause_differs (flags) |
 | 71 | A medium row holds a mood record; a deep row holds mood, intent and a story with its moment and one of before, after or cause. | ASSESSOR | required_record, story_incomplete |
@@ -144,17 +144,17 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 
 | # | Rule | Tag | Code |
 |---|---|---|---|
-| 83 | Only the facts: a row's text holds its own records, what a real picture's hint states plainly, and the records the rules let it add; a pose, a held thing, light, weather, time, materials, sizes, motion, sound and other people or things appear only when a fact gives them. The task text lists the details the item records nowhere. | READER | |
-| 84 | A shallower row of a series uses no fact that only a deeper row records; for a drawn series the task text lists them row by row. | READER | |
+| 83 | Only the facts: a row's text holds its own records, what a real picture's hint states plainly, and the records the rules let it add; a pose, a held thing, light, weather, time, materials, sizes, motion, sound and other people or things appear only when a fact gives them. The task text lists the details the item records nowhere. | ASSESSOR | unrecorded_pose, state_conflict, unrecorded_light, relation_placement, added_record; unrecorded_size, unrecorded_material (flags); READER invented |
+| 84 | A shallower row of a series uses no fact that only a deeper row records; for a drawn series the task text lists them row by row. | ASSESSOR | rank_scope |
 | 85 | The framing limits what shows: a close-up or an extreme close shows no full-body pose, no feet and no wide view of the place. | READER | |
 | 86 | Intent purpose and intent for are about the picture (why it was made, who it is for), never about the people or things in it. | READER | |
-| 87 | Story moment agrees with the records; story before and after hold an event and story cause a reason, never a moment word or a time alone. | READER | |
-| 88 | The mood is claimed in one thought, hedged, with the thing its mood from record holds named in the same sentence. | READER | |
-| 89 | Directions belong to the frame, never to a person ("to his left"); a relation that only matches colors places nothing beside anything. | READER | |
-| 90 | The hint's sentences are never followed in their order, and the caption is never the hint's first sentence reworded. | READER | |
-| 91 | A chain answer answers its key; the unknown key is answered nowhere in the row, and the task text says what it covers. | READER | |
-| 92 | The tags carry a person tag whenever a person is recorded and keep each recorded color with its thing. | READER | |
-| 93 | A record that cannot be what it says (a misspelled word, a thing its hint never mentions) is skipped, class other, never written around. | READER | |
+| 87 | Story moment agrees with the records; story before and after hold an event and story cause a reason, never a moment word or a time alone. | ASSESSOR | story_slot, story_cause |
+| 88 | The mood is claimed in one thought, hedged, with the thing its mood from record holds named in the same sentence. | ASSESSOR | mood_cause_differs, mood_flat, mood_weak_evidence (framing, count, position); mood_weak_source (angle, relation: flag) |
+| 89 | Directions belong to the frame, never to a person ("to his left"); a relation that only matches colors places nothing beside anything. | ASSESSOR | relation_side, position_as_place, relation_placement |
+| 90 | The hint's sentences are never followed in their order, the caption is never the hint's first sentence reworded or its list of things, and no name is taken from it. | ASSESSOR | caption_hint_copy, caption_hint_list, hint_name; hint_order (flag) |
+| 91 | A chain answer answers its key; the unknown key is answered nowhere in the row, and the task text says what it covers. | ASSESSOR | chain_kind, unknown_stated |
+| 92 | The tags carry a person tag whenever a person is recorded and keep each recorded color with its thing. | ASSESSOR | tag_person, tag_solo, tag_color_missing, tag_color_detached |
+| 93 | A record that cannot be what it says (a misspelled word, a thing its hint never mentions) is skipped, class other, never written around. | ASSESSOR | screen_item (sets a seeded item aside before writing: a record name one edit from a hint word) |
 
 ## Open
 
