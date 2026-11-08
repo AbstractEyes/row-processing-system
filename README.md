@@ -6,14 +6,28 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.7. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.2.8. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
-three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
-for trying one route with a handful of calls. Everything is tested offline: with a fake writer,
-and with each adapter against the SDKs' own types built from recorded-response-shaped data.
+three, the compiled rule pool with a prompt profile for each provider and its assessor
+(`rps.rules`, `rps.assessor`), and a dry-run tool for trying one route with a handful of calls.
+Everything is tested offline: with a fake writer, and with each adapter against the SDKs' own
+types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.8
+
+| Change | What happens now |
+|---|---|
+| Prompt profiles | A route may name the wording of the writer prompt it writes with: `"profile": "openai"`, `"gemini"` or `"deepseek"`, or `default` (the rule pool's own prompt, used when a route names none). Each profile is a folder of `src/rps/rules/profiles/`: its system template (compiled into `writer_system.md` beside it), its user-message layout (`task.tpl.txt`, with named fields in braces), its retry block (`retry.tpl.txt`, with `{check_messages}`) and, where it has them, a hint block (gemini), its own answer-format block (deepseek) and the row schema in the OpenAPI form with a description on every field (gemini; a described schema whose structure is not the row schema's stops the route at setup). The profiles were drafted with each provider's own model, then checked rule by rule against the default prompt, and the rules a draft dropped, narrowed or contradicted were put back in its own wording. The checker, the screen, the per-call choices and the row schema are shared by all profiles. A profile the rules do not have is a configuration error at setup |
+| Calls and rows record the profile | `call_prepared` events and the writer label of every row carry `rules_version` and `rules_profile`. Review packets stay blind to both: `packet.json` carries the shared brief version, and only the controller's `packet_published` event keeps the profile. The Gemini explicit cache and GPT's `prompt_cache_key` are keyed on the profile's version |
+| Versions | Each profile has its own version, a hash of the files all profiles share, the worked examples and its own files; `python -m rps.rules.compile` writes every profile's prompt and version and `--check` covers them. Default `70de2be6650a` (was `e48cccb70779`), openai `0f18e39f81fc`, gemini `6b478fb112ee`, deepseek `5084a2909f3c`. Compiled system prompts: default 21,844 bytes, openai 22,234, gemini 31,334, deepseek 22,581 |
+| The default writer template | Back to the 0.2.6 wording, which a side-by-side comparison on the same items favored over 0.2.7's longer template, with three lines added: what the story before, after and cause records hold and how long each may be; that `mood feeling` takes a value of its own list; and that a record the item gives is copied as given |
+| Unknown-question keys fit the item | Person keys only for an item that records a person; thing keys only for an item with a thing and no hint; `mood tone` is out of the rotation; `body gesture` is left out beside a recorded pose. The rotation runs over the keys that fit, with a stride coprime to their number |
+| The screen also reads the subject | `screen_item` also sets aside a seeded item whose recorded thing name (or a listed synonym) never appears in its hint; hints that hold only catalogue metadata, and picture-form names, are left alone |
+| New checks | `thought_hint_copy` (error): a thought sentence made mostly of one hint sentence's content words. `pasted_value` (error): a record value pasted into prose ("exactly 1", "count of 2", "child girl"). `caption_compresses_hint` (flag): a caption that compresses a one-sentence hint. `caption_no_verb` (flag): a caption of five words or more in which no sentence has a verb (a word-list test, so it only flags) |
+| Notebook | The install line names `v0.2.8` |
 
 ## What changed in 0.2.7
 
@@ -300,6 +314,7 @@ A route has these keys:
 | `provider`, `model` | `anthropic`, `openai`, `gemini` or `deepseek` (or `fake` for tests), and the provider's model name |
 | `kind` | `batch` (the provider's batch service) or `api` (one call at a time; this is how GPT is used here). `claude-code`, `codex` and `gemini-cli` are accepted by the configuration but have no adapter yet |
 | `effort` | The provider's reasoning or thinking level (Anthropic `low` to `max`, OpenAI's `reasoning.effort`, Gemini `minimal`, `low`, `medium`, `high`, DeepSeek's `reasoning_effort`: `none`, `low`, `high`, `max`); left out, the provider's default applies |
+| `profile` | The wording of the writer prompt the route writes with: `default` unless set, or a profile of the rules (`openai`, `gemini`, `deepseek` in the rule pool). See "The writing rules are inputs" |
 | `budget_usd`, `purpose_caps` | The route total and one cap per purpose |
 | `max_output_tokens` | The token limit of a call (a call cut off at it is retried once with a larger limit, see `truncation_factor`). A model that thinks before it answers spends the limit on the thinking too, so it has to cover both |
 | `max_batch_calls` | The most calls in one provider batch (each adapter also splits by its provider's size limits) |
@@ -502,6 +517,13 @@ A rule set may also bring:
 With the package `rps.rules` all of these come from the rule pool, the assessor is `rps.assessor` and the
 screen is `rps.assessor.screen_item`. `rules.assessor` and `rules.screen` (`"module:name"`, or `"none"`)
 name different ones.
+
+The rule pool also brings prompt profiles: other wordings of the writer prompt, one folder each under
+`src/rps/rules/profiles/`, for the routes that name them (a route's `profile`). A profile replaces the
+system prompt, the layout of the task text, the retry block and, where it has one, the answer-format
+block or the described schema; the rules it states, the checker, the screen, the per-call choices and
+the row schema stay the pool's. Routes on the same profile share one set of rules. A row records the
+profile it was written with (`writer.rules_profile`) and that profile's version (`writer.rules_version`).
 
 ## Failures
 
