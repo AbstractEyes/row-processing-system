@@ -835,7 +835,11 @@ class Controller:
                         self._record_unpreparable(task, line, status, too_long, KIND_LONG_PROMPT)
                         continue
                     estimate = self.ledger.estimate(
-                        route_name, request.est_input_tokens, request.max_output_tokens, on=self._today_date()
+                        route_name,
+                        request.est_input_tokens,
+                        request.max_output_tokens,
+                        tier=writer.hold_tier(),
+                        on=self._today_date(),
                     )
                     decision = self.ledger.check(self.state, route_name, spec.purpose, estimate)
                     if not decision.ok:

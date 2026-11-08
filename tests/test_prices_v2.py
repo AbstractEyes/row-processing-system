@@ -82,6 +82,22 @@ def test_tiers_price_a_call_by_the_tier_it_ran_in_and_the_estimate_takes_the_dea
     assert prices.estimate("deep", 1_000_000, 1_000_000) == pytest.approx(3.0)
 
 
+def test_a_caller_that_knows_the_tier_gets_the_estimate_at_that_tier():
+    prices = table(
+        {
+            "deep": {"tiers": {"offpeak": {"input": 0.5, "output": 1.0}, "peak": {"input": 1.0, "output": 2.0}}},
+            "plain": {"input": 1.0, "output": 2.0},
+        }
+    )
+    assert prices.estimate("deep", 1_000_000, 1_000_000, tier="offpeak") == pytest.approx(1.5)
+    assert prices.estimate("deep", 1_000_000, 1_000_000, tier="peak") == pytest.approx(3.0)
+    assert prices.estimate("deep", 1_000_000, 1_000_000, tier="unknown") == pytest.approx(3.0)  # a tier it lacks: the dearest
+    assert prices.estimate("deep", 1_000_000, 1_000_000, tier=None) == pytest.approx(3.0)
+    assert prices.estimate("plain", 1_000_000, 1_000_000, tier="offpeak") == pytest.approx(3.0)  # no tiers: the one card
+    for tier in ("offpeak", "peak"):
+        assert prices.cost("deep", MILLION, tier=tier) <= prices.estimate("deep", 1_000_000, 1_000_000, tier=tier)
+
+
 def test_the_estimate_prices_every_input_token_at_the_highest_input_side_rate():
     prices = table({"m": {"input": 1.0, "output": 2.0, "cache_write": 1.25, "cache_read": 0.1}})
     assert prices.estimate("m", 1_000_000, 0) == pytest.approx(1.25)

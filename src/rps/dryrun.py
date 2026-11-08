@@ -280,7 +280,10 @@ def dry_run(
         except (ValueError, ImageRoutingError) as error:
             return refuse(f"the calls could not be built: {error}")
         estimate = sum(
-            prices.estimate(config.model, r.est_input_tokens, r.max_output_tokens, batch=batch_mode, on=today) for r in requests
+            prices.estimate(
+                config.model, r.est_input_tokens, r.max_output_tokens, batch=batch_mode, tier=writer.hold_tier(), on=today
+            )
+            for r in requests
         )
         so_far = spent.get(route, 0.0)
         printer(

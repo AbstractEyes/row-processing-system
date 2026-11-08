@@ -13,7 +13,7 @@ import pytest
 from openai.types.chat import ChatCompletion
 
 from rps.config import ConfigError
-from rps.ledger import Usage
+from rps.ledger import PriceTable, Usage
 from rps.providers import DeepSeekWriter
 from rps.providers.deepseek_api import parse_completion, peak_ends, tier_at, usage_of
 from rps.routing import ImageRoutingError
@@ -121,6 +121,17 @@ def test_the_gate_can_be_turned_off_for_a_small_test_at_any_hour(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "x")
     writer = DeepSeekWriter("deepseek-sync", make_route(options={"offpeak_only": False}), now=lambda: utc(9, 7, 30))
     assert writer.accepting().ok and writer.gate() is None
+
+
+def test_with_the_gate_on_a_call_is_held_at_the_off_peak_price_and_with_it_off_at_the_dearest():
+    gated = DeepSeekWriter("deepseek-sync", make_route())
+    open_all_day = DeepSeekWriter("deepseek-sync", make_route(options={"offpeak_only": False}))
+    assert gated.hold_tier() == "offpeak" and open_all_day.hold_tier() is None
+    [request] = gated.prepare([make_call()])
+    prices = PriceTable.default()
+    held = prices.estimate(MODEL, request.est_input_tokens, request.max_output_tokens, tier=gated.hold_tier())
+    dearest = prices.estimate(MODEL, request.est_input_tokens, request.max_output_tokens, tier=open_all_day.hold_tier())
+    assert held == pytest.approx(dearest / 2) and held > 0  # off-peak tokens cost half of peak tokens
 
 
 # ---------------------------------------------------------------------------- request building

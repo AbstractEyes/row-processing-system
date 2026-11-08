@@ -392,16 +392,27 @@ class PriceTable:
         return round(max(0, tokens) * max(0.0, hours) * rate / MILLION, 8)
 
     def estimate(
-        self, model: str, input_tokens: int, max_output_tokens: int, *, batch: bool = False, on: Date | None = None
+        self,
+        model: str,
+        input_tokens: int,
+        max_output_tokens: int,
+        *,
+        batch: bool = False,
+        tier: str | None = None,
+        on: Date | None = None,
     ) -> float:
         """Upper bound on a call's cost.
 
         Every input token is priced at the highest input-side rate (a cache write can cost
         more than plain input) and output is counted up to its limit. A model with tiers is
-        priced at its dearest tier.
+        priced at its dearest tier, unless the caller names the tier the call will be billed
+        at (a tier the model does not have is ignored).
         """
         period = self.price(model).period_on(on or Date.today())
-        cards = list(period.tiers.values()) or [period.rates]
+        if tier is not None and tier in period.tiers:
+            cards = [period.tiers[tier]]
+        else:
+            cards = list(period.tiers.values()) or [period.rates]
         dollars = 0.0
         for card in cards:
             rates = card.for_mode(batch, self.batch_discount)
@@ -492,10 +503,24 @@ class Ledger:
     def is_batch(self, route: str) -> bool:
         return self.config.route(route).kind == "batch"
 
-    def estimate(self, route: str, est_input_tokens: int, max_output_tokens: int, *, on: Date | None = None) -> float:
+    def estimate(
+        self,
+        route: str,
+        est_input_tokens: int,
+        max_output_tokens: int,
+        *,
+        tier: str | None = None,
+        on: Date | None = None,
+    ) -> float:
+        """The hold for one call on a route: its estimated cost at `tier`, or at the dearest tier."""
         route_config = self.config.route(route)
         return self.prices.estimate(
-            route_config.model, est_input_tokens, max_output_tokens, batch=route_config.kind == "batch", on=on
+            route_config.model,
+            est_input_tokens,
+            max_output_tokens,
+            batch=route_config.kind == "batch",
+            tier=tier,
+            on=on,
         )
 
     def cost(self, route: str, usage: Usage, *, tier: str | None = None, on: Date | None = None) -> float:

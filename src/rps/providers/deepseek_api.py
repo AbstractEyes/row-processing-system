@@ -196,6 +196,14 @@ class DeepSeekWriter(PoolWriter):
             return None
         return max(1.0, (ends - moment).total_seconds())
 
+    def hold_tier(self) -> str | None:
+        """With the gate on, every call goes out off-peak, so it is held at the off-peak price.
+
+        (A call that starts in the very instant peak hours begin is billed at the peak price all the
+        same.) With the gate off a call may go out at any hour, so it is held at the peak price.
+        """
+        return TIER_OFFPEAK if self._offpeak_only else None
+
     def check_rules(self, rules: WriterRules) -> None:
         if "json" not in system_text(rules).lower():
             raise ConfigError(

@@ -270,6 +270,15 @@ class Writer(ABC):
         """Whether this route can take calls now. The default is always."""
         return Acceptance(True)
 
+    def hold_tier(self) -> str | None:
+        """The price tier every call of this route will be billed at, when the writer can promise it.
+
+        The controller holds a call's estimated cost against the caps from the moment the call is
+        prepared. A model with price tiers is held at its dearest tier unless the writer names one
+        here; None (the default) means no promise.
+        """
+        return None
+
     def check_rules(self, rules: WriterRules) -> None:
         """Raise ConfigError when these writing rules cannot be sent through this route.
 

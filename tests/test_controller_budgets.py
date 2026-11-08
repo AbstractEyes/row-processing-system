@@ -6,7 +6,7 @@ import pytest
 
 from rps.config import PURPOSES
 from rps.ledger import PriceTable, Usage
-from rps.providers import FakeOutcome
+from rps.providers import FakeOutcome, FakeWriter
 
 from harness import World, task_spec
 from helpers import make_config
@@ -293,3 +293,40 @@ def test_the_ledger_files_record_spend_by_purpose(tmp_path):
     assert summary["routes"]["fake-batch"]["spent_usd"] == pytest.approx(4 * COST)
     lines = [json.loads(line) for line in world.ship_store.read_text("ledger/tasks.jsonl").splitlines()]
     assert sorted(sorted(entry["usd_by_purpose"]) for entry in lines) == [["pricing"], ["production"]]
+
+
+# ------------------------------------------------------------------ the price tier a call is held at
+
+TIERED = PriceTable.from_dict(
+    {
+        "date": "2026-11-06",
+        "batch_discount": 1.0,
+        "models": {"fake-model": {"tiers": {"offpeak": {"input": 0.5, "output": 1.0}, "peak": {"input": 1.0, "output": 2.0}}}},
+    }
+)
+
+
+class OffPeakWriter(FakeWriter):
+    """A writer that can promise every call goes out in the cheap tier."""
+
+    def hold_tier(self):
+        return "offpeak"
+
+
+def test_a_call_is_held_at_the_tier_its_writer_promises_and_otherwise_at_the_dearest(tmp_path):
+    estimates = {}
+    for label, writer_class in (("no promise", FakeWriter), ("promised", OffPeakWriter)):
+        world = World(
+            tmp_path / label.replace(" ", "-"),
+            config=budget_config(production=0.003),
+            prices=TIERED,
+            writer_class=writer_class,
+        )
+        controller = world.controller()
+        controller.add_task(task_spec(("001", "002", "003")))
+        controller.step()
+        estimates[label] = [e.payload["est_usd"] for e in world.events_of("call_prepared")]
+    # Dearest tier: (1000 x $1 + 500 x $2) / 1M = $0.002 a call, so one call fills the cap of $0.003.
+    assert estimates["no promise"] == [pytest.approx(0.002)]
+    # Off-peak tier: (1000 x $0.5 + 500 x $1) / 1M = $0.001 a call, so all three fit.
+    assert estimates["promised"] == [pytest.approx(0.001)] * 3
