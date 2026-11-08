@@ -54,11 +54,11 @@ def test_the_clean_examples_raise_no_review_error():
     "text",
     [
         "The only recorded garment is a sweater.",
-        "The style is named here without guessing at its maker.",
-        "A single plant: the plant count is 1.",
-        "One toilet, a count of 1, keeps the room calm.",
-        "The sleeve is specified by the scene.",
-        "A red flower is the clearest named subject.",
+        "That period is named here and nobody is guessed at.",
+        "Beside the window: the lamp count is 1.",
+        "A lone kettle with a count of 1 settles the shelf.",
+        "The cuff is specified by the setting.",
+        "The kettle is the loudest named subject.",
     ],
 )
 def test_self_talk_is_an_error(medium, text):
@@ -75,7 +75,7 @@ def test_a_ship_named_is_legal(medium):
 
 def test_self_hedge_and_repeats_are_flags(medium):
     item, row = medium
-    row["thoughts"][1]["text"] = "The mood is an interpretation, not a claim about the cafe."
+    row["thoughts"][1]["text"] = "This reading is an interpretation, and no claim follows about the cafe."
     assert found(row, item, "self_hedge", FLAG)
     item, row = medium[0], copy.deepcopy(medium[1])
     row["thoughts"].append({"step": "check", "text": row["thoughts"][1]["text"]})
@@ -120,7 +120,7 @@ def test_mood_checks(deep):
     for t in row["thoughts"]:
         t["text"] = t["text"].replace("cozy", "calm")
         if t["step"] in ("mood", "mean"):
-            t["text"] = "The warm color makes the corner feel cozy."
+            t["text"] = "Warm paint lets the nook feel cozy."
     assert found(row, item, "mood_unhedged", FLAG)
     item, row = deep[0], copy.deepcopy(deep[1])
     row["spec"]["mood"] = {"feeling": "cozy", "from": "scene time"}
@@ -147,13 +147,13 @@ def test_question_keys(deep):
     chain["key"] = "eye path"
     assert found(row, item, "question_key", ERROR)
     chain["key"] = "mood temperature"
-    chain["value"] = "the eye travels from the face to the hands and out"
+    chain["value"] = "a long phrase that wanders over the sleeve and beyond"
     assert found(row, item, "question_value", ERROR)
 
 
 def test_a_year_against_the_period_sets_the_item_aside():
     item, rows = _example("painting_deep")
-    item = dict(item, hint="A painting made with canvas, oil paint. It is dated 1871. It depicts a boat.")
+    item = dict(item, hint="Oil on linen, dated 1871, showing a ferry at a pier.")
     row = copy.deepcopy(rows[0])
     row["spec"]["form"] = {"medium": "oil painting", "period": "baroque"}
     assert found(row, item, "hint_contradicts_record", ERROR)
@@ -173,9 +173,9 @@ def test_a_frame_position_is_not_a_place():
     item, rows = _example("seeded_single")
     row = copy.deepcopy(rows[0])
     row["spec"]["thing"]["position"] = "centre"
-    row["thoughts"][0]["text"] = "The insect stands in the middle of a stream of light."
+    row["thoughts"][0]["text"] = "The beetle rests near the centre of a river of light."
     assert found(row, item, "position_as_place", FLAG)
-    row["thoughts"][0]["text"] = "The insect sits in the middle of the frame."
+    row["thoughts"][0]["text"] = "The beetle rests near the centre of the frame."
     assert not found(row, item, "position_as_place")
 
 
@@ -237,8 +237,8 @@ def test_wording_checks(medium):
 
 def test_a_caption_that_lists_the_hint(medium):
     item, row = medium
-    item = dict(item, hint="A painting made with oil paint. It depicts a tree, a house, a cloud and a garden.")
-    row["wordings"]["caption"] = "A tree, house, and cloud occupy a garden."
+    item = dict(item, hint="Gouache work. It depicts a birch, a barn, a moon and a meadow.")
+    row["wordings"]["caption"] = "A birch, barn, and moon fill a meadow."
     assert found(row, item, "caption_hint_list", FLAG)
 
 
