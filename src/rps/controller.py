@@ -204,6 +204,12 @@ def parse_output(
     return rows, skips, None
 
 
+def _cap_money(value: Any) -> str:
+    """Dollars as a cap is read: cents for an amount of ten cents or more, four places below that."""
+    amount = float(value) if isinstance(value, (int, float)) else 0.0
+    return f"${amount:.2f}" if amount >= 0.1 else f"${amount:.4f}"
+
+
 def _converts_alone(normalize: Callable[..., Any], wrapper: Mapping[str, Any], row: Any, spec: Any, model: str) -> bool:
     """True when one row of a wrapper, handed to a `normalize` function in a wrapper of its own, comes back as rows."""
     alone = json.dumps({**wrapper, "rows": [row]}, ensure_ascii=False)
@@ -2025,15 +2031,50 @@ class Controller:
 
     # ------------------------------------------------------------------ reporting
 
+    def _refused_by(self) -> list[tuple[str, list[dict[str, Any]]]]:
+        """The calls a budget refused in this run, grouped by the cap that refused them: (cap, refusals).
+
+        The cap is named as the refusal recorded it: the cap of a purpose on a route, or the route's
+        total. The largest group comes first. A refusal the state no longer holds counts as "a budget".
+        """
+        groups: dict[str, list[dict[str, Any]]] = {}
+        for call_id in sorted(self._parked):
+            refusal = self.state.refusals.get(call_id) or {}
+            if refusal.get("reason") == "purpose_cap":
+                cap = f"the {refusal.get('purpose')} cap of {refusal.get('route')} ({_cap_money(refusal.get('purpose_cap'))})"
+            elif refusal.get("reason") == "route_cap":
+                cap = f"the total of {refusal.get('route')} ({_cap_money(refusal.get('route_cap'))})"
+            else:
+                cap = "a budget"
+            groups.setdefault(cap, []).append(refusal)
+        return sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))
+
+    @staticmethod
+    def _refusal_detail(cap: str, refusals: Sequence[Mapping[str, Any]]) -> str:
+        """One line for a group of refusals: how many, by which cap, how full it was and what the calls were held at."""
+        text = f"{len(refusals)} by {cap}"
+        key = "route_spent" if cap.startswith("the total") else "purpose_spent"
+        spent = [float(r[key]) for r in refusals if isinstance(r.get(key), (int, float))]
+        estimates = [float(r["est_usd"]) for r in refusals if isinstance(r.get("est_usd"), (int, float))]
+        if spent:
+            text += f": {_cap_money(max(spent))} was spent or held by calls in flight"
+        if estimates:
+            low, high = min(estimates), max(estimates)
+            held = _cap_money(low) if low == high else f"{_cap_money(low)} to {_cap_money(high)}"
+            text += f"{',' if spent else ':'} each call needed room for {held}"
+        return text
+
     def _waiting(self) -> dict[str, int]:
         s = self.state
-        return {
+        waiting = {
             "calls in flight": len(s.submitted_calls()),
             "packets with the reviewers": len(s.open_packets()),
             "rows in the hand queue": len(s.hand_queue()),
-            "calls refused by a budget": len(self._parked),
-            "files for the store's next commit": len(self._staged_shipments) + len(self._ledger_staged),
         }
+        for cap, refusals in self._refused_by():
+            waiting[f"calls refused by {cap}"] = len(refusals)
+        waiting["files for the store's next commit"] = len(self._staged_shipments) + len(self._ledger_staged)
+        return waiting
 
     def _progress_line(self, elapsed: float | None, budget: float | None) -> str:
         progress = self.state.job_progress(self.config.max_attempts)
@@ -2078,6 +2119,7 @@ class Controller:
         ]
         if self._parked:
             lines.append(f"{len(self._parked)} call(s) refused by a budget this run")
+            lines.extend("  " + self._refusal_detail(cap, refusals) for cap, refusals in self._refused_by())
         for name in self.config.routes:
             state, reason = self.route_state(name)
             if state != "open":
