@@ -286,11 +286,16 @@ class _GeminiCommon:
             return  # no schema is sent
         try:
             check_schema(rules.schema, GEMINI)
-            # A batch route may step down to the documented form, which sends the OpenAPI form of the
-            # schema: a schema that cannot be written so is found here, not in the middle of a run.
-            gemini_schema(rules.schema, "openapi")
+            # A route that can send the OpenAPI form of the schema builds it here, so a schema that cannot
+            # be written so is found at the start and not in the middle of a run.
+            if self._may_send_openapi():
+                gemini_schema(rules.schema, "openapi")
         except SchemaError as error:
             raise ConfigError(f"route {self.route_name!r}: {error}") from None
+
+    def _may_send_openapi(self) -> bool:
+        """True when this route can send the OpenAPI form of the row schema: its `schema` option asks for it."""
+        return self._schema_mode == "openapi"
 
     def _schema_mode_now(self) -> str:
         """The form of the row schema that requests are built with now."""
@@ -419,6 +424,10 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
 
     def _schema_field_name(self) -> str:
         return "response_schema" if self._step >= FORM_DOCUMENTED else self._schema_field
+
+    def _may_send_openapi(self) -> bool:
+        """A batch route may step down to the documented form, which sends the OpenAPI form whatever `schema` says."""
+        return True
 
     def _schema_mode_now(self) -> str:
         """The documented form sends the OpenAPI form of the schema, the one `response_schema` takes."""

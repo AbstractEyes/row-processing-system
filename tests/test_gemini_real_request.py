@@ -292,14 +292,45 @@ def test_the_schema_option_applies_to_the_one_call_route_too_and_is_checked(pool
 
 
 def test_a_schema_that_cannot_be_written_in_the_openapi_form_is_refused_before_the_run(pool_rules):
-    # A batch route can step down to the documented form, which sends the OpenAPI form: the check is made at the start.
+    # A batch route can step down to the documented form, which sends the OpenAPI form, and a route whose
+    # schema option is openapi sends it from the first request: both check it at the start.
     recursive = {"type": "object", "$defs": {"n": {"type": "object", "properties": {"next": {"$ref": "#/$defs/n"}}}}, "properties": {"head": {"$ref": "#/$defs/n"}}}
     rules = pool_rules.__class__(system=pool_rules.system, schema=recursive, version="v")
     with pytest.raises(ConfigError, match="recursive"):
         GeminiBatchWriter("flash-batch", route_with()).check_rules(rules)
     with pytest.raises(ConfigError, match="recursive"):
-        GeminiSyncWriter("flash-sync", route_with(kind="api")).check_rules(rules)
+        GeminiBatchWriter("flash-batch", route_with("exact")).check_rules(rules)
+    with pytest.raises(ConfigError, match="recursive"):
+        GeminiSyncWriter("flash-sync", route_with("openapi", kind="api")).check_rules(rules)
     GeminiBatchWriter("flash-batch", route_with("none")).check_rules(rules)
+
+
+def test_a_one_call_route_does_not_build_the_openapi_form_at_setup_unless_it_sends_it(pool_rules, monkeypatch):
+    # The synchronous route never steps down to the documented batch form, so it builds the OpenAPI form
+    # at setup only when its own schema option is openapi; a batch route builds it whatever the option says.
+    from rps.providers import gemini_api
+
+    built = []
+    real = gemini_api.gemini_schema
+    monkeypatch.setattr(gemini_api, "gemini_schema", lambda schema, mode: built.append(mode) or real(schema, mode))
+    for mode in ("plain", "exact"):
+        GeminiSyncWriter("flash-sync", route_with(mode, kind="api")).check_rules(pool_rules)
+    assert built == []
+    GeminiSyncWriter("flash-sync", route_with("openapi", kind="api")).check_rules(pool_rules)
+    assert built == ["openapi"]
+    for mode in ("plain", "exact", "openapi"):
+        GeminiBatchWriter("flash-batch", route_with(mode)).check_rules(pool_rules)
+    assert built == ["openapi"] * 4
+    GeminiBatchWriter("flash-batch", route_with("none")).check_rules(pool_rules)
+    GeminiSyncWriter("flash-sync", route_with("none", kind="api")).check_rules(pool_rules)
+    assert built == ["openapi"] * 4  # a route that sends no schema builds none
+
+    # a recursive schema cannot be written in that form: the one-call route that never sends the form takes it
+    recursive = {"type": "object", "$defs": {"n": {"type": "object", "properties": {"next": {"$ref": "#/$defs/n"}}}}, "properties": {"head": {"$ref": "#/$defs/n"}}}
+    rules = pool_rules.__class__(system=pool_rules.system, schema=recursive, version="v")
+    monkeypatch.setattr(gemini_api, "gemini_schema", real)
+    GeminiSyncWriter("flash-sync", route_with("plain", kind="api")).check_rules(rules)
+    GeminiSyncWriter("flash-sync", route_with("exact", kind="api")).check_rules(rules)
 
 
 def test_a_route_that_sends_no_schema_does_not_need_one_that_fits(pool_rules):
