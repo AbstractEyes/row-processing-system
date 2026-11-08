@@ -231,6 +231,9 @@ class Writer(ABC):
     # storage by the hour; the controller then charges that storage to the ledger and
     # refuses to start unless the price table has a storage rate for the route's model.
     bills_cache_storage: bool = False
+    # Set by the controller. A writer whose calls finish on threads of its own calls it each time
+    # one has, so the controller looks at once and gives the free worker its next call.
+    wake: Callable[[], None] | None = None
 
     def __init__(self, route_name: str, route: RouteConfig) -> None:
         self.route_name = route_name

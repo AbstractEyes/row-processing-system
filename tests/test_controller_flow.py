@@ -44,6 +44,13 @@ def test_format_progress_names_job_size_done_time_spent_and_time_left():
     assert status_line == "job 4 lines | done 2 (50%) | rows 3 | $0.5000 spent"  # a status print belongs to no run, so no clock
 
 
+def test_format_progress_shows_money_held_for_calls_in_flight_beside_the_money_spent():
+    held = format_progress(lines_total=4, lines_done=0, rows=0, elapsed=None, budget=None, spent_usd=0.0, held_usd=2.738)
+    assert held == "job 4 lines | done 0 (0%) | rows 0 | $0.0000 spent | $2.7380 held for calls in flight"
+    nothing_held = format_progress(lines_total=4, lines_done=0, rows=0, elapsed=None, budget=None, spent_usd=0.5, held_usd=0.0)
+    assert "held" not in nothing_held and "$0.5000 spent" in nothing_held
+
+
 def test_a_row_a_model_wrote_says_which_version_of_the_package_built_its_request(tmp_path):
     from rps import __version__
 

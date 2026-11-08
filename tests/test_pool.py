@@ -63,6 +63,27 @@ def test_nothing_is_sent_until_the_first_poll_and_every_call_is_sent_once():
     writer.close()
 
 
+def test_the_writer_calls_wake_each_time_a_call_finishes_and_a_wake_that_fails_changes_nothing():
+    woken = []
+    writer = Recording(ok)
+    writer.wake = lambda: woken.append(len(woken) + 1)
+    handle = writer.submit([request("001"), request("002"), request("003")])
+    wait_for(lambda: writer.poll(handle).state == "ended")
+    wait_for(lambda: len(woken) == 3)  # one for each call, after its result could be read
+    assert woken == [1, 2, 3]
+    broken = Recording(ok)
+
+    def fails():
+        raise RuntimeError("the controller is gone")
+
+    broken.wake = fails
+    handle = broken.submit([request("001")])
+    wait_for(lambda: broken.poll(handle).state == "ended")
+    assert [r.output for r in broken.results(handle)] == ["out-001"]  # the worker did not die
+    for pool in (writer, broken):
+        pool.close()
+
+
 def test_finished_calls_are_offered_as_partial_before_the_handle_ends():
     release = threading.Event()
 

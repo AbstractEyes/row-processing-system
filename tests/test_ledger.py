@@ -135,6 +135,57 @@ def test_a_call_over_its_purpose_cap_is_refused_with_the_numbers():
     assert "pricing" in decision.message()
 
 
+def test_a_call_that_fits_once_the_calls_in_flight_finish_waits_and_one_that_never_fits_is_refused_for_good():
+    led = Ledger(small_caps_config(), table())
+    b = Builder()
+    task = b.task(purpose="pricing")
+    call = b.prepare(task, "001", purpose="pricing", est=0.04)
+    state = State.from_events(b.events)
+    # $0.04 is held by the call in flight: a second estimate of $0.02 passes the $0.05 cap now, but not for long.
+    waits = led.check(state, "fake-batch", "pricing", 0.02)
+    assert not waits.ok and waits.waits and waits.reason == "purpose_cap"
+    assert waits.purpose_spent == pytest.approx(0.04) and waits.purpose_held == pytest.approx(0.04)
+    assert waits.route_held == pytest.approx(0.04)
+    assert "$0.0000 spent and $0.0400 held by calls in flight" in waits.message() and "waits" in waits.message()
+    assert led.check(state, "fake-batch", "pricing", 0.01).ok  # one that fits beside the hold goes at once
+    # The call comes back having cost $0.045: nothing is held, and $0.02 on top of $0.045 passes the cap for good.
+    b.submit([call])
+    b.returned(call, usd=0.045)
+    state = State.from_events(b.events)
+    refused = led.check(state, "fake-batch", "pricing", 0.02)
+    assert not refused.ok and not refused.waits and refused.reason == "purpose_cap"
+    assert refused.purpose_held == 0 and refused.purpose_spent == pytest.approx(0.045)
+    assert "$0.0450 spent would pass" in refused.message() and "held" not in refused.message()
+    assert led.check(state, "fake-batch", "pricing", 0.005).ok
+
+
+def test_a_call_whose_own_hold_is_over_a_cap_with_nothing_in_flight_is_refused_for_good():
+    led = Ledger(small_caps_config(), table())
+    state = State.from_events([])
+    refused = led.check(state, "fake-batch", "pricing", 0.06)  # over the $0.05 cap by itself
+    assert not refused.ok and not refused.waits and refused.reason == "purpose_cap"
+    assert refused.numbers()["purpose_held"] == 0 and refused.numbers()["route_held"] == 0
+    over_both = led.check(state, "fake-batch", "production", 0.13)  # over the $0.10 production cap and the $0.12 total
+    assert not over_both.ok and not over_both.waits and over_both.reason == "purpose_cap"
+
+
+def test_the_cap_that_stops_a_call_for_good_is_named_before_the_one_that_only_holds_it_back():
+    led = Ledger(small_caps_config(pricing=0.10, production=0.10, total=0.12), table())
+    b = Builder()
+    task = b.task(purpose="production")
+    paid = b.prepare(task, "001", purpose="production", est=0.05)
+    held = b.prepare(task, "002", purpose="pricing", est=0.04)
+    b.submit([paid])
+    b.returned(paid, usd=0.05)
+    state = State.from_events(b.events)
+    # pricing: nothing paid, $0.04 held, room for $0.06 once it is back (it waits). The route: $0.05 paid.
+    waiting = led.check(state, "fake-batch", "pricing", 0.05)
+    assert waiting.waits and waiting.reason == "route_cap"  # $0.05 + $0.04 held + $0.05 passes the $0.12 total
+    never = led.check(state, "fake-batch", "pricing", 0.08)
+    assert not never.ok and not never.waits and never.reason == "route_cap"  # $0.05 paid + $0.08 passes it with nothing held
+    del held
+
+
 def test_a_pricing_cap_stops_pricing_calls_while_production_continues():
     led = Ledger(small_caps_config(), table())
     b = Builder()

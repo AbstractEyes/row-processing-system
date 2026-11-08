@@ -76,11 +76,17 @@ def test_a_pricing_cap_stops_pricing_calls_while_production_continues(tmp_path):
     controller = world.controller()
     controller.add_task(task_spec(("p1", "p2", "p3", "p4", "p5"), batch="pricing-run", purpose="pricing"))
     controller.add_task(task_spec(("001", "002", "003", "004"), batch="main"))
+    controller.step()
+    # The two pricing calls in flight hold the whole pricing cap, but they may cost less than they hold:
+    # the other three wait for them, and nothing is refused yet.
+    assert Counter(e.payload["purpose"] for e in world.events_of("call_prepared")) == {"pricing": 2, "production": 4}
+    assert world.events_of("budget_refused") == []
     world.drive(controller)
     summary = controller.run()
 
     prepared = world.events_of("call_prepared")
     assert Counter(e.payload["purpose"] for e in prepared) == {"pricing": 2, "production": 4}
+    # The two calls cost $0.0028 between them, and a third would take the cap to $0.0048: now it is refused for good.
     refused = world.events_of("budget_refused")
     assert {e.payload["line"] for e in refused} == {"p3", "p4", "p5"}
     for event in refused:
@@ -88,7 +94,7 @@ def test_a_pricing_cap_stops_pricing_calls_while_production_continues(tmp_path):
         assert (numbers["route"], numbers["purpose"], numbers["reason"]) == ("fake-batch", "pricing", "purpose_cap")
         assert numbers["est_usd"] == pytest.approx(EST)
         assert numbers["purpose_cap"] == pytest.approx(0.004)
-        assert numbers["purpose_spent"] == pytest.approx(0.004)  # the two pricing calls in flight hold their estimates
+        assert numbers["purpose_spent"] == pytest.approx(2 * COST) and numbers["purpose_held"] == pytest.approx(0)
         assert numbers["route_cap"] == pytest.approx(0.05) and numbers["attempt"] == 1
         assert "pricing" in numbers["message"] and "cap" in numbers["message"]
 
@@ -127,15 +133,18 @@ def test_the_route_total_stops_every_purpose(tmp_path):
     controller = world.controller()
     controller.add_task(task_spec(("001", "002", "003", "004", "005"), batch="main"))
     controller.add_task(task_spec(("p1", "p2"), batch="pricing-run", purpose="pricing"))
-    world.drive(controller)
+    controller.step()
     assert len(world.events_of("call_prepared")) == 3  # three estimates of $0.002 fit under $0.006
+    assert world.events_of("budget_refused") == []  # the rest wait for the three to come back
+    world.drive(controller)
+    assert len(world.events_of("call_prepared")) == 3  # which cost $0.0042 and leave no room for a fourth
     refused = world.events_of("budget_refused")
     assert len(refused) == 4
     assert {e.payload["reason"] for e in refused} == {"route_cap"}
     assert {e.payload["purpose"] for e in refused} == {"production", "pricing"}  # pricing had room of its own
     for event in refused:
         assert event.payload["route_cap"] == pytest.approx(0.006)
-        assert event.payload["route_spent"] == pytest.approx(0.006)
+        assert event.payload["route_spent"] == pytest.approx(3 * COST) and event.payload["route_held"] == pytest.approx(0)
     assert "route" in refused[0].payload["message"] and "total" in refused[0].payload["message"]
     # the money already spent leaves no room for another estimate, so a later run is refused again
     later = world.controller()
@@ -144,22 +153,24 @@ def test_the_route_total_stops_every_purpose(tmp_path):
     assert len(world.events_of("budget_refused")) == 8
 
 
-def test_calls_in_flight_hold_their_estimated_cost_against_the_cap(tmp_path):
+def test_calls_in_flight_hold_their_estimated_cost_and_a_call_that_does_not_fit_yet_waits(tmp_path):
     world = bench(tmp_path, production=0.0035)  # room for one estimate ($0.002) but not two
-    first = world.controller()
-    first.add_task(task_spec(("001", "002")))
-    first.step()
-    (refused,) = world.events_of("budget_refused")
-    assert refused.payload["line"] == "002" and refused.payload["reason"] == "purpose_cap"
-    assert refused.payload["purpose_spent"] == pytest.approx(EST)  # nothing paid yet, one call in flight
-    world.drive(first)
-    assert first.state.spend("fake-batch", "production").calls == 1
-    # the first call turned out cheaper than its estimate ($0.0014), so the second now fits
-    second = world.controller()
-    world.drive(second)
-    assert second.state.spend("fake-batch", "production").calls == 2
-    assert second.state.spend("fake-batch", "production").actual == pytest.approx(2 * COST)
-    assert len(world.events_of("budget_refused")) == 1
+    controller = world.controller()
+    controller.add_task(task_spec(("001", "002")))
+    controller.step()
+    (prepared,) = world.events_of("call_prepared")
+    assert prepared.payload["line"] == "001"
+    assert world.events_of("budget_refused") == []  # the second call waits: it is not refused, and not parked
+    spend = controller.state.spend("fake-batch", "production")
+    assert spend.reserved == pytest.approx(EST) and spend.actual == 0  # nothing paid yet, one call in flight
+    assert controller.is_idle() is False and controller.state.job_progress(2)["lines_new"] == 1
+    assert "1 calls waiting for room under the production cap of fake-batch ($0.0035)" in controller._progress_line(None, None)
+    # the first call turned out cheaper than its estimate ($0.0014), so the second fits in this run
+    world.drive(controller)
+    spend = controller.state.spend("fake-batch", "production")
+    assert spend.calls == 2 and spend.actual == pytest.approx(2 * COST) and spend.reserved == pytest.approx(0)
+    assert world.events_of("budget_refused") == []
+    assert controller.state.job_progress(2)["lines_accepted"] == 2
 
 
 def test_a_refused_call_is_asked_again_by_the_next_run_and_a_raised_cap_lets_it_through(tmp_path):
@@ -212,7 +223,7 @@ def test_rebounds_draw_from_their_own_cap(tmp_path):
     for event in refused:
         assert event.payload["purpose"] == "rebound" and event.payload["attempt"] == 2
         assert event.payload["reason"] == "purpose_cap" and event.payload["purpose_cap"] == pytest.approx(0.004)
-        assert event.payload["purpose_spent"] == pytest.approx(0.004)  # two retries in flight held $0.002 each
+        assert event.payload["purpose_spent"] == pytest.approx(2 * COST)  # the two retries that went out cost $0.0014 each
     assert summary.reason == "idle" and summary.parked_by_budget == 2
     assert summary.progress["lines_accepted"] == 2 and summary.progress["lines_retry"] == 2
 

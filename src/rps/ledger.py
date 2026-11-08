@@ -3,13 +3,16 @@
 Every call carries a purpose: test, pricing, probe, rebound or production. Each
 route has a total dollar cap and one cap per purpose. Before a call is submitted
 its estimated cost is checked against both its (route, purpose) cap and its route's
-total; a call that would exceed either is refused and the refusal is recorded as a
-`budget_refused` event with the numbers. A retry or re-submission after a failed or
-rejected call is always purpose "rebound", whatever the original purpose was.
+total. A retry or re-submission after a failed or rejected call is always purpose
+"rebound", whatever the original purpose was.
 
 Money counted against a cap is what has been spent plus the estimated cost of calls
-still in flight, so a batch that has been submitted but not yet returned holds its
-share of the budget.
+still in flight (the money they hold), so a batch that has been submitted but not yet
+returned holds its share of the budget. A call that does not fit under a cap has one of
+two answers. If it would fit once the calls in flight have finished and given back what
+they hold, it waits and is asked again. If the money already spent leaves no room for it
+even then, it is refused for good, and the refusal is recorded as a `budget_refused`
+event with the numbers.
 
 Prices come from a price table file. Every model's entry names its source page and
 the date it was checked; batch and synchronous rates are separate; a model can have
@@ -452,7 +455,16 @@ def effective_purpose(task_purpose: str, attempt: int) -> str:
 
 @dataclass(frozen=True)
 class BudgetDecision:
-    """The result of checking a call against its caps."""
+    """The result of checking a call against its caps.
+
+    There are three answers. The call fits now (`ok`). It does not fit now but would once the
+    calls in flight have finished (`waits`). Or it would not fit even then, because the money
+    already spent leaves no room for it: it is refused for good (neither `ok` nor `waits`).
+    `reason` names the cap that stops it, "purpose_cap" or "route_cap".
+
+    `route_spent` and `purpose_spent` are what counts against each cap: money paid plus money
+    held for calls in flight. `route_held` and `purpose_held` are the held part of them.
+    """
 
     ok: bool
     route: str
@@ -462,7 +474,10 @@ class BudgetDecision:
     route_cap: float
     purpose_spent: float
     purpose_cap: float
-    reason: str | None = None  # "purpose_cap" or "route_cap" when refused
+    reason: str | None = None
+    waits: bool = False
+    route_held: float = 0.0
+    purpose_held: float = 0.0
 
     def numbers(self) -> dict[str, Any]:
         """The figures recorded in a budget_refused event."""
@@ -472,8 +487,10 @@ class BudgetDecision:
             "est_usd": self.est_usd,
             "reason": self.reason,
             "route_spent": round(self.route_spent, 8),
+            "route_held": round(self.route_held, 8),
             "route_cap": self.route_cap,
             "purpose_spent": round(self.purpose_spent, 8),
+            "purpose_held": round(self.purpose_held, 8),
             "purpose_cap": self.purpose_cap,
         }
 
@@ -481,14 +498,17 @@ class BudgetDecision:
         if self.ok:
             return "within budget"
         if self.reason == "purpose_cap":
+            scope, spent, held = f"{self.route}/{self.purpose}", self.purpose_spent, self.purpose_held
+            limit = f"the ${self.purpose_cap:.2f} cap for purpose '{self.purpose}'"
+        else:
+            scope, spent, held = self.route, self.route_spent, self.route_held
+            limit = f"the ${self.route_cap:.2f} total for the route"
+        if self.waits:
             return (
-                f"{self.route}/{self.purpose}: estimated ${self.est_usd:.4f} on top of ${self.purpose_spent:.4f} spent "
-                f"would pass the ${self.purpose_cap:.2f} cap for purpose '{self.purpose}'"
+                f"{scope}: estimated ${self.est_usd:.4f} on top of ${spent - held:.4f} spent and ${held:.4f} held by "
+                f"calls in flight would pass {limit}; it waits until they finish"
             )
-        return (
-            f"{self.route}: estimated ${self.est_usd:.4f} on top of ${self.route_spent:.4f} spent "
-            f"would pass the ${self.route_cap:.2f} total for the route"
-        )
+        return f"{scope}: estimated ${self.est_usd:.4f} on top of ${spent - held:.4f} spent would pass {limit}"
 
 
 class Ledger:
@@ -546,27 +566,40 @@ class Ledger:
     # -- budgets
 
     def check(self, state: "State", route: str, purpose: str, est_usd: float) -> BudgetDecision:
-        """Check a call against its (route, purpose) cap and its route's total."""
+        """Check a call against its (route, purpose) cap and its route's total.
+
+        A cap that stops the call for good is named before one that only holds it back: the money
+        already paid, with the call's own hold on top, passes it. Otherwise the cap that is full
+        of money held for calls in flight is named, and the call waits.
+        """
         route_config = self.config.route(route)
         purpose_cap = route_config.cap_for(purpose)
         route_cap = route_config.budget_usd
-        purpose_spent = state.spend(route, purpose).total
-        route_spent = state.spend(route).total
+        purpose_cell = state.spend(route, purpose)
+        route_cell = state.spend(route)
         reason = None
-        if purpose_spent + est_usd > purpose_cap + EPSILON:
+        waits = False
+        if purpose_cell.actual + est_usd > purpose_cap + EPSILON:
             reason = "purpose_cap"
-        elif route_spent + est_usd > route_cap + EPSILON:
+        elif route_cell.actual + est_usd > route_cap + EPSILON:
             reason = "route_cap"
+        elif purpose_cell.total + est_usd > purpose_cap + EPSILON:
+            reason, waits = "purpose_cap", True
+        elif route_cell.total + est_usd > route_cap + EPSILON:
+            reason, waits = "route_cap", True
         return BudgetDecision(
             ok=reason is None,
             route=route,
             purpose=purpose,
             est_usd=est_usd,
-            route_spent=route_spent,
+            route_spent=route_cell.total,
             route_cap=route_cap,
-            purpose_spent=purpose_spent,
+            purpose_spent=purpose_cell.total,
             purpose_cap=purpose_cap,
             reason=reason,
+            waits=waits,
+            route_held=route_cell.reserved,
+            purpose_held=purpose_cell.reserved,
         )
 
     def route_stopped(self, state: "State", route: str) -> bool:

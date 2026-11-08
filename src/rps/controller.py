@@ -27,6 +27,7 @@ mapping in its events and matches verdicts back by row id.
 from __future__ import annotations
 
 import json
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -88,8 +89,6 @@ HAND_DECISIONS = ("accept", "discard", "replace")
 
 # A tasks file in a store behind a network is read at most this often (a local folder, on every pass).
 TASKS_CHECK_SECONDS = 15.0
-# A one-call (api) route keeps at most this many calls per worker prepared and unfinished (see `_api_room`).
-API_CALLS_PER_WORKER = 4
 # A row that could not be converted is kept whole in the log of the failed call up to this many characters.
 UNCONVERTED_ROW_CHARS = 4000
 
@@ -130,11 +129,14 @@ def format_progress(
     elapsed: float | None,
     budget: float | None,
     spent_usd: float | None = None,
+    held_usd: float | None = None,
     waiting: Mapping[str, int] | None = None,
 ) -> str:
     """One progress line: job size, done, time spent and time left.
 
     With `elapsed` of None (a status print that belongs to no run) the time parts are left out.
+    `spent_usd` is money paid; `held_usd` is money held for calls still in flight, shown beside
+    it when there is any, so the two are never read as one.
     """
     percent = 100.0 * lines_done / lines_total if lines_total else 0.0
     parts = [f"job {lines_total} lines", f"done {lines_done} ({percent:.0f}%)", f"rows {rows}"]
@@ -145,7 +147,9 @@ def format_progress(
             parts.append(f"est. {format_duration(elapsed * (lines_total - lines_done) / lines_done)} to finish")
     if spent_usd is not None:
         parts.append(f"${spent_usd:.4f} spent")
-    busy = [f"{count} {name}" for name, count in (waiting or {}).items() if count]
+    if held_usd:
+        parts.append(f"${held_usd:.4f} held for calls in flight")
+    busy =[f"{count} {name}" for name, count in (waiting or {}).items() if count]
     if busy:
         parts.append("waiting: " + ", ".join(busy))
     return " | ".join(parts)
@@ -210,6 +214,15 @@ def _cap_money(value: Any) -> str:
     return f"${amount:.2f}" if amount >= 0.1 else f"${amount:.4f}"
 
 
+def _cap_name(reason: Any, route: Any, purpose: Any, purpose_cap: Any, route_cap: Any) -> str:
+    """A cap as people read it: "the pricing cap of deepseek-sync ($0.40)", or "the total of deepseek-sync ($5.00)"."""
+    if reason == "purpose_cap":
+        return f"the {purpose} cap of {route} ({_cap_money(purpose_cap)})"
+    if reason == "route_cap":
+        return f"the total of {route} ({_cap_money(route_cap)})"
+    return "a budget"
+
+
 def _converts_alone(normalize: Callable[..., Any], wrapper: Mapping[str, Any], row: Any, spec: Any, model: str) -> bool:
     """True when one row of a wrapper, handed to a `normalize` function in a wrapper of its own, comes back as rows."""
     alone = json.dumps({**wrapper, "rows": [row]}, ensure_ascii=False)
@@ -254,7 +267,9 @@ class Controller:
     (system prompt, row schema, version); when omitted they are read from the
     configuration's `rules` section if it has one. `clock` (monotonic seconds), `now`
     (UTC datetime) and `sleep` can be replaced in tests; `on_event` is called after
-    every event is written and applied. `tasks_check_seconds` sets how often a tasks file
+    every event is written and applied. Without a `sleep`, the pause between passes ends
+    early when a one-call route finishes a call, so its free worker is given the next one
+    at once. `tasks_check_seconds` sets how often a tasks file
     in the state store ("store:<path>") is read: by default on every pass for a local folder
     and at most every 15 seconds for a store behind a network.
     """
@@ -275,7 +290,7 @@ class Controller:
         instance: str | None = None,
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = utc_now,
-        sleep: Callable[[float], None] = time.sleep,
+        sleep: Callable[[float], None] | None = None,
         printer: Callable[[str], Any] = print,
         on_event: Callable[[Event], None] | None = None,
         progress_seconds: float = 30.0,
@@ -307,7 +322,11 @@ class Controller:
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
         self.planner: Planner | None = planner or self._tasks_planner(state_store, tasks_check_seconds)
-        self._sleep = sleep
+        # Set by a writer whose calls finish on threads of its own, each time one finishes.
+        self._wake = threading.Event()
+        for writer in self.writers.values():
+            writer.wake = self._wake.set
+        self._sleep: Callable[[float], None] = sleep if sleep is not None else self._sleep_until_woken
         self._print = printer
         self._on_event = on_event
         self._progress_seconds = progress_seconds
@@ -321,6 +340,14 @@ class Controller:
         self._started = False
         self._events = 0
         self._parked: set[str] = set()
+        # Calls a cap cannot hold yet wait here instead of being refused. `_blocked` remembers, for each
+        # (route, purpose) whose next call did not fit, what that call needed and the cap that held it back,
+        # so the lines behind it are not built again until the money it needs is free. `_held_back` counts
+        # the lines waiting this pass, for the progress line.
+        self._blocked: dict[tuple[str, str], dict[str, Any]] = {}
+        self._held_back: dict[tuple[str, str], dict[str, Any]] = {}
+        self._api_freed = False  # a one-call route finished a call since the last pass began
+        self._last_results_flush = float("-inf")
         self._prepared_here: set[str] = set()
         # Calls whose submit failed in a way that may still have reached the provider: the
         # next attempt looks for the batch before it sends the calls again.
@@ -407,7 +434,7 @@ class Controller:
         if self._on_event is not None:
             self._on_event(event)
 
-    def _emit(self, kind: str, payload: dict[str, Any], *, durable: bool = False) -> Event:
+    def _emit(self, kind: str, payload: dict[str, Any], *, durable: bool | None = None) -> Event:
         assert self.log is not None, "call start() first"
         return self.log.append(kind, payload, durable=durable)
 
@@ -484,6 +511,16 @@ class Controller:
         self._flush_quietly(force=False)
         if pause > 0:
             self._sleep(pause)
+
+    def _sleep_until_woken(self, seconds: float) -> None:
+        """Sleep up to `seconds`, less when a one-call route finishes a call.
+
+        A worker that has finished is idle until the controller gives it the next call, so the
+        controller looks at once instead of at its next poll. A finish that comes in while the
+        controller is busy is not lost: the wake-up stays set until the controller next sleeps.
+        """
+        self._wake.wait(seconds)
+        self._wake.clear()
 
     def _flush_quietly(self, force: bool = True) -> None:
         for store in (self.state_store, self.ship_store):
@@ -575,10 +612,13 @@ class Controller:
         """Run every stage once. Returns the number of events written."""
         self.start()
         before = self._events
+        self._api_freed = False
         self._stage_plan()
         self._stage_submit()
         self._drain_notes()
         self._stage_poll()
+        if self._api_freed:
+            self._refill_api_routes()
         self._drain_notes()  # a cache kept alive while a batch was polled
         self._stage_assess()
         self._stage_review()
@@ -778,104 +818,197 @@ class Controller:
         self._print(f"[rps] route {route_name} stopped for this run ({kind}): {text}")
 
     def _api_room(self, route_name: str, route: RouteConfig) -> int:
-        """How many more calls a one-call (api) route takes now.
+        """How many more calls a one-call (api) route takes now: its workers, less the calls it has in flight.
 
-        Such a route keeps at most `workers` times `API_CALLS_PER_WORKER` calls prepared and
-        unfinished, however long the list of due lines is. Calls wait in memory and in the budget's
-        reserve until a worker takes them, and a stop loses them (they come back as rebounds), so a
-        job of tens of thousands of lines is fed to the pool a window at a time. New calls are taken
-        when a quarter of the window has freed up (or nothing is in flight), so every batch of calls
-        the controller records is a useful size.
+        The money a call holds is taken when the call is prepared, and a call is prepared only when a worker
+        is free to send it. So such a route never holds more than `workers` calls' worth of money, however
+        long the list of due lines is, and a job of tens of thousands of lines is never all in memory. A stop
+        loses the calls in flight (they come back as rebounds).
         """
-        window = route.workers * API_CALLS_PER_WORKER
-        room = window - self.state.unfinished_calls(route_name)
-        return room if room >= max(1, window // 4) else 0
+        return max(0, route.workers - self.state.unfinished_calls(route_name))
 
-    def _stage_submit(self) -> None:
+    def _due_by_route(self) -> dict[str, list[tuple[TaskState, LineState, Any]]]:
+        """The spec lines due a call, by the route of their task."""
+        grouped: dict[str, list[tuple[TaskState, LineState, Any]]] = {}
+        for item in self.state.lines_needing_calls(self.config.max_attempts):
+            grouped.setdefault(item[0].route, []).append(item)
+        return grouped
+
+    def _stage_submit(self, *, api_only: bool = False) -> None:
+        """Prepare the calls that are due, record the ones the caps can hold, and submit them.
+
+        A one-call route is given as many calls as it has free workers. A call whose cost no cap can
+        hold at the moment waits (the line stays due and is asked again once the money is free); one
+        that no cap could hold even when nothing is in flight is refused for good.
+        """
         if self._stop_reason:
             return
+        if not api_only:
+            self._held_back = {}
+        due_by_route: dict[str, list[tuple[TaskState, LineState, Any]]] | None = None
         for route_name, writer in self.writers.items():
             route = self.config.routes.get(route_name)
-            if route is None or self._route_status(route_name) != "open":
+            if route is None or (api_only and route.kind != "api") or self._route_status(route_name) != "open":
                 continue
             approved: dict[str, Request] = {}
-            due = [
-                (task, line, status)
-                for task, line, status in self.state.lines_needing_calls(self.config.max_attempts)
-                if task.route == route_name
-                and ids.call_id(task.task_id, line.line_id, status.next_attempt) not in self._parked
-            ]
-            if route.kind == "api":
-                due = due[: self._api_room(route_name, route)]
-            for group in _chunks(due, route.max_batch_calls):
-                specs: list[CallSpec] = []
-                sizes: dict[str, int | None] = {}
-                retry_of: dict[str, str | None] = {}
-                origin: dict[str, tuple[TaskState, LineState, Any]] = {}
-                for task, line, status in group:
-                    try:
-                        spec, size = self._call_spec(task, line, status.next_attempt, status.feedback, boost=status.boost)
-                    except (ImageError, ImageRoutingError) as error:
-                        self._record_unpreparable(task, line, status, str(error))
-                        continue
-                    specs.append(spec)
-                    sizes[spec.call_id] = size
-                    retry_of[spec.call_id] = status.retry_of
-                    origin[spec.call_id] = (task, line, status)
-                if not specs:
-                    continue
-                for spec, request in self._prepare_group(writer, specs):
-                    if isinstance(request, str):
-                        task, line, status = origin[spec.call_id]
-                        self._record_unpreparable(task, line, status, request)
-                        continue
-                    too_long = self._long_prompt_problem(route, request)
-                    if too_long:
-                        task, line, status = origin[spec.call_id]
-                        self._record_unpreparable(task, line, status, too_long, KIND_LONG_PROMPT)
-                        continue
-                    estimate = self.ledger.estimate(
-                        route_name,
-                        request.est_input_tokens,
-                        request.max_output_tokens,
-                        tier=writer.hold_tier(),
-                        on=self._today_date(),
-                    )
-                    decision = self.ledger.check(self.state, route_name, spec.purpose, estimate)
-                    if not decision.ok:
-                        self._parked.add(spec.call_id)
-                        self._emit(
-                            "budget_refused",
-                            {
-                                "call_id": spec.call_id,
-                                "task_id": spec.task_id,
-                                "line": spec.line,
-                                "attempt": spec.attempt,
-                                **decision.numbers(),
-                                "message": decision.message(),
-                            },
-                        )
-                        continue
-                    self._emit(
-                        "call_prepared",
-                        {
-                            "call_id": spec.call_id,
-                            "task_id": spec.task_id,
-                            "line": spec.line,
-                            "attempt": spec.attempt,
-                            "route": route_name,
-                            "purpose": spec.purpose,
-                            "est_usd": estimate,
-                            "est_input_tokens": request.est_input_tokens,
-                            "max_output_tokens": request.max_output_tokens,
-                            "image_size": sizes[spec.call_id],
-                            "feedback": list(spec.feedback),
-                            "retry_of": retry_of[spec.call_id],
-                        },
-                    )
-                    self._prepared_here.add(spec.call_id)
-                    approved[spec.call_id] = request
+            room = self._api_room(route_name, route) if route.kind == "api" else None
+            if room is None or room > 0:
+                if due_by_route is None:
+                    due_by_route = self._due_by_route()
+                due = self._take_due(route_name, due_by_route.get(route_name, []), room)
+                for group in _chunks(due, route.max_batch_calls):
+                    self._admit(route_name, writer, route, group, approved)
+                self._count_held_back(route_name, due_by_route.get(route_name, []), approved)
             self._submit_pending(route_name, writer, approved)
+
+    def _refill_api_routes(self) -> None:
+        """Give the workers a one-call route has just freed their next calls, and start them, without waiting for the next pass."""
+        before = self._events
+        self._stage_submit(api_only=True)
+        if self._events != before:
+            self._stage_poll(api_only=True)
+
+    def _take_due(
+        self, route_name: str, items: Sequence[tuple[TaskState, LineState, Any]], room: int | None
+    ) -> list[tuple[TaskState, LineState, Any]]:
+        """The due lines of a route to build calls for now, in order, at most `room` of them (all when None).
+
+        Left out are the lines whose call was refused for good this run, and the lines of a (route, purpose)
+        whose next call does not fit yet: they are not built again until the money that call needs is free.
+        """
+        waiting = self._purposes_still_waiting(route_name)
+        taken: list[tuple[TaskState, LineState, Any]] = []
+        for item in items:
+            task, line, status = item
+            if effective_purpose(task.purpose, status.next_attempt) in waiting:
+                continue
+            if ids.call_id(task.task_id, line.line_id, status.next_attempt) in self._parked:
+                continue
+            taken.append(item)
+            if room is not None and len(taken) >= room:
+                break
+        return taken
+
+    def _purposes_still_waiting(self, route_name: str) -> set[str]:
+        """The purposes of a route whose next call still does not fit. One whose call now fits, or never will, is let go."""
+        waiting: set[str] = set()
+        for (route, purpose), memo in list(self._blocked.items()):
+            if route != route_name:
+                continue
+            if self.ledger.check(self.state, route, purpose, memo["need"]).waits:
+                waiting.add(purpose)
+            else:
+                del self._blocked[(route, purpose)]  # the money is free, or the call is refused when it is built again
+        return waiting
+
+    def _count_held_back(
+        self, route_name: str, items: Sequence[tuple[TaskState, LineState, Any]], approved: Mapping[str, Request]
+    ) -> None:
+        """Count the lines of a route that wait for room under a cap, for the progress line (not the ones just prepared)."""
+        for scope in [scope for scope in self._held_back if scope[0] == route_name]:
+            del self._held_back[scope]
+        blocked = {purpose: memo["cap"] for (route, purpose), memo in self._blocked.items() if route == route_name}
+        if not blocked:
+            return
+        for task, line, status in items:
+            purpose = effective_purpose(task.purpose, status.next_attempt)
+            if purpose not in blocked:
+                continue
+            call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
+            if call_id in approved or call_id in self._parked:
+                continue
+            entry = self._held_back.setdefault((route_name, purpose), {"cap": blocked[purpose], "count": 0})
+            entry["count"] += 1
+
+    def _admit(
+        self,
+        route_name: str,
+        writer: Writer,
+        route: RouteConfig,
+        group: Sequence[tuple[TaskState, LineState, Any]],
+        approved: dict[str, Request],
+    ) -> None:
+        """Build the calls for a group of due lines and record each one the caps can hold.
+
+        A call that fits is recorded as prepared (`call_prepared`), which takes its hold. A call that would
+        fit once the calls in flight have finished waits: nothing is recorded, its line stays due, and the
+        lines behind it in the same (route, purpose) wait with it. A call that could not fit even then is
+        refused for good (`budget_refused`) and set aside for this run.
+        """
+        specs: list[CallSpec] = []
+        sizes: dict[str, int | None] = {}
+        retry_of: dict[str, str | None] = {}
+        origin: dict[str, tuple[TaskState, LineState, Any]] = {}
+        for task, line, status in group:
+            try:
+                spec, size = self._call_spec(task, line, status.next_attempt, status.feedback, boost=status.boost)
+            except (ImageError, ImageRoutingError) as error:
+                self._record_unpreparable(task, line, status, str(error))
+                continue
+            specs.append(spec)
+            sizes[spec.call_id] = size
+            retry_of[spec.call_id] = status.retry_of
+            origin[spec.call_id] = (task, line, status)
+        if not specs:
+            return
+        for spec, request in self._prepare_group(writer, specs):
+            if isinstance(request, str):
+                task, line, status = origin[spec.call_id]
+                self._record_unpreparable(task, line, status, request)
+                continue
+            too_long = self._long_prompt_problem(route, request)
+            if too_long:
+                task, line, status = origin[spec.call_id]
+                self._record_unpreparable(task, line, status, too_long, KIND_LONG_PROMPT)
+                continue
+            scope = (route_name, spec.purpose)
+            if scope in self._blocked:
+                continue  # behind a call that did not fit
+            estimate = self.ledger.estimate(
+                route_name,
+                request.est_input_tokens,
+                request.max_output_tokens,
+                tier=writer.hold_tier(),
+                on=self._today_date(),
+            )
+            decision = self.ledger.check(self.state, route_name, spec.purpose, estimate)
+            if decision.waits:
+                cap = _cap_name(decision.reason, route_name, spec.purpose, decision.purpose_cap, decision.route_cap)
+                self._blocked[scope] = {"need": estimate, "cap": cap}
+                continue
+            if not decision.ok:
+                self._parked.add(spec.call_id)
+                self._emit(
+                    "budget_refused",
+                    {
+                        "call_id": spec.call_id,
+                        "task_id": spec.task_id,
+                        "line": spec.line,
+                        "attempt": spec.attempt,
+                        **decision.numbers(),
+                        "message": decision.message(),
+                    },
+                )
+                continue
+            self._emit(
+                "call_prepared",
+                {
+                    "call_id": spec.call_id,
+                    "task_id": spec.task_id,
+                    "line": spec.line,
+                    "attempt": spec.attempt,
+                    "route": route_name,
+                    "purpose": spec.purpose,
+                    "est_usd": estimate,
+                    "est_input_tokens": request.est_input_tokens,
+                    "max_output_tokens": request.max_output_tokens,
+                    "image_size": sizes[spec.call_id],
+                    "feedback": list(spec.feedback),
+                    "retry_of": retry_of[spec.call_id],
+                },
+            )
+            self._prepared_here.add(spec.call_id)
+            approved[spec.call_id] = request
 
     def _prepare_group(self, writer: Writer, specs: Sequence[CallSpec]) -> list[tuple[CallSpec, Request | str]]:
         """Build the requests for a group of calls.
@@ -1043,6 +1176,10 @@ class Controller:
                 return
             self._submit_failures = 0
             self._send_unsure.difference_update(request.call_id for request in group)
+            # A provider batch id is made durable at once: a restart polls the batch instead of sending its calls
+            # again. The handle of a one-call route lives in this process only (a restart sends its calls again
+            # whether or not the id was kept), and such a route hands over one handle for every few calls it frees,
+            # so the record waits for the store's own commit like any other event.
             self._emit(
                 "batch_submitted",
                 {
@@ -1052,7 +1189,7 @@ class Controller:
                     "call_ids": [request.call_id for request in group],
                     "recovered": False,
                 },
-                durable=True,
+                durable=self.config.routes[route_name].kind != "api",
             )
 
     def _earliest_prepared(self, requests: Sequence[Request]) -> datetime | None:
@@ -1117,12 +1254,7 @@ class Controller:
             return
         waiting, self._to_release = self._to_release, []
         for writer, handle in waiting:
-            try:
-                writer.release(handle)
-            except NotImplementedError:
-                raise
-            except Exception as error:
-                self._warn(f"clean-up after {handle.handle_id} failed: {describe_error(error)}")
+            self._release_handle(writer, handle)
 
     def _drain_notes(self) -> None:
         """Record what writers asked to have remembered (a cache they made), and charge its storage.
@@ -1204,10 +1336,14 @@ class Controller:
             return PURPOSES[-1]
         return max(counts, key=lambda purpose: (counts[purpose], -PURPOSES.index(purpose)))
 
-    def _stage_poll(self) -> None:
+    def _stage_poll(self, *, api_only: bool = False) -> None:
         for batch in list(self.state.batches_to_poll()):
             writer = self.writers.get(batch.route)
             if writer is None:
+                continue
+            route = self.config.routes.get(batch.route)
+            one_call = route is not None and route.kind == "api"
+            if api_only and not one_call:
                 continue
             handle = Handle.from_dict(batch.handle)
             try:
@@ -1235,7 +1371,12 @@ class Controller:
                     self._warn(text)
                 if status.state == "partial":
                     if returned or failed:
-                        self._flush_state()  # results already paid for are made durable as they land
+                        # Results already paid for are made durable as they land; those of a one-call route at
+                        # the pace the store commits its other events, since they come in about one a call.
+                        if one_call:
+                            self._flush_results()
+                        else:
+                            self._flush_state()
                     if self._calls_waiting(batch.call_ids):
                         continue
                     # Every call is in, so the batch is done even though the writer has not said so.
@@ -1250,8 +1391,34 @@ class Controller:
                     batch.handle_id, batch.call_ids, f"the batch {status.state}{note}", kind
                 )
             self._emit("batch_collected", {"handle_id": batch.handle_id, "returned": returned, "failed": failed})
-            self._to_release.append((writer, handle))
+            if one_call:
+                # Nothing is kept for it at the provider, and its results are recorded: it can be forgotten now,
+                # without a flush of its own for every call.
+                self._release_handle(writer, handle)
+            else:
+                self._to_release.append((writer, handle))
         self._release_ready()
+
+    def _flush_results(self) -> bool:
+        """Make what is recorded so far durable, but not more often than every `commit.seconds_per_commit`.
+
+        A one-call route hands in a result about every call; making each one durable on its own would be a
+        commit to a remote store as often as that. What is still pending when the time is up goes with the next
+        pass, the store's own commits, or the end of the run.
+        """
+        now = self._clock()
+        if now - self._last_results_flush < self.config.commit.seconds_per_commit:
+            return False
+        self._last_results_flush = now
+        return self._flush_state()
+
+    def _release_handle(self, writer: Writer, handle: Handle) -> None:
+        try:
+            writer.release(handle)
+        except NotImplementedError:
+            raise
+        except Exception as error:
+            self._warn(f"clean-up after {handle.handle_id} failed: {describe_error(error)}")
 
     def _collect(self, handle_id: str, call_ids: Sequence[str], submitted_ts: str, results: Sequence[CallResult]) -> tuple[int, int]:
         by_id = {result.call_id: result for result in results}
@@ -1295,6 +1462,8 @@ class Controller:
         """Turn one call result into a call_returned or call_failed event. True if it returned rows."""
         call = self.state.calls[call_id]
         task = self.state.tasks[call.task_id]
+        if self.config.routes[call.route].kind == "api":
+            self._api_freed = True  # a worker is free for the next call
         usd = self.ledger.cost(call.route, result.usage, tier=result.tier, on=self._today_date())
         minutes = result.minutes
         if minutes is None:
@@ -2018,28 +2187,26 @@ class Controller:
 
     # ------------------------------------------------------------------ idle detection
 
-    def _actionable(self) -> int:
-        """How much the controller could do right now without waiting for anyone else."""
+    def _has_work(self) -> bool:
+        """True when the controller could do something right now without waiting for anyone else.
+
+        The cheap questions come first and the first yes ends it, so a run with calls in flight does not
+        read every spec line of a long job on every pass to find out that it is not idle.
+        """
         s = self.state
+        if s.batches_to_poll() or self._pending_calls():
+            return True
+        if s.rows_awaiting_assessment() or s.rows_failed_unrejected() or s.calls_with_unrecorded_skips():
+            return True
+        if s.rows_awaiting_decision() or s.rows_with_audit_reject() or s.images_to_burn() or s.files_to_ship():
+            return True
+        if self._calls_due():
+            return True
         plan, to_hand = self._plan_assignments()
+        if to_hand:
+            return True
         packet_size = self.config.review.packet_size
-        publishable = sum(
-            len(items) for items in plan.values() if len(items) >= packet_size or self._upstream_idle()
-        )
-        return (
-            len(self._pending_calls())
-            + len(s.batches_to_poll())
-            + len(self._calls_due())
-            + len(s.rows_awaiting_assessment())
-            + len(s.rows_failed_unrejected())
-            + len(s.calls_with_unrecorded_skips())
-            + len(s.rows_awaiting_decision())
-            + len(s.rows_with_audit_reject())
-            + len(to_hand)
-            + publishable
-            + len(s.images_to_burn())
-            + len(s.files_to_ship())
-        )
+        return any(items and (len(items) >= packet_size or self._upstream_idle()) for items in plan.values())
 
     def is_idle(self) -> bool:
         """True when nothing is left to do now (and, if the run waits for review, nothing is out for review).
@@ -2047,7 +2214,7 @@ class Controller:
         Files waiting for the ship store's next commit are work still to be done: a run is idle once the
         store has sent the last change, which with a dataset repository is within one commit interval.
         """
-        if self._actionable():
+        if self._has_work():
             return False
         if self.config.wait_for_review and self.state.open_packets():
             return False
@@ -2064,29 +2231,43 @@ class Controller:
         groups: dict[str, list[dict[str, Any]]] = {}
         for call_id in sorted(self._parked):
             refusal = self.state.refusals.get(call_id) or {}
-            if refusal.get("reason") == "purpose_cap":
-                cap = f"the {refusal.get('purpose')} cap of {refusal.get('route')} ({_cap_money(refusal.get('purpose_cap'))})"
-            elif refusal.get("reason") == "route_cap":
-                cap = f"the total of {refusal.get('route')} ({_cap_money(refusal.get('route_cap'))})"
-            else:
-                cap = "a budget"
+            cap = _cap_name(
+                refusal.get("reason"), refusal.get("route"), refusal.get("purpose"), refusal.get("purpose_cap"), refusal.get("route_cap")
+            )
             groups.setdefault(cap, []).append(refusal)
         return sorted(groups.items(), key=lambda item: (-len(item[1]), item[0]))
 
     @staticmethod
     def _refusal_detail(cap: str, refusals: Sequence[Mapping[str, Any]]) -> str:
-        """One line for a group of refusals: how many, by which cap, how full it was and what the calls were held at."""
+        """One line for a group of refusals: how many, by which cap, how full it was and what the calls were held at.
+
+        A refusal records what was spent and, from 0.2.5 on, how much of that was held for calls in flight; an
+        older one has only the sum, which is told as it was.
+        """
         text = f"{len(refusals)} by {cap}"
-        key = "route_spent" if cap.startswith("the total") else "purpose_spent"
+        total = cap.startswith("the total")
+        key, held_key = ("route_spent", "route_held") if total else ("purpose_spent", "purpose_held")
         spent = [float(r[key]) for r in refusals if isinstance(r.get(key), (int, float))]
         estimates = [float(r["est_usd"]) for r in refusals if isinstance(r.get("est_usd"), (int, float))]
-        if spent:
+        if spent and all(isinstance(r.get(held_key), (int, float)) for r in refusals):
+            held = [float(r[held_key]) for r in refusals]
+            text += f": {_cap_money(max(s - h for s, h in zip(spent, held)))} spent"
+            if max(held) > 0:
+                text += f" and {_cap_money(max(held))} held by calls in flight"
+        elif spent:
             text += f": {_cap_money(max(spent))} was spent or held by calls in flight"
         if estimates:
             low, high = min(estimates), max(estimates)
-            held = _cap_money(low) if low == high else f"{_cap_money(low)} to {_cap_money(high)}"
-            text += f"{',' if spent else ':'} each call needed room for {held}"
+            held_for = _cap_money(low) if low == high else f"{_cap_money(low)} to {_cap_money(high)}"
+            text += f"{',' if spent else ':'} each call needed room for {held_for}"
         return text
+
+    def _waiting_for_room(self) -> list[tuple[str, int]]:
+        """The calls waiting for room under a cap this pass, grouped by the cap: (cap, calls), the largest first."""
+        counts: Counter[str] = Counter()
+        for entry in self._held_back.values():
+            counts[entry["cap"]] += entry["count"]
+        return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
 
     def _waiting(self) -> dict[str, int]:
         s = self.state
@@ -2095,6 +2276,8 @@ class Controller:
             "packets with the reviewers": len(s.open_packets()),
             "rows in the hand queue": len(s.hand_queue()),
         }
+        for cap, count in self._waiting_for_room():
+            waiting[f"calls waiting for room under {cap}"] = count
         for cap, refusals in self._refused_by():
             waiting[f"calls refused by {cap}"] = len(refusals)
         waiting["files for the store's next commit"] = len(self._staged_shipments) + len(self._ledger_staged)
@@ -2102,14 +2285,15 @@ class Controller:
 
     def _progress_line(self, elapsed: float | None, budget: float | None) -> str:
         progress = self.state.job_progress(self.config.max_attempts)
-        spent = sum(self.state.spend(route).total for route in self.config.routes)
+        spends = [self.state.spend(route) for route in self.config.routes]
         return format_progress(
             lines_total=progress["lines_total"],
             lines_done=progress["lines_done"],
             rows=len(self.state.rows),
             elapsed=elapsed,
             budget=budget,
-            spent_usd=spent,
+            spent_usd=sum(spend.actual for spend in spends),
+            held_usd=sum(spend.reserved for spend in spends),
             waiting=self._waiting(),
         )
 
@@ -2141,6 +2325,10 @@ class Controller:
             "",
             self.ledger.format_status(self.state),
         ]
+        waiting = self._waiting_for_room()
+        if waiting:
+            lines.append(f"{sum(count for _cap, count in waiting)} call(s) waiting for room under a cap")
+            lines.extend(f"  {count} under {cap}" for cap, count in waiting)
         if self._parked:
             lines.append(f"{len(self._parked)} call(s) refused by a budget this run")
             lines.extend("  " + self._refusal_detail(cap, refusals) for cap, refusals in self._refused_by())

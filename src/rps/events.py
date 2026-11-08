@@ -263,8 +263,12 @@ class EventLog:
         """The part file currently being written."""
         return events_path(self.actor.name, self._part)
 
-    def append(self, kind: str, payload: dict[str, Any] | None = None, *, durable: bool = False) -> Event:
-        """Write one event and return it. Durable kinds are flushed to the store at once."""
+    def append(self, kind: str, payload: dict[str, Any] | None = None, *, durable: bool | None = None) -> Event:
+        """Write one event and return it. Durable kinds are flushed to the store at once.
+
+        `durable` says it for this event: True flushes, False does not even for a durable kind, and None
+        (the default) leaves it to the kind.
+        """
         if kind not in EVENT_KINDS:
             raise EventError(f"unknown event kind: {kind!r}")
         event = Event(ts=format_ts(self._now()), actor=self.actor.label, kind=kind, payload=payload or {})
@@ -275,7 +279,7 @@ class EventLog:
             self._size = 0
         self._store.append_lines(self.path, [line])
         self._size += size
-        if durable or kind in DURABLE_KINDS:
+        if durable if durable is not None else kind in DURABLE_KINDS:
             self._store.flush(force=True)
         if self._on_append is not None:
             self._on_append(event)

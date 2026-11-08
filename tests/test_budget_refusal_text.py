@@ -7,6 +7,8 @@ estimate for its larger limit.
 
 from __future__ import annotations
 
+from rps.controller import Controller
+
 from harness import World, task_spec
 from test_controller_budgets import PRICES, bench, budget_config, unbilled_json
 
@@ -20,10 +22,7 @@ def test_a_purpose_cap_is_named_with_its_route_and_how_full_it_was(tmp_path):
     assert [(cap, len(found)) for cap, found in controller._refused_by()] == [("the pricing cap of fake-batch ($0.0040)", 3)]
     text = controller.format_status()
     assert "3 call(s) refused by a budget this run" in text
-    assert (
-        "  3 by the pricing cap of fake-batch ($0.0040): $0.0040 was spent or held by calls in flight, "
-        "each call needed room for $0.0020"
-    ) in text
+    assert "  3 by the pricing cap of fake-batch ($0.0040): $0.0028 spent, each call needed room for $0.0020" in text
     progress = controller._progress_line(None, None)
     assert "waiting: 3 calls refused by the pricing cap of fake-batch ($0.0040)" in progress
 
@@ -35,7 +34,7 @@ def test_the_route_total_is_named_as_the_total_of_the_route(tmp_path):
     controller.add_task(task_spec(("p1", "p2"), batch="pricing-run", purpose="pricing"))
     world.drive(controller)
     assert [(cap, len(found)) for cap, found in controller._refused_by()] == [("the total of fake-batch ($0.0060)", 4)]
-    assert "  4 by the total of fake-batch ($0.0060): $0.0060 was spent or held by calls in flight" in controller.format_status()
+    assert "  4 by the total of fake-batch ($0.0060): $0.0042 spent, each call needed room for $0.0020" in controller.format_status()
 
 
 def test_calls_refused_by_different_caps_are_counted_apart_with_the_largest_group_first(tmp_path):
@@ -71,3 +70,40 @@ def test_nothing_is_said_when_no_call_was_refused(tmp_path):
     world.drive(controller)
     assert controller._refused_by() == []
     assert "refused" not in controller.format_status() and "refused" not in controller._progress_line(None, None)
+
+
+def test_a_refusal_that_also_names_money_held_for_calls_in_flight_says_so():
+    refusals = [{"purpose_spent": 0.0040, "purpose_held": 0.0012, "est_usd": 0.0020}]
+    text = Controller._refusal_detail("the pricing cap of fake-batch ($0.0040)", refusals)
+    assert text == (
+        "1 by the pricing cap of fake-batch ($0.0040): $0.0028 spent and $0.0012 held by calls in flight, "
+        "each call needed room for $0.0020"
+    )
+    total = [{"route_spent": 0.0100, "route_held": 0.0, "est_usd": 0.002}, {"route_spent": 0.0090, "route_held": 0.0, "est_usd": 0.004}]
+    assert Controller._refusal_detail("the total of fake-batch ($0.0100)", total) == (
+        "2 by the total of fake-batch ($0.0100): $0.0100 spent, each call needed room for $0.0020 to $0.0040"
+    )
+
+
+def test_a_refusal_recorded_by_an_earlier_version_is_told_as_it_was_recorded():
+    old = [{"purpose_spent": 0.0040, "est_usd": 0.0020}]
+    assert Controller._refusal_detail("the pricing cap of fake-batch ($0.0040)", old) == (
+        "1 by the pricing cap of fake-batch ($0.0040): $0.0040 was spent or held by calls in flight, each call needed room for $0.0020"
+    )
+
+
+def test_calls_waiting_for_room_are_counted_apart_from_refused_ones_in_the_status_and_the_progress_line(tmp_path):
+    world = bench(tmp_path, pricing=0.004, production=0.02, rebound=0.01)
+    controller = world.controller()
+    controller.add_task(task_spec(("p1", "p2", "p3", "p4", "p5"), batch="pricing-run", purpose="pricing"))
+    controller.step()
+    cap = "the pricing cap of fake-batch ($0.0040)"
+    assert controller._waiting_for_room() == [(cap, 3)]
+    status = controller.format_status()
+    assert "3 call(s) waiting for room under a cap" in status and f"  3 under {cap}" in status
+    assert "refused" not in status
+    assert f"waiting: 2 calls in flight, 3 calls waiting for room under {cap}" in controller._progress_line(None, None)
+    world.drive(controller)
+    assert controller._waiting_for_room() == []  # they were refused once the first two had been paid for
+    assert [(name, len(found)) for name, found in controller._refused_by()] == [(cap, 3)]
+    assert "waiting for room" not in controller.format_status()

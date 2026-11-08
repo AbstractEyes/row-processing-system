@@ -13,7 +13,9 @@ Each finished call is handed over as soon as the controller polls (state `partia
 stop loses only the calls still in flight. The handle lives in this object's memory: after
 a restart `poll` answers `failed` for it and the controller sends the calls again as
 rebounds. Subclasses supply `send` (one call, returning a `CallResult`), and may supply
-`gate` (seconds to wait before sending, for routes with sending hours).
+`gate` (seconds to wait before sending, for routes with sending hours). When a call
+finishes the writer calls `wake`, which the controller sets, so the free worker is given
+its next call at once and not at the controller's next poll.
 
 Rate limits. The provider's own client already retries a rate-limited call a few times,
 pausing as the provider asks (the route's `max_retries`). A call that is still turned away
@@ -209,6 +211,16 @@ class PoolWriter(Writer):
             return
         with self._lock:
             job.results[request.call_id] = result
+        self._notify()
+
+    def _notify(self) -> None:
+        """Tell the controller a call has finished, so its worker gets the next one without waiting for a poll."""
+        wake = self.wake
+        if wake is not None:
+            try:
+                wake()
+            except Exception:  # a worker never dies
+                pass
 
     def _note_rate_limit(self) -> None:
         """A call was turned away for the rate limit; a run of them pauses the whole route.

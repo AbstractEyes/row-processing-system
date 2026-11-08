@@ -175,6 +175,11 @@ def test_durable_kinds_flush_the_store(local_store):
     assert store.flushes == [True]
     log.append("call_returned", {}, durable=True)
     assert store.flushes == [True, True]
+    log.append("batch_submitted", {"handle_id": "b2"}, durable=False)  # said no for this one: even a durable kind waits
+    assert store.flushes == [True, True]
+    log.append("task_created", {}, durable=None)  # left to the kind
+    log.append("batch_submitted", {"handle_id": "b3"}, durable=None)
+    assert store.flushes == [True, True, True]
 
 
 def test_on_append_sees_each_event_after_it_is_written(local_store):
