@@ -14,11 +14,15 @@ A rule set can also bring some functions and an object:
                                                spec line, its position and the choices
     normalize(text, spec, model) -> str|None   turns the writer's answer into the JSON list
                                                of rows the controller reads
+    explain(text, spec, model) -> [str]        why the rows of an answer that `normalize` could not
+                                               turn into rows cannot be read: one line for each row,
+                                               "<row id>: <what is wrong and the form it needs>"
     assessor                                   checks the rows a call returned (see rps.assess)
 
 Without them, a spec is sent as text (a string as it is, anything else as JSON) and the
 answer is read as it comes. When an earlier attempt failed its checks, the check
-messages follow the task text so the writer can fix them. The choices are also handed
+messages follow the task text so the writer can fix them (the lines `explain` gives are
+part of the message for an answer whose rows could not be read). The choices are also handed
 to the assessor (`AssessContext.assignment`), as plain data, so a check can compare a
 row with what the writer was told.
 
@@ -58,6 +62,7 @@ DEFAULT_ASSESSORS: Mapping[str, str] = {"rps.rules": "rps.assessor:Assessor"}
 TaskTextFn = Callable[..., str]
 AssignFn = Callable[[Any, int], Any]
 NormalizeFn = Callable[[str | None, Any, str], str | None]
+ExplainFn = Callable[[str | None, Any, str], Sequence[str]]
 
 
 def clean_json_format(text: str | None) -> str | None:
@@ -73,8 +78,8 @@ class WriterRules:
 
     `schema_name` is the name some providers want beside a schema. `json_format` is the format
     block (see the module notes), already without its comments; None when the rule set has none.
-    `task_text`, `assign`, `normalize` and `assessor` are the optional parts described in the module
-    notes.
+    `task_text`, `assign`, `normalize`, `explain` and `assessor` are the optional parts described in
+    the module notes.
     """
 
     system: str
@@ -86,6 +91,7 @@ class WriterRules:
     assign: AssignFn | None = field(default=None, compare=False, repr=False)
     assessor: Any = field(default=None, compare=False, repr=False)
     json_format: str | None = field(default=None, repr=False)
+    explain: ExplainFn | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if not isinstance(self.system, str) or not self.system.strip():
@@ -121,6 +127,7 @@ def make_rules(
     assign: AssignFn | None = None,
     assessor: Any = None,
     json_format: str | None = None,
+    explain: ExplainFn | None = None,
 ) -> WriterRules:
     """Build rules from text, with a content-hash version when none is given."""
     return WriterRules(
@@ -133,6 +140,7 @@ def make_rules(
         assign=assign,
         assessor=assessor,
         json_format=json_format,
+        explain=explain,
     )
 
 
@@ -184,7 +192,8 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     A package supplies `writer_system.md`, `row_schema.json` and, optionally, a version
     (its `rules_version()` function, else a `VERSION` file), a format block (its
     `json_format()` function, else a `json_format.md` file) and the functions
-    `task_text.build_task_text`, `balance.assign` and `form.normalize_output`. The
+    `task_text.build_task_text`, `balance.assign`, `form.normalize_output` and
+    `form.explain_failures`. The
     checker comes from `config.assessor`, or from the package's default (see
     `DEFAULT_ASSESSORS`).
     """
@@ -192,6 +201,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
     task_text: TaskTextFn | None = None
     normalize: NormalizeFn | None = None
     assign: AssignFn | None = None
+    explain: ExplainFn | None = None
     json_format: str | None = None
     if config.package:
         try:
@@ -215,6 +225,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
                 version_text = None
         task_text = _hook(config.package, "task_text", "build_task_text")
         normalize = _hook(config.package, "form", "normalize_output")
+        explain = _hook(config.package, "form", "explain_failures")
         assign = _hook(config.package, "balance", "assign")
         json_format = _package_json_format(config.package, module, root)
     else:
@@ -241,6 +252,7 @@ def load_writer_rules(config: RulesConfig, *, base_dir: str | Path | None = None
         assign=assign,
         assessor=assessor,
         json_format=json_format,
+        explain=explain,
     )
 
 

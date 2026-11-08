@@ -91,6 +91,9 @@ HAND_DECISIONS = ("accept", "discard", "replace")
 TASKS_CHECK_SECONDS = 15.0
 # A row that could not be converted is kept whole in the log of the failed call up to this many characters.
 UNCONVERTED_ROW_CHARS = 4000
+UNUSABLE_PREFIX = "unusable output: "
+ROW_ADVICE_LEAD = " Row by row:"
+MIN_ADVICE_CHARS = 60
 
 
 class ControllerError(RuntimeError):
@@ -231,6 +234,38 @@ def _converts_alone(normalize: Callable[..., Any], wrapper: Mapping[str, Any], r
     except Exception:  # a rule function must not stop the run
         return False
     return converted is not None and parse_output(converted)[2] is None
+
+
+def _fit_lines(lines: Sequence[Any], room: int) -> str:
+    """Lines as an indented list that takes at most `room` characters; empty when not even one line is worth showing.
+
+    Whole lines go in while they fit and "and N more" stands for the rest. When the first line alone is
+    too long it is cut short, keeping its start (the row and its first faults).
+    """
+    wanted = [" ".join(str(line).split()) for line in lines]
+    wanted = [line for line in wanted if line]
+    block = ""
+    shown = 0
+    for index, line in enumerate(wanted):
+        rest = len(wanted) - index - 1
+        entry = "\n  " + line
+        tail = f"\n  and {rest} more" if rest else ""
+        if len(block) + len(entry) + len(tail) <= room:
+            block += entry
+            shown += 1
+            continue
+        if shown == 0:
+            rest = len(wanted) - 1
+            keep = room - len("\n  ") - len(" ...") - (len(f"\n  and {rest} more") if rest else 0)
+            if keep >= MIN_ADVICE_CHARS:
+                block = "\n  " + line[:keep].rstrip() + " ..."
+                shown = 1
+        break
+    if shown == 0:
+        return ""
+    if shown < len(wanted):
+        block += f"\n  and {len(wanted) - shown} more"
+    return block
 
 
 def _parse_ts(value: str) -> datetime:
@@ -1500,7 +1535,7 @@ class Controller:
         if problem is None:
 
             def explain(wrappers: Sequence[Mapping[str, Any]]) -> str:
-                text, unconverted[:] = self._wrapper_problem(task, call.line, call.route, wrappers)
+                text, unconverted[:] = self._wrapper_problem(task, call.line, call.route, wrappers, answer=result.output)
                 return text
 
             rows, skips, problem = parse_output(output, explain_wrapper=explain)
@@ -1510,7 +1545,7 @@ class Controller:
                 "call_failed",
                 {
                     **common,
-                    "error": f"unusable output: {problem}",
+                    "error": f"{UNUSABLE_PREFIX}{problem}"[:PROVIDER_ERROR_CHARS],
                     "retryable": True,
                     "billed": True,
                     "kind": KIND_INVALID_OUTPUT,
@@ -1543,7 +1578,13 @@ class Controller:
         return converted, None
 
     def _wrapper_problem(
-        self, task: TaskState, line_id: str, route_name: str, wrappers: Sequence[Mapping[str, Any]]
+        self,
+        task: TaskState,
+        line_id: str,
+        route_name: str,
+        wrappers: Sequence[Mapping[str, Any]],
+        *,
+        answer: str | None = None,
     ) -> tuple[str, list[Any]]:
         """Why a writer's wrapper was not turned into rows: the problem text and the rows that failed.
 
@@ -1551,6 +1592,10 @@ class Controller:
         be converted. To name the rows, each is handed to the function alone, in a wrapper of its
         own: the ones that do not come back as rows are the ones to fix. The second value holds
         up to three of them as they were written (as text, cut short, when one is very long), for the log.
+
+        When the rule set can say what is wrong with each row (its `explain` function, handed the
+        writer's `answer`), those lines follow the sentence, as many whole lines as the error text has
+        room for (it is what the retry is told, and it stays within `PROVIDER_ERROR_CHARS`).
         """
         normalize = self.rules.normalize if self.rules is not None else None
         spec = task.lines[line_id].spec
@@ -1573,6 +1618,12 @@ class Controller:
                 f"the answer is the writer's wrapper, and {len(names)} of its {total} rows cannot be turned into "
                 f"stored rows ({listed}); check each of them, field by field, against the format in the rules"
             )
+            advice = self._why_rows_fail(answer, spec, model)
+            if advice:
+                room = PROVIDER_ERROR_CHARS - len(UNUSABLE_PREFIX) - len(text) - len(ROW_ADVICE_LEAD) - 1
+                block = _fit_lines(advice, room)
+                if block:
+                    text += f".{ROW_ADVICE_LEAD}{block}"
         elif total == 0:
             text = "the answer is the writer's wrapper with no rows in it and no skip"
         elif normalize is None:
@@ -1580,6 +1631,17 @@ class Controller:
         else:
             text = f"the answer is the writer's wrapper holding {total} rows, and the rules did not turn it into stored rows"
         return text, shown[:3]
+
+    def _why_rows_fail(self, answer: str | None, spec: Any, model: str) -> list[str]:
+        """What the rule set says is wrong with each row of an answer it could not convert (empty when it says nothing)."""
+        explain = self.rules.explain if self.rules is not None else None
+        if explain is None or not answer or not answer.strip():
+            return []
+        try:
+            lines = explain(answer, spec, model)
+            return [lines] if isinstance(lines, str) else [str(line) for line in lines]
+        except Exception:  # a rule function must not stop the run
+            return []
 
     def _stamp(
         self, call_id: str, task: TaskState, line_id: str, image_size: int | None, rows: Sequence[dict[str, Any]]
