@@ -140,6 +140,22 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 81 | A style or period names the painting, never the scene (not "a Baroque garden"). | ASSESSOR | style_on_scene (flag) |
 | 82 | The caption is one natural sentence, not the hint's list of depicted things. | ASSESSOR | caption_hint_list (flag); READER wording |
 
+## K. The writer's template, rebuilt from the third review
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 83 | Only the facts: a row's text holds its own records, what a real picture's hint states plainly, and the records the rules let it add; a pose, a held thing, light, weather, time, materials, sizes, motion, sound and other people or things appear only when a fact gives them. The task text lists the details the item records nowhere. | READER | |
+| 84 | A shallower row of a series uses no fact that only a deeper row records; for a drawn series the task text lists them row by row. | READER | |
+| 85 | The framing limits what shows: a close-up or an extreme close shows no full-body pose, no feet and no wide view of the place. | READER | |
+| 86 | Intent purpose and intent for are about the picture (why it was made, who it is for), never about the people or things in it. | READER | |
+| 87 | Story moment agrees with the records; story before and after hold an event and story cause a reason, never a moment word or a time alone. | READER | |
+| 88 | The mood is claimed in one thought, hedged, with the thing its mood from record holds named in the same sentence. | READER | |
+| 89 | Directions belong to the frame, never to a person ("to his left"); a relation that only matches colors places nothing beside anything. | READER | |
+| 90 | The hint's sentences are never followed in their order, and the caption is never the hint's first sentence reworded. | READER | |
+| 91 | A chain answer answers its key; the unknown key is answered nowhere in the row, and the task text says what it covers. | READER | |
+| 92 | The tags carry a person tag whenever a person is recorded and keep each recorded color with its thing. | READER | |
+| 93 | A record that cannot be what it says (a misspelled word, a thing its hint never mentions) is skipped, class other, never written around. | READER | |
+
 ## Open
 
 Version 1 covers text items. Rows written with the picture attached (photo sources sent to routes that accept images) need their own grounding rules in a later pool version.
