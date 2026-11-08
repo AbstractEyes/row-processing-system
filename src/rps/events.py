@@ -20,7 +20,9 @@ Event kinds and their payloads:
     call_returned        call_id, handle_id, usage, usd, price_table_date, minutes, rows, skips,
                          tier (the price tier the call was billed at, when the route has tiers)
     call_failed          call_id, handle_id, error, retryable, billed, usage, usd, minutes,
-                         kind (why it failed: see rps.failures), tier
+                         kind (why it failed: see rps.failures), tier, output (the start of an
+                         unusable answer), unconverted_rows (the rows of a writer's wrapper that
+                         could not be turned into stored rows, as written)
     batch_collected      handle_id, returned, failed
     route_halted         route, kind, reason, call_id (a rejected request or key stops the route
                          for the rest of the run)
