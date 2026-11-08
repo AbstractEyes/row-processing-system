@@ -37,7 +37,7 @@ A sentence restates the hint when about three quarters of its content words come
 
 ## Flags the script may raise
 
-`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `caption_hint_list`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
+`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `hint_order`, `mood_weak_source`, `second_mood`, `unrecorded_size`, `unrecorded_material`, `relation_reversed`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
 
 ## Verdicts
 

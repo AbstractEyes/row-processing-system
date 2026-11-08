@@ -6,7 +6,7 @@ flag, so the reviewer sees a pointer and judges.
 
     repetition         thought_repeat, mood_repeat, self_hedge
     self-talk          self_talk
-    invented detail    unrecorded_thing, unrecorded_light, unrecorded_detail, unrecorded_shot, unrecorded_pose, state_conflict
+    invented detail    unrecorded_thing, unrecorded_light, unrecorded_detail, unrecorded_shot (the pose checks moved to invention_checks)
     mood               mood_cause_differs, mood_weak_evidence, mood_unhedged
     required records   required_record, story_incomplete, question_key, question_value
     the hint           hint_contradicts_record, position_as_place, hint_paraphrase, single_caption_fact
@@ -255,33 +255,10 @@ def unrecorded_shot_check(row: Mapping[str, Any], item: Any = None) -> list[Prob
     return []
 
 
-SEATED = re.compile(
-    r"\b(?:sits?|sitting|seated|kneel\w*|crouch\w*|reclin\w*)\b(?! (?:in front|behind|beside|next|to the|at the|on the|above|below|between|near|along|against|beyond|just|a little|slightly|low|high|inside))",
-    re.I,
-)
-
-
-def unrecorded_pose_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
-    spec = _spec(row)
-    state = str((spec.get("thing") or {}).get("state") or "").lower()
-    pose = str((spec.get("body") or {}).get("pose") or "").lower()
-    w = _wordings(row)
-    for text in [str(w.get(k) or "") for k in ("caption", "prompt")]:
-        match = SEATED.search(text)
-        if not match:
-            continue
-        if state in ("standing", "walking", "running") or pose in ("standing", "walking"):
-            if "person" not in spec and not state:
-                continue
-            return [Problem("state_conflict", _rid(row), f"{match.group(0)!r} in the text, but the record says {state or pose}", FLAG)]
-        if "person" in spec and not pose and match.group(0).lower() not in _hint(item).lower():
-            return [Problem("unrecorded_pose", _rid(row), f"{match.group(0)!r}: no pose is recorded; remove {match.group(0)!r}", FLAG)]
-    return []
-
-
 # ------------------------------------------------------------------ mood
 
-WEAK_FROM_ERROR = frozenset({"thing count", "thing position"})
+WEAK_FROM_ERROR = frozenset({"thing count", "thing position", "shot framing"})
+WEAK_FROM_NOTE = frozenset({"shot angle", "rel1 rel", "rel2 rel", "rel3 rel"})  # a keep was read from these: a flag only
 WEAK_FROM_FLAG = frozenset({"thing colour", "thing name"})
 SYNONYMS = {"moving": ("motion", "movement", "move", "moves"), "standing": ("stands", "stand", "upright"), "still": ("stillness", "calm")}
 # Words that show a sentence is reading the mood from this kind of record.
@@ -317,6 +294,8 @@ def mood_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     rid = _rid(row)
     if source in WEAK_FROM_ERROR:
         out.append(Problem("mood_weak_evidence", rid, f"a mood cannot be read from {source!r}; draw it from light, time, palette, pose, setting, weather or a relation"))
+    if source in WEAK_FROM_NOTE:
+        out.append(Problem("mood_weak_source", rid, f"the mood is read from {source!r}; check that the thought ties the mood to what the picture shows there", FLAG))
     sentences = _mood_sentences(row)
     if not sentences:
         return out
@@ -331,6 +310,8 @@ def mood_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
             wanted |= {_stem(w) for w in COLOR_CUES}
         wanted |= {_stem(w) for w in CUES.get(source, ())}
         other = sorted(name for name, cues in OTHER_EVIDENCE.items() if name != own and mentioned & {_stem(w) for w in cues})
+        if own == "time" and other == ["light"]:
+            other = []  # the hour of day and its light are one cause
         if wanted and not wanted & mentioned and other:
             out.append(Problem("mood_cause_differs", rid, f"the mood record is read from {source!r} ({value}), but the mood thoughts credit {other}", FLAG))
     return out
@@ -571,7 +552,7 @@ def caption_hint_list_check(row: Mapping[str, Any], item: Any = None) -> list[Pr
 
 MINOR_AGES = frozenset({"child", "teen", "baby"})
 FIT_WORDS = re.compile(
-    r"\b(?:fitted|sleek|tight(?=[ -](?:fit|fitting|jeans|pants|dress|top|shirt|clothes|clothing|suit|bodysuit|leggings|sweater|trousers|skirt))|tightly fitted|form-fitting|skin-tight|clingy|clinging|figure-hugging|body-hugging|curvy|shapely|snug|slim-fitting|revealing)\b",
+    r"\b(?:fitted|sleek|tight(?=[ -](?:fit|fitting|jeans|pants|dress|top|shirt|clothes|clothing|suit|bodysuit|leggings|sweater|trousers|skirt))|tightly fitted|form-fitting|skin-tight|clingy|clinging|figure-hugging|body-hugging|curvy|shapely|snug|slim-fitting|revealing|loose(?! (?:hair|strands?|curls?|braids?|locks?|ends?|waves?|bun|ponytail))|delicate|vulnerab\w+|intimac\w+|intimate|fragile|alluring)\b",
     re.I,
 )
 
@@ -614,7 +595,7 @@ def invented_relation_check(row: Mapping[str, Any], item: Any = None) -> list[Pr
     return []
 
 
-FLAT_MOOD = re.compile(r"\b(?:gives?|lends?|creates?|evokes?)\b", re.I)
+FLAT_MOOD = re.compile(r"\b(?:gives?|lends?|creates?|evokes?|makes it)\b", re.I)
 
 
 def mood_flat_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
@@ -641,6 +622,8 @@ UNKNOWN_CUES = {
     "scene time": re.compile(r"\b(?:morning|evening|noon|dusk|dawn|midday|afternoon|night|sunset|sunrise)\b", re.I),
     "shot angle": re.compile(r"\b(?:high angle|low angle|eye level|eye-level|bird's-eye|worm's-eye|from above|from below)\b", re.I),
     "shot lens": re.compile(r"\b(?:wide-angle|telephoto|macro lens|fisheye|wide angle)\b", re.I),
+    "scene layout": re.compile(r"\b(?:empty|sparse|crowded|cluttered|open|deserted|busy)\b", re.I),
+    "form space": re.compile(r"\b(?:vast|cramped|open|spacious|enclosed|deep|shallow)\b", re.I),
     "body pose": re.compile(r"\b(?:standing|sitting|seated|kneeling|leaning|lying|crouching)\b", re.I),
 }
 
@@ -658,8 +641,8 @@ def unknown_stated_check(row: Mapping[str, Any], item: Any = None) -> list[Probl
     return []
 
 
-OWN_SIDE = re.compile(r"\bto (?:his|her|their|its) (?:left|right)\b", re.I)
-DIRECTIONAL = ("left of", "right of", "above", "below", "behind", "in front of", "under", "over", "beside", "next to")
+OWN_SIDE = re.compile(r"\bto (?:his|her|their|its|(?:the|a|an) \w+'s) (?:left|right)\b", re.I)
+DIRECTIONAL = ("left of", "right of", "above", "below", "behind", "in front of", "under", "over")  # beside and next to read the same both ways
 
 
 def relation_reading_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
@@ -697,6 +680,32 @@ def tag_booru_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     return out
 
 
+MOOD_WORDS = frozenset(
+    """calm gentle wistful nostalgic lonely eerie tense anxious joyful cozy awed grim stern serene tranquil melancholy somber sombre uneasy
+    ominous hopeful peaceful playful solemn forlorn haunting menacing foreboding cheerful gloomy dreamy restless hushed reverent
+    triumphant sad happy bleak mournful desolate threatening haunted spooky suspenseful dramatic""".split()
+)
+CLAIM = re.compile(r"\b(?:feels?|reads?|suggests?|seems?|mood|atmosphere|sense of|tone)\b", re.I)
+CONTRAST = re.compile(r"\b(?:rather than|instead of|not|than|never|neither|nor)\b", re.I)
+
+
+def second_mood_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A second mood claimed in a later sentence of the row, beyond the recorded feeling."""
+    feeling = str((_spec(row).get("mood") or {}).get("feeling") or "")
+    if not feeling:
+        return []
+    own = _stem(feeling)
+    for _, text in _thoughts(row):
+        for sentence in _sentences(text):
+            if not CLAIM.search(sentence) or CONTRAST.search(sentence):
+                continue
+            words = {_stem(w) for w in _words(sentence) if w in MOOD_WORDS}
+            other = sorted(w for w in words if w != own and not own.startswith(w) and not w.startswith(own))
+            if other and own not in {_stem(w) for w in _words(sentence)}:
+                return [Problem("second_mood", _rid(row), f"the row claims {other[0]!r} beside the recorded mood {feeling!r}; one mood only", FLAG)]
+    return []
+
+
 REVIEW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     self_talk_check,
     self_hedge_check,
@@ -705,7 +714,6 @@ REVIEW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     unrecorded_light_check,
     unrecorded_detail_check,
     unrecorded_shot_check,
-    unrecorded_pose_check,
     mood_check,
     required_record_check,
     question_key_check,
@@ -727,4 +735,5 @@ REVIEW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     unknown_stated_check,
     relation_reading_check,
     tag_booru_check,
+    second_mood_check,
 )
