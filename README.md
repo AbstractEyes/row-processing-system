@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.3. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.2.4. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
@@ -14,6 +14,20 @@ for trying one route with a handful of calls. Everything is tested offline: with
 and with each adapter against the SDKs' own types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.4
+
+| Change | What happens now |
+|---|---|
+| A writer's answer is never stored as one row | The rule pool turns the writer's wrapper (`skip`, `reason`, `class`, `rows`) into stored rows, and gives the whole wrapper back unchanged when one of its rows cannot be converted (a record key of one word, a value that is not text, a missing field). The controller took that wrapper for a row, so the whole answer was stored as one row and the assessor judged the wrapper. An object with a skip flag and a list of rows is now never a row: the call is recorded as unusable output (billed, written again with the reason as advice). The reason names the rows that cannot be converted, found by handing each one alone to the rules' `normalize` function, and the failed call keeps those rows as written (`unconverted_rows`). A wrapper that skips is still a skip |
+| Gemini gets the row schema without its value lists | A live run of the rule pool through `flash-batch` had every request refused with "3: Request contains an invalid argument." The route option `schema` now picks the form of the row schema that is sent: `plain` (the default) keeps the structure and moves each list of allowed values into the description of its field, `exact` sends the schema as it is, `none` sends no schema (JSON mode). The pool's schema has seven value lists, one with an empty string and one of integers, and Google's advice for a schema it refuses as too heavy includes fewer enum values; the batch error names no field, so the cause is not confirmed until `rps.geminiprobe` (below) has been run once. The assessor checks every value whatever the form |
+| Gemini's batch status codes | A failed batch item carries a gRPC status code, not an HTTP one, and the adapter read only HTTP codes, so code 3 (`INVALID_ARGUMENT`) counted as a passing trouble of the provider's and every call was tried again. Invalid argument, not found, failed precondition and out of range now stop the route like HTTP 400; permission denied and unauthenticated are key errors; canceled is retried; the rest is the provider's trouble. A failure that names the explicit cache is still retried, since the cache is made again when it has lapsed |
+| A refusal keeps its whole message | A failed call kept 200 or 300 characters of the provider's error. It keeps up to 1,500 now, in the item error of a Gemini batch (with its details), the error of a one-call request, a failed job's note, the reason a route was stopped and a rejected batch |
+| `rps.geminiprobe` | `probe_gemini("flash-batch")` (or `python -m rps.geminiprobe --route flash-batch`) sends the writer's exact request (the rule pool's prompt and task text, the route's thinking level and token limit) as one `generate_content` call for each form of the schema, `exact`, `plain`, `none`, until one is taken. A refused request costs nothing and comes back with the provider's whole error text; the tool prints it and says which `schema` option to set. It refuses to start when the calls may cost more than a cap (`--cap`, $0.25) |
+| The status names the cap that refused a call | The progress line says `waiting: 7 calls refused by the rebound cap of deepseek-sync ($0.50)` and `format_status()` adds a line for each cap with how much of it was spent or held by calls in flight and what each call was held at. See "Budgets" for why a cap fills with holds |
+| DeepSeek's thinking can be set | The route's `effort` is sent as `reasoning_effort` when one is set (`none` turns the thinking off, `low`, `high`, `max`). With none set the request is unchanged: DeepSeek thinks by default, the thinking counts toward `max_tokens` and is billed as output. The defaults are not changed; the provider's figures are in "DeepSeek" below |
+| Rules version `e15d9bb15be6` (was `f12a1185ef75`) | The writer prompt states hard length caps per depth (with a floor of 1,100 bytes of thoughts for deep rows), says relations live only in `relations`, and makes keeping the given records and the series nesting rules of their own |
+| Notebook | The install line names `v0.2.4` |
 
 ## What changed in 0.2.3
 
@@ -81,6 +95,7 @@ files alone.
       providers/       the Writer interface, FakeWriter, the worker pool, the four adapters
       routes.py        the standard routes (haiku-batch, luna-sync, flash-batch, deepseek-sync, ...)
       dryrun.py        try one real route with a handful of calls
+      geminiprobe.py   send the Gemini writer's exact request once per form of the row schema
       assess.py        the assessment hooks
       rules/           the compiled rule pool: writer prompt, row schema, review brief, examples
       assessor/        the assessor for rows written under that pool
@@ -103,7 +118,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.3"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.4"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -210,9 +225,9 @@ A route has these keys:
 |---|---|
 | `provider`, `model` | `anthropic`, `openai`, `gemini` or `deepseek` (or `fake` for tests), and the provider's model name |
 | `kind` | `batch` (the provider's batch service) or `api` (one call at a time; this is how GPT is used here). `claude-code`, `codex` and `gemini-cli` are accepted by the configuration but have no adapter yet |
-| `effort` | The provider's reasoning or thinking level (Anthropic `low` to `max`, OpenAI's `reasoning.effort`, Gemini `minimal`, `low`, `medium`, `high`); left out, the provider's default applies |
+| `effort` | The provider's reasoning or thinking level (Anthropic `low` to `max`, OpenAI's `reasoning.effort`, Gemini `minimal`, `low`, `medium`, `high`, DeepSeek's `reasoning_effort`: `none`, `low`, `high`, `max`); left out, the provider's default applies |
 | `budget_usd`, `purpose_caps` | The route total and one cap per purpose |
-| `max_output_tokens` | The token limit of a call (a call cut off at it is retried once with a larger limit, see `truncation_factor`) |
+| `max_output_tokens` | The token limit of a call (a call cut off at it is retried once with a larger limit, see `truncation_factor`). A model that thinks before it answers spends the limit on the thinking too, so it has to cover both |
 | `max_batch_calls` | The most calls in one provider batch (each adapter also splits by its provider's size limits) |
 | `enabled` | `true` or `false`. Left out, a route is on, except DeepSeek, which stays off until a configuration says `true` |
 | `max_retries`, `timeout_seconds` | Passed to the provider's client, whose own retries handle rate limits and server errors |
@@ -326,14 +341,16 @@ as it lands. GPT is used this way here.
 
 | Part | Form |
 |---|---|
-| Request | One `InlinedRequest` per call: the user turn (text and, where allowed, the picture as bytes), `response_mime_type` JSON with `response_json_schema`, `thinking_level` from the effort, `media_resolution` for a picture, `max_output_tokens`, the rules as `system_instruction`, and `metadata.custom_id` |
+| Request | One `InlinedRequest` per call: the user turn (text and, where allowed, the picture as bytes), `response_mime_type` JSON with `response_json_schema` (in the form the `schema` option names), `thinking_level` from the effort, `media_resolution` for a picture, `max_output_tokens`, the rules as `system_instruction`, and `metadata.custom_id` |
+| The row schema | Gemini turns a schema into a decoding grammar and refuses one it finds too heavy; the refusal of a batch item is a code and one sentence ("3: Request contains an invalid argument.") that names no field. The option `schema` sets the form that is sent: `plain` (the default) is the same structure with each list of allowed values (`enum`) moved into the description of its field, `exact` is the schema as the rules give it, `none` sends no schema and asks for JSON only. `rps.geminiprobe` tries the forms against the real service and prints the provider's whole message for any it refuses (see "Dry run") |
 | Batch | `batches.create` with inline requests, split under 19 MB per job (the limit is 20 MB); jobs that stay pending or running past 48 hours expire and their calls come back as rebounds |
 | Results | `dest.inlined_responses`, matched by the `custom_id` in each response's metadata |
 | Answer | `STOP` is parsed; `MAX_TOKENS` is a truncation; the filter stops (`SAFETY`, `PROHIBITED_CONTENT`, `SPII`, `RECITATION`, `BLOCKLIST`, the picture ones) and a blocked prompt are recorded and not retried; thought parts are left out of the text |
+| A failed item | A batch item that failed carries a gRPC status code (3 is `INVALID_ARGUMENT`) with a message and details, kept up to 1,500 characters. Invalid argument, not found, failed precondition and out of range stop the route like HTTP 400; permission denied and unauthenticated are key errors; canceled is retried; the rest is the provider's trouble and is retried. A failure that names the explicit cache is retried, since the cache is made again when it has lapsed |
 | Usage | the prompt count minus cached tokens, cached tokens, candidates' tokens, thinking tokens (billed as output) |
 | The explicit cache | With `cache: true` (batches only), the rules are cached once per model and rules version and the batch's requests refer to the cache by name instead of repeating the rules. The cache name is recorded (`cache_created`) so a restart reuses it, and its life is extended while a batch that uses it is running. A failure to create the cache is an error, not a silent fallback. The storage is charged to the ledger: each note carries the cache's size in tokens (the provider's report, or a generous estimate marked `tokens_estimated` when it gives none) and the stretch of the cache's life it covers, and the controller writes a `cache_storage` event for it, tokens times hours times the storage rate per million tokens per hour (`cache_storage` in the price table: $0.50 through 2026-12-31, $1.00 from 2027-01-01). A new cache is charged from its creation to its expiry and one kept alive longer from its earlier expiry to the new one, since the provider bills the time-to-live. The charge goes to the purpose most of the calls that use the cache carry and counts against that purpose's cap and the route total. A route with `cache: true` refuses to start unless the price table has a `cache_storage` rate for its model. The one-time cost of making the cache is not stated on the provider's page and is not counted |
 | After a crash | The batch's display name carries a digest of its calls, so a batch created just before a crash is found again |
-| Options | `media_resolution` (`low`, `medium`, `high`; default `medium`), `cache` (default false), `cache_ttl_seconds` (default 21600) |
+| Options | `schema` (`plain`, `exact` or `none`; default `plain`), `media_resolution` (`low`, `medium`, `high`; default `medium`), `cache` (default false), `cache_ttl_seconds` (default 21600) |
 
 ### DeepSeek (`deepseek-sync`)
 
@@ -344,6 +361,10 @@ as it lands. GPT is used this way here.
 | Off-peak | Calls go out only outside Monday to Friday 01:00 to 04:00 and 06:00 to 10:00 UTC. In those hours the route is closed for now, calls already queued wait at the edge, and the run keeps waiting. Every result is marked `peak` or `offpeak` by the time it was sent, and the ledger prices it by that tier |
 | Answer | `stop` is parsed (blank content is a failed parse, sent again once); `length` is a truncation; `content_filter` is a block; "too busy" is retried |
 | Usage | cache hit tokens as cache read, cache miss tokens as input, completion minus reasoning as output |
+| Thinking | The models think before they answer unless told not to (effort `high`). The route's `effort` is sent as `reasoning_effort` when set: `none` turns the thinking off, `low`, `high` and `max` choose how long it goes on (the provider reads `minimal` as `low`, `medium` and `xhigh` as `high`); its changelog suggests `low` for simple tasks, `high` for everyday agent work and `max` for complex problems, and gives no token figures per level. There is no thinking budget: the only cap is `max_tokens`. With no `effort` set, nothing is sent and the provider's default applies |
+| Token limit | `max_tokens` bounds everything the model generates, thinking included (the usage figure `completion_tokens` holds the reasoning tokens): 1 to 393,216. When a request leaves it out the provider uses 8K without thinking, 64K with it and 128K at effort `max`. A call that reaches the limit is billed in full and returns nothing (`truncated`, tried once more with the limit times `truncation_factor`), so a route's `max_output_tokens` has to cover the thinking and the answer |
+| Price of thinking | One output rate for the model, off-peak $0.60 and peak $1.20 per million tokens; the page lists no other rate for reasoning tokens, so thinking is billed at the output rate, and turning it off takes it out of the bill |
+| Cache | The provider caches a prompt prefix on its side, "best effort": a request can only hit a prefix an earlier request left behind, and the page's own example has the shared prefix stored after the first requests have completed. The calls a pool of workers sends together at the start of a run all find the cache empty, so about the first `workers` calls are billed as misses ($0.15 per million tokens against $0.003 for a hit). It happens once per run and costs cents |
 | Switched off | The route is off unless the configuration says `enabled: true`. The key is `DEEPSEEK_API_KEY` |
 | Options | `detail` (`low` or `high`; default `low`), `offpeak_only` (default true; false turns the gate off, for a small test) |
 
@@ -396,7 +417,7 @@ A rule set may also bring:
 |---|---|
 | `task_text(spec, ordinal[, choices])` | the user text of a call, from the spec line and its place in the batch |
 | `assign(spec, ordinal)` | the runner's per-call choices (which part of a relation to ask about, which unknown-question keys, which wordings) |
-| `normalize(text, spec, model)` | turns the writer's answer into the JSON list of rows; applied once, whatever the provider |
+| `normalize(text, spec, model)` | turns the writer's answer into the JSON list of rows; applied once, whatever the provider. An answer it hands back as the writer's wrapper (a skip flag and a list of rows) was not converted and is recorded as a failed call, never as a row; the failed call names the rows that could not be converted |
 | an assessor | checks the rows (see "Plugging in") |
 
 With the package `rps.rules` all four come from the rule pool and the assessor is `rps.assessor`.
@@ -410,11 +431,11 @@ again while the line's attempts are under `max_attempts` (default 2, so one retr
 | Kind | Meaning | What happens |
 |---|---|---|
 | `truncated` | the answer stopped at the token limit | retried with the limit times `truncation_factor`, with no advice added |
-| `invalid_output` | blank, cut off or not the expected JSON | retried with the problem as advice |
+| `invalid_output` | blank, cut off, not the expected JSON, or the writer's wrapper whose rows could not be turned into stored rows (the failure names those rows) | retried with the problem as advice |
 | `provider_error` | rate limit, server error, timeout, dropped connection, a batch that failed | retried as a rebound. On a one-call route a call still rate-limited after the client's own retries is not recorded here: it waits and goes again (only one turned away 8 times in a row is) |
 | `expired`, `canceled` | the provider let the request lapse or canceled it | retried as a rebound |
 | `refused`, `blocked` | the model declined, or a safety filter stopped it | recorded; not retried on the same route |
-| `bad_request` | the request is malformed (HTTP 400, a schema the provider rejects) | not retried; stops the route for the run |
+| `bad_request` | the request is malformed (HTTP 400, a gRPC `INVALID_ARGUMENT` on a batch item, a schema the provider rejects) | not retried; stops the route for the run |
 | `auth` | the key is rejected or the balance is spent | not retried; stops the route for the run |
 | `unexpected` | a stop reason nothing here expects | not retried (an error line an adapter cannot classify is retried as a rebound) |
 | `long_prompt` | the call's estimated prompt is over the provider's long-prompt threshold (`long_prompt_tokens` in the price table), where higher rates apply that the table does not model | refused before it is sent, recorded as failed with no cost; not retried |
@@ -441,7 +462,20 @@ sent, and recorded as `budget_refused` with the numbers:
 A retry or re-submission after a failed or rejected call is always `rebound`, whatever the task's
 purpose was, and draws only from the `rebound` cap. A purpose with no cap counts as a $0 cap, so its
 calls are refused. A refused call is left alone for the rest of the run and asked again by the next
-one, so raising a cap takes effect on the next run. `controller.format_status()` prints spend per
+one, so raising a cap takes effect on the next run. The progress line and the status name the cap
+that refused the calls (`waiting: 7 calls refused by the rebound cap of deepseek-sync ($0.50)`), and
+`format_status()` adds a line for each cap with how much of it was spent or held by calls in flight and
+what each call was held at.
+
+A call in flight holds its estimate, not its price: the worst case, which prices the output at its
+limit and a route with tiers at its dearest tier (DeepSeek at its peak price, though that route sends
+only off-peak). The hold is replaced by the real cost when the call ends, so a cap can be full of holds
+while the money spent is a fraction of it, and a retry after an answer was cut off at the token limit
+is held at the larger limit. A call refused while other calls' holds were in the way stays refused for
+the run, so a cap meant for many retries wants room for their holds (the number of retries times the
+estimate at the larger limit), not for their cost.
+
+`controller.format_status()` prints spend per
 (route, purpose) against its cap and the state of each route, and `ledger/summary.json` and
 `ledger/tasks.jsonl` record the same with token counts, attempts and minutes. A provider-side cache
 that is billed for the time it is kept (Gemini's, with `cache: true`) adds lines of its own: every
@@ -576,6 +610,29 @@ wait, so a stopped wait can be picked up with `--resume FILE` (nothing is sent a
 allows it for. For `deepseek-sync` the tool switches the route on and its off-peak gate off, since it
 is a small test. The exit code is 0 when every call came back with a good answer, 1 when something
 did not work and 2 when the tool refused to start.
+
+### Trying the row schema on Gemini
+
+The dry run sends a tiny schema, so it cannot say whether Gemini takes the real one. `rps.geminiprobe`
+does: it builds the request the Gemini writer prepares for a real spec line (the rule pool's system
+prompt and the task text of its first worked example, or a spec item you pass as `item=`; the
+route's thinking level and token limit) and sends it as one `generate_content` call for each form of
+the row schema, `exact`, `plain` and `none`, in that order, stopping at the first one taken.
+
+    python -m rps.geminiprobe --route flash-batch
+
+```python
+from rps.geminiprobe import probe_gemini
+report = probe_gemini("flash-batch")           # report.accepted_mode, report.outcomes
+```
+
+A request Gemini refuses is not billed and comes back with the provider's whole error text, which a
+batch item does not carry; the tool prints it. A request it takes is billed as any call, so the tool
+refuses to start when the calls may cost more than `--cap` (default $0.25) and `--all` (every form, not
+only up to the first taken) is opt-in. It ends by saying which `schema` option to set. A form that the
+one-call endpoint takes is not proof for the batch service, but a form that is refused here is refused
+there for the same reason. The exit code is 0 when a form was taken, 1 when every form was refused and 2
+when the tool refused to start.
 
 ## Resuming
 
