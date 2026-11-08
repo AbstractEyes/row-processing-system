@@ -20,6 +20,7 @@ from ..failures import (
     KIND_REFUSED,
     KIND_TRUNCATED,
     KIND_UNEXPECTED,
+    PROVIDER_ERROR_CHARS,
 )
 from ..ledger import Usage
 from ..prompting import render_task_text
@@ -219,7 +220,7 @@ def failure_from_exception(call_id: str, error: BaseException, *, minutes: float
     return CallResult(
         call_id=call_id,
         output=None,
-        error=describe_error(error),
+        error=describe_error(error, PROVIDER_ERROR_CHARS),
         retryable=retryable,
         minutes=minutes,
         kind=kind,

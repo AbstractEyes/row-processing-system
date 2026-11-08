@@ -47,6 +47,7 @@ from .failures import (
     KIND_MISMATCH,
     KIND_PROVIDER,
     KIND_UNEXPECTED,
+    PROVIDER_ERROR_CHARS,
     STOP_ROUTE_KINDS,
 )
 from .images import ImageError, load_picture
@@ -765,7 +766,7 @@ class Controller:
         if route_name in self._halted:
             return
         self._halted[route_name] = kind
-        text = redact(reason)[:300]
+        text = redact(reason)[:PROVIDER_ERROR_CHARS]
         self._emit("route_halted", {"route": route_name, "kind": kind, "reason": text, "call_id": call_id})
         self._note_problem(f"route {route_name} stopped for this run ({kind}): {text}")
         self._print(f"[rps] route {route_name} stopped for this run ({kind}): {text}")
@@ -1304,7 +1305,7 @@ class Controller:
                 "call_failed",
                 {
                     **common,
-                    "error": redact(result.error)[:300],
+                    "error": redact(result.error)[:PROVIDER_ERROR_CHARS],
                     "retryable": result.retryable,
                     "billed": usd > 0,
                     "kind": kind,

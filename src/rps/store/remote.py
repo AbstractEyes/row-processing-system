@@ -119,12 +119,12 @@ def retry_after_seconds(exc: BaseException | None) -> float:
         return 0.0
 
 
-def describe_error(exc: BaseException) -> str:
-    """A short, key-free description of an error."""
+def describe_error(exc: BaseException, limit: int = 200) -> str:
+    """A short, key-free description of an error (its message cut to `limit` characters)."""
     text = redact(str(exc)).strip().replace("\n", " ")
     status = status_code_of(exc)
     prefix = type(exc).__name__ + (f" (HTTP {status})" if status else "")
-    return f"{prefix}: {text[:200]}" if text else prefix
+    return f"{prefix}: {text[:limit]}" if text else prefix
 
 
 class RemoteStore(Store):

@@ -2,12 +2,14 @@
 
 Each request is a `GenerateContent` call: the task text and, where the routing table allows, a
 picture as the user turn; the writing rules as the system instruction; JSON output constrained by
-the row schema (`response_json_schema`); a thinking level from the route's effort; and, for a
-picture, a media resolution. Inline batches stay under the provider's size limit by splitting.
+the row schema (`response_json_schema`, in the form the `schema` option names); a thinking level
+from the route's effort; and, for a picture, a media resolution. Inline batches stay under the
+provider's size limit by splitting.
 
-Route options: `media_resolution` ("low", "medium" or "high", default "medium"), `cache` (true to
-keep the writing rules in an explicit cache for batches; default false) and `cache_ttl_seconds`
-(default 21600). With the cache on, a batch refers to the cache by name instead of repeating the
+Route options: `schema` ("plain", "exact" or "none", default "plain": the form in which the row schema
+is sent, see `rps.providers.schemas.gemini_schema`), `media_resolution` ("low", "medium" or "high",
+default "medium"), `cache` (true to keep the writing rules in an explicit cache for batches; default
+false) and `cache_ttl_seconds` (default 21600). With the cache on, a batch refers to the cache by name instead of repeating the
 rules in every request; the cache is created once per model and rules version, its name is
 recorded (a `cache_created` event) so a restart reuses it, and its lifetime is extended while a
 batch that refers to it is still running. The provider bills a cache for the hours it is kept,
@@ -30,8 +32,9 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Collection, Sequence
 
 from ..config import ConfigError, RouteConfig
-from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_PROVIDER
+from ..failures import KIND_AUTH, KIND_BAD_REQUEST, KIND_CANCELED, KIND_PROVIDER, PROVIDER_ERROR_CHARS
 from ..ids import canonical_json, custom_id
+from ..keys import redact
 from ..ledger import Usage
 from ..prompting import WriterRules
 from ..store.remote import describe_error
@@ -57,11 +60,12 @@ from .common import (
     picture_for,
 )
 from .pool import PoolWriter
-from .schemas import GEMINI, SchemaError, check_schema
+from .schemas import GEMINI, GEMINI_SCHEMA_MODES, SchemaError, check_schema, gemini_schema
 
 API_KEY_ENV = "GEMINI_API_KEY"
 THINKING_LEVELS = ("minimal", "low", "medium", "high")
 RESOLUTIONS = ("low", "medium", "high")
+DEFAULT_SCHEMA_MODE = "plain"
 BATCH_MAX_BYTES = 19 * 1024 * 1024  # inline jobs must stay under 20 MB in total
 # A generous count of tokens for one picture, for the cost estimate (the estimate is an upper bound).
 IMAGE_TOKENS = {"low": 300, "medium": 600, "high": 1200}
@@ -120,17 +124,41 @@ def parse_response(call_id: str, response: Any, *, max_tokens: int | None = None
     return finished_call(call_id, text=None, stop=STOP_OTHER, detail=reason or "no finish reason", **common)
 
 
+# The status code of a failed batch item. The batch service reports gRPC codes (3 is INVALID_ARGUMENT:
+# a live run got "3: Request contains an invalid argument." for every call, and took it for a passing
+# trouble of the provider's); a code in the HTTP range is read as the HTTP status. Codes not listed are
+# the provider's own trouble and are retried, and so is any failure that names the explicit cache, which
+# is made again when it has lapsed.
+_ITEM_BAD_REQUEST = frozenset({3, 5, 9, 11, 400, 404, 413, 422})  # invalid argument, not found, failed precondition, out of range
+_ITEM_AUTH = frozenset({7, 16, 401, 403})  # permission denied, unauthenticated
+_ITEM_CANCELED = frozenset({1, 499})
+
+
+def inlined_error_text(error: Any) -> str:
+    """The text of a failed batch item: the code, the provider's message, and its details when it gives any."""
+    code = lookup(error, "code")
+    message = str(lookup(error, "message") or "").strip()
+    text = f"{code}: {message}" if code else (message or "the request failed")
+    details = [str(item) for item in (lookup(error, "details") or []) if item]
+    if details:
+        text += " | details: " + "; ".join(details)
+    return redact(text)[:PROVIDER_ERROR_CHARS]
+
+
 def parse_inlined(item: Any, call_id: str) -> CallResult:
     """One inlined response of a finished batch as a call result."""
     error = lookup(item, "error")
     if error is not None and lookup(item, "response") is None:
         code = lookup(error, "code")
-        message = str(lookup(error, "message") or "")[:200]
-        text = f"{code}: {message}" if code else (message or "the request failed")
-        if code in (400, 404):
+        text = inlined_error_text(error)
+        if "cache" in text.lower():
+            return CallResult(call_id=call_id, output=None, error=text, retryable=True, kind=KIND_PROVIDER)
+        if code in _ITEM_BAD_REQUEST:
             return CallResult(call_id=call_id, output=None, error=text, retryable=False, kind=KIND_BAD_REQUEST)
-        if code in (401, 403):
+        if code in _ITEM_AUTH:
             return CallResult(call_id=call_id, output=None, error=text, retryable=False, kind=KIND_AUTH)
+        if code in _ITEM_CANCELED:
+            return CallResult(call_id=call_id, output=None, error=text, retryable=True, kind=KIND_CANCELED)
         return CallResult(call_id=call_id, output=None, error=text, retryable=True, kind=KIND_PROVIDER)
     return parse_response(call_id, lookup(item, "response"))
 
@@ -162,7 +190,8 @@ class _GeminiCommon:
     route_name: str
 
     def _setup(self, client: Any | None) -> None:
-        check_options(self.route, self.route_name, {"media_resolution", "cache", "cache_ttl_seconds"})
+        check_options(self.route, self.route_name, {"schema", "media_resolution", "cache", "cache_ttl_seconds"})
+        self._schema_mode = option(self.route, self.route_name, "schema", DEFAULT_SCHEMA_MODE, choices=GEMINI_SCHEMA_MODES, kind=str)
         self._resolution = option(self.route, self.route_name, "media_resolution", "medium", choices=RESOLUTIONS, kind=str)
         self._use_cache = bool(option(self.route, self.route_name, "cache", False, kind=bool))
         self._cache_ttl = int(option(self.route, self.route_name, "cache_ttl_seconds", 21600, kind=int))
@@ -177,10 +206,16 @@ class _GeminiCommon:
         return key_acceptance(self.route, API_KEY_ENV)
 
     def check_rules(self, rules: WriterRules) -> None:
+        if self._schema_mode == "none":
+            return  # no schema is sent
         try:
             check_schema(rules.schema, GEMINI)
         except SchemaError as error:
             raise ConfigError(f"route {self.route_name!r}: {error}") from None
+
+    def answer_schema(self, rules: WriterRules) -> dict[str, Any] | None:
+        """The row schema in the form this route sends (None when the route sends none)."""
+        return gemini_schema(rules.schema, self._schema_mode)
 
     def _client(self) -> Any:
         with self._client_lock:
@@ -210,9 +245,11 @@ class _GeminiCommon:
         settings: dict[str, Any] = {
             "system_instruction": call.rules.system,
             "response_mime_type": "application/json",
-            "response_json_schema": dict(call.rules.schema),
             "max_output_tokens": call.max_output_tokens,
         }
+        form = self.answer_schema(call.rules)
+        if form is not None:
+            settings["response_json_schema"] = form
         if call.effort:
             settings["thinking_config"] = types.ThinkingConfig(thinking_level=types.ThinkingLevel(call.effort.upper()))
         if picture is not None:
@@ -230,12 +267,14 @@ class _GeminiCommon:
             rules = call.rules
             assert rules is not None  # inlined_request_for raised otherwise
             picture_tokens = IMAGE_TOKENS[self._resolution] if call.image is not None else 0
+            form = self.answer_schema(rules)
             requests.append(
                 Request(
                     call_id=call.call_id,
                     custom_id=call.custom_id,
                     payload={"request": inlined, "model": call.model, "rules_version": rules.version, "system": rules.system},
-                    est_input_tokens=estimate_text_tokens(rules.system, call_text(call), canonical_json(rules.schema)) + picture_tokens,
+                    est_input_tokens=estimate_text_tokens(rules.system, call_text(call), canonical_json(form) if form is not None else "")
+                    + picture_tokens,
                     max_output_tokens=call.max_output_tokens,
                     attempt=call.attempt,
                     size_bytes=len(inlined.model_dump_json(exclude_none=True).encode("utf-8")) + 1,
@@ -382,7 +421,7 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
         except Exception as error:
             kind, _retryable = classify_exception(error)
             if kind in (KIND_AUTH, KIND_BAD_REQUEST):
-                raise RouteRejected(kind, describe_error(error)) from None
+                raise RouteRejected(kind, describe_error(error, PROVIDER_ERROR_CHARS)) from None
             raise
         name = str(lookup(job, "name"))
         data["name"] = name
@@ -405,7 +444,7 @@ class GeminiBatchWriter(_GeminiCommon, Writer):
         if state in ("JOB_STATE_SUCCEEDED", "JOB_STATE_PARTIALLY_SUCCEEDED"):
             return PollStatus("ended")
         if state == "JOB_STATE_FAILED":
-            return PollStatus("failed", str(lookup(job, "error", "message") or "")[:200] or None)
+            return PollStatus("failed", inlined_error_text(lookup(job, "error")) if lookup(job, "error") is not None else None)
         if state == "JOB_STATE_CANCELLED":
             return PollStatus("canceled")
         if state == "JOB_STATE_EXPIRED":

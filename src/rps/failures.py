@@ -23,6 +23,10 @@ KIND_UNEXPECTED = "unexpected"  # a stop reason or state nothing here expects
 KIND_LONG_PROMPT = "long_prompt"  # the prompt is over the provider's long-prompt threshold; refused before sending
 KIND_MISMATCH = "batch_mismatch"  # a batch found again after a crash did not hold the call; sent again
 
+# How much of a provider's error text a failed call keeps. A refused request often names its
+# cause only in the details after the first sentence, so the text is kept nearly whole.
+PROVIDER_ERROR_CHARS = 1500
+
 FAILURE_KINDS: tuple[str, ...] = (
     KIND_TRUNCATED,
     KIND_REFUSED,
