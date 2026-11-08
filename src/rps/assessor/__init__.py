@@ -30,7 +30,7 @@ def _item(spec: Any) -> Mapping[str, Any] | None:
 
 # Findings raised as flags by their check that stop a row: each names the word to remove, and each
 # had almost no hits on the released rows (see tools/parity.py).
-ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "state_conflict", "unrecorded_detail", "unrecorded_shot", "mood_cause_differs", "caption_hint_list", "relation_side", "position_as_place", "unknown_stated"})
+ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "state_conflict", "unrecorded_detail", "unrecorded_shot", "mood_cause_differs", "caption_hint_list", "relation_side", "position_as_place", "unknown_stated", "pasted_value"})
 
 
 def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:

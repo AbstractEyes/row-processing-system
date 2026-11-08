@@ -128,10 +128,25 @@ def test_unknown_keys_are_distinct_unheld_and_valid():
                 assert attribute in tp.SYSTEMS[system]
 
 
-def test_unknown_key_rotation_spreads_over_the_list():
-    item = {"kind": "single", "depth": "deep", "spec": {"person": {"gender": "woman"}}}
-    used = {balance.unknown_keys(item, n)["deep"] for n in range(len(balance.UNKNOWN_KEYS))}
-    assert used == set(balance.UNKNOWN_KEYS)
+def test_unknown_key_rotation_spreads_over_the_keys_that_fit():
+    person = {"kind": "single", "depth": "deep", "spec": {"person": {"gender": "woman"}}}
+    used = {balance.unknown_keys(person, n)["deep"] for n in range(len(balance.UNKNOWN_KEYS))}
+    assert used == set(balance.UNKNOWN_KEYS) - balance.THING_KEYS - balance.NEVER_ASKED
+    thing = {"kind": "single", "depth": "deep", "spec": {"thing": {"name": "bench"}}}
+    used = {balance.unknown_keys(thing, n)["deep"] for n in range(len(balance.UNKNOWN_KEYS))}
+    assert used == set(balance.UNKNOWN_KEYS) - balance.PERSON_KEYS - balance.NEVER_ASKED
+
+
+def test_a_key_must_fit_the_item_it_is_asked_about():
+    thing = {"kind": "single", "depth": "deep", "spec": {"thing": {"name": "bench"}}}
+    asked = {balance.unknown_keys(thing, n)["deep"] for n in range(60)}
+    assert not asked & balance.PERSON_KEYS and "mood tone" not in asked
+    posed = {"kind": "single", "depth": "deep", "spec": {"person": {"gender": "man"}, "body": {"pose": "kneeling"}}}
+    assert "body gesture" not in {balance.unknown_keys(posed, n)["deep"] for n in range(60)}
+    mixed = {"kind": "single", "depth": "deep", "spec": {"person": {"gender": "man"}}}
+    assert not {balance.unknown_keys(mixed, n)["deep"] for n in range(60)} & balance.THING_KEYS
+    seeded = {"kind": "single", "depth": "deep", "hint": "A bench by a path.", "spec": {"thing": {"name": "bench"}}}
+    assert not {balance.unknown_keys(seeded, n)["deep"] for n in range(60)} & balance.THING_KEYS
 
 
 def test_task_text_carries_ids_records_hint_and_assignment():

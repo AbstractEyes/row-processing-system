@@ -311,7 +311,7 @@ def pool_run(tmp_path, config):
 
     world = World(tmp_path, config=config, behavior=behavior)
     controller = world.controller()
-    controller.add_task(pool_task([garbled, clean["item"]]))
+    controller.add_task(pool_task([clean["item"], garbled]))
     return world, controller, clean, garbled
 
 
@@ -334,7 +334,7 @@ def test_the_pools_screen_can_be_turned_off_in_the_configuration(tmp_path):
     world = World(tmp_path, config=pool_config(screen="none"), behavior=lambda payload: FakeOutcome(output="not json"))
     controller = world.controller()
     assert controller.screen is None
-    controller.add_task(pool_task([garbled_item(), clean["item"]]))
+    controller.add_task(pool_task([clean["item"], garbled_item()]))
     controller.step()
     assert world.events_of("line_screened") == []
     assert sorted(event.payload["line"] for event in world.events_of("call_prepared")) == sorted(
@@ -346,7 +346,7 @@ def test_a_screen_of_the_callers_wins_over_the_rules(tmp_path):
     clean = example("seeded_single")
     world = World(tmp_path, config=pool_config(), behavior=lambda payload: FakeOutcome(output="not json"))
     controller = world.controller(screen=lambda spec: None)
-    controller.add_task(pool_task([garbled_item(), clean["item"]]))
+    controller.add_task(pool_task([clean["item"], garbled_item()]))
     controller.step()
     assert world.events_of("line_screened") == [] and len(world.events_of("call_prepared")) == 2
 

@@ -367,8 +367,8 @@
       "value": "a pause"
      },
      {
-      "key": "story before",
-      "value": "ordered coffee"
+      "key": "story cause",
+      "value": "a coffee break"
      }
     ],
     "relations": [
@@ -418,7 +418,7 @@
      },
      {
       "step": "story",
-      "text": "A pause after she ordered coffee: the cup is already in her hand and the next move is hers."
+      "text": "A pause in a coffee break: the cup is already in her hand and the next move is hers."
      },
      {
       "step": "compare",

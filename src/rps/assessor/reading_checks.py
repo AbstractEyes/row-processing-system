@@ -171,6 +171,78 @@ def check_repeat_check(row: Mapping[str, Any], item: Any = None) -> list[Problem
     return []
 
 
+# ------------------------------------------------------------------ caption form and pasted values
+
+AUXILIARIES = frozenset("is are was were be been being has have had does do did will would can could may might shall should".split())
+# Verbs a caption uses as its main verb: the bare plural form and the -s form both count; participles ("seen", "blurred") do not.
+VERB_ROOTS = frozenset(
+    """rest frame stand sit lean stretch fill hold wear carry look appear show occupy dominate sweep cross lie hang float rise reach surround
+    gather cut center centre catch bear feature depict portray capture reveal hover drift perch lounge kneel crouch climb jump
+    bow smile raise lift hide sprawl curl twist bend fade glint gleam loom fringe wrap drape trail tilt sink emerge present find
+    contain include offer give take make let keep put bring meet join mix blend divide split fold sparkle shimmer reflect lay
+    run walk move pass fly swim sail ride drive cling grow bloom sprout throw touch press push pull dip arch bridge guard watch
+    overlook anchor support share repeat flank follow trace shape pick highlight emphasize draw tie pin link lend add leave belong
+    remain stay wait pause linger sleep eat drink read write play dance sing stare glance laugh seem become sound feel place isolate
+    project""".split()
+)
+IRREGULAR_PAST = frozenset("stood sat lay held wore sat rose fell ran swam flew hung drew took gave made met left lent kept grew threw".split())
+CAPTION_SPLIT = re.compile(r"[.!?]\s+")
+
+
+def _verb_forms() -> frozenset[str]:
+    forms = set(VERB_ROOTS) | IRREGULAR_PAST
+    for root in VERB_ROOTS:
+        forms.add(root + "s")
+        forms.add(root + "es")
+        if root.endswith("y") and len(root) > 2:
+            forms.add(root[:-1] + "ies")
+        forms.add(root + "ed" if not root.endswith("e") else root + "d")
+    return frozenset(forms)
+
+
+VERB_FORMS = _verb_forms()
+
+
+def _has_verb(sentence: str) -> bool:
+    """True when the sentence holds an auxiliary or a main verb; a word after 'a/an/the/of/with/in' is read as a noun."""
+    words = re.findall(r"[a-z']+", sentence.lower())
+    for index, word in enumerate(words):
+        if word in AUXILIARIES:
+            return True
+        if word in VERB_FORMS and not (word.endswith("ed") and word not in IRREGULAR_PAST and (index == 0 or words[index - 1] not in ("and", "that", "which", "who"))):
+            if index > 0 and words[index - 1] in ("a", "an", "the", "of", "with", "in", "on", "its", "his", "her", "their", "some", "small", "large", "single", "close", "wide", "bright", "soft", "dark"):
+                continue
+            return True
+    return False
+
+
+def caption_form_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A caption of a single sentence with no verb is a noun phrase (a flag)."""
+    caption = str(_wordings(row).get("caption") or "").strip()
+    if not caption or len(caption.split()) < 5:
+        return []
+    sentences = [s for s in CAPTION_SPLIT.split(caption) if s.strip()]
+    if sentences and not any(_has_verb(s) for s in sentences):
+        return [Problem("caption_no_verb", _rid(row), "the caption has no verb; write one sentence that says something about the picture", FLAG)]
+    return []
+
+
+PASTED_VALUE = re.compile(
+    r"\b(?:exactly|precisely) \d+\b|\bchild (?:boy|girl)\b|\bcount of \d+\b",
+    re.I,
+)
+
+
+def pasted_value_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A record value pasted into prose: 'Exactly 1 girl', 'child boy' (a flag)."""
+    w = _wordings(row)
+    for text in [t for _, t in _thoughts(row)] + [str(w.get(k) or "") for k in ("caption", "critique")]:
+        match = PASTED_VALUE.search(text)
+        if match:
+            return [Problem("pasted_value", _rid(row), f"{match.group(0)!r} reads like a record pasted into prose; write it as a person would say it", FLAG)]
+    return []
+
+
 READING_CHECKS = (
-    tag_color_check, person_tag_check, story_slot_check, chain_kind_check, spec_talk_check, stock_opening_check, check_repeat_check,
+    tag_color_check, person_tag_check, story_slot_check, chain_kind_check, spec_talk_check, stock_opening_check, check_repeat_check, caption_form_check, pasted_value_check,
 )

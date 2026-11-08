@@ -396,7 +396,28 @@ def hint_order_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     return []
 
 
+def thought_hint_copy_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A thought sentence that is mostly one hint sentence's content words (error), or a caption that compresses a one-sentence hint (flag)."""
+    hint = _sentences(_hint(item))
+    if not hint:
+        return []
+    hint_sets = [_content(s) for s in hint]
+    out: list[Problem] = []
+    for index, (_, text) in enumerate(_thoughts(row), 1):
+        for sentence in _sentences(text):
+            words = _content(sentence)
+            if len(words) >= 4 and max(len(words & h) for h in hint_sets) / len(words) >= 0.7:
+                out.append(Problem("thought_hint_copy", _rid(row), f"thought {index} repeats one of the hint's sentences; say what the picture shows in your own words, or what it means"))
+                break
+        if out:
+            break
+    caption = _content(str(_wordings(row).get("caption") or ""))
+    if len(hint) == 1 and len(caption) >= 6 and len(caption & hint_sets[0]) / len(caption) >= 0.8:
+        out.append(Problem("caption_compresses_hint", _rid(row), "the caption compresses the hint's one sentence; describe the picture in your own words", FLAG))
+    return out
+
+
 INVENTION_CHECKS = (
     pose_check, rank_scope_check, light_check, size_check, material_check, placement_check, added_record_check, hint_name_check,
-    caption_hint_copy_check, hint_order_check,
+    caption_hint_copy_check, hint_order_check, thought_hint_copy_check,
 )

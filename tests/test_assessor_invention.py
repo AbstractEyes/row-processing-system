@@ -207,3 +207,52 @@ def test_the_new_error_codes_are_wired_into_check_row():
     row = copy.deepcopy(_row(caption="A girl stands."))
     assert any(p.code == "unrecorded_pose" for p in assessor.check_row(row))
     assert ic.INVENTION_CHECKS and rd.READING_CHECKS
+
+
+# ------------------------------------------------------------------ the subject screen
+
+def test_a_thing_the_hint_never_shows_is_set_aside():
+    harbor = "A quiet harbor at first light. Two skiffs rest against the pier and gulls sit along the rail."
+    assert screen_item({"kind": "single", "hint": harbor, "spec": {"thing": {"name": "cat"}}})
+    assert screen_item({"kind": "single", "hint": harbor, "spec": {"thing": {"name": "skiff"}}}) is None
+    assert screen_item({"kind": "single", "hint": harbor, "spec": {"thing": {"name": "stone bench"}}})
+
+
+def test_a_listed_synonym_or_a_metadata_hint_is_not_set_aside():
+    room = "A room with a green sofa under the window and a rug across the floor."
+    assert screen_item({"kind": "single", "hint": room, "spec": {"thing": {"name": "couch"}}}) is None
+    assert screen_item({"kind": "single", "hint": "A pilot waves beside a small plane on the apron.", "spec": {"thing": {"name": "airplane"}}}) is None
+    assert screen_item({"kind": "single", "hint": "Medium: tin. Subjects: portrait.", "spec": {"thing": {"name": "coin"}}}) is None
+    assert screen_item({"kind": "single", "hint": "Medium: tin. Subjects: portrait.", "spec": {"thing": {"name": "coin"}}, "extra": 1}) is None
+
+
+# ------------------------------------------------------------------ walking the hint, caption form, pasted values
+
+HINT_FOUR = "A red kayak lies on a gravel bank. Two paddles are crossed over its hull. A heron stands in the shallows beyond it. Morning mist hangs over the far water."
+
+
+def test_a_thought_that_repeats_a_hint_sentence_is_an_error():
+    item = {"kind": "single", "hint": HINT_FOUR, "spec": {}}
+    copy_ = _row(thoughts=[("see", "A red kayak lies on a gravel bank.")])
+    assert ("thought_hint_copy", ERROR) in codes(assessor.check_row(copy_, item))
+    own = _row(thoughts=[("see", "The kayak is the one saturated color against the pale stones.")])
+    assert "thought_hint_copy" not in {c for c, _ in codes(assessor.check_row(own, item))}
+
+
+def test_a_caption_that_compresses_a_one_sentence_hint_is_a_flag():
+    item = {"kind": "single", "hint": "A heron stands in the shallows beside a red kayak.", "spec": {}}
+    row = _row(caption="A heron stands in the shallows beside a red kayak.")
+    assert ("caption_compresses_hint", FLAG) in codes(assessor.check_row(row, item))
+
+
+def test_a_caption_without_a_verb_is_a_flag():
+    bare = _row(caption="A tall lighthouse on a rocky point, a gull overhead, in evening haze.")
+    assert ("caption_no_verb", FLAG) in codes(assessor.check_row(bare))
+    for text in ("A lighthouse stands on a rocky point with a gull overhead.", "Two kayaks rest on the bank and a heron wades beyond them."):
+        assert "caption_no_verb" not in {c for c, _ in codes(assessor.check_row(_row(caption=text)))}
+
+
+def test_a_record_value_pasted_into_prose_is_an_error():
+    for text in ("Exactly 1 girl stands on the dock.", "One child boy waits by the gate."):
+        assert ("pasted_value", ERROR) in codes(assessor.check_row(_row(thoughts=[("count", text)])))
+    assert "pasted_value" not in {c for c, _ in codes(assessor.check_row(_row(thoughts=[("count", "One girl waits on the dock.")])))}

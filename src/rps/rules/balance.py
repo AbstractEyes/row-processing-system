@@ -8,13 +8,14 @@ text, never left to the model:
                         "b"), cycling so the second thing ("b") is asked about on
                         a third of the relation questions, never more than half
     unknown question    which key the unknown question asks about, rotating through
-                        a fixed list and skipping keys the item's own spec holds;
+                        a fixed list and skipping keys the item's own spec holds and keys that do not fit it (a person key for a personless item);
                         the keys of one series are all different
     wordings            which wordings the row carries, from its depth
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -47,6 +48,18 @@ UNKNOWN_KEYS: tuple[str, ...] = (
     "mood tone",
     "story cause",
 )
+
+# Keys that only fit an item that records a person, or one that records a thing.
+PERSON_KEYS: frozenset[str] = frozenset(
+    {"body gesture", "look makeup", "person role", "wear accessory", "look eyes", "body form", "look skin"}
+)
+THING_KEYS: frozenset[str] = frozenset({"thing state", "thing position"})
+# Keys left out of the rotation: every medium and deep row records a mood, so an unknown tone would sit beside one.
+NEVER_ASKED: frozenset[str] = frozenset({"mood tone"})
+# A recorded attribute that already answers a key: (system, attribute) -> keys it rules out.
+ANSWERED_BY: dict[tuple[str, str], frozenset[str]] = {
+    ("body", "pose"): frozenset({"body gesture"}),
+}
 
 WORDINGS_BY_DEPTH: dict[str, tuple[str, ...]] = {
     "simple": ("caption",),
@@ -104,26 +117,40 @@ def _deepest_spec(item: Mapping[str, Any]) -> Mapping[str, Any]:
     return item.get("spec") or {}
 
 
+def fits_item(key: str, spec: Mapping[str, Any], hinted: bool = False) -> bool:
+    """True when an unknown question about `key` makes sense for an item whose deepest spec is `spec`.
+
+    A hinted item's hint describes where its thing is and what state it is in, so the writer records those; they are not asked.
+    """
+    if key in NEVER_ASKED:
+        return False
+    if key in PERSON_KEYS and not spec.get("person"):
+        return False
+    if key in THING_KEYS and (hinted or not spec.get("thing")):
+        return False
+    return not any(key in ruled_out for (system, attribute), ruled_out in ANSWERED_BY.items() if isinstance(spec.get(system), Mapping) and spec[system].get(attribute) is not None)
+
+
 def relation_part(ordinal: int) -> str:
     """The part of the first relation this line's relation question asks about."""
     return RELATION_PARTS[ordinal % len(RELATION_PARTS)]
 
 
+def _stride(size: int) -> int:
+    """The first of 5, 7, 3, 1 that shares no factor with `size`, so the rotation visits every start."""
+    return next(step for step in (5, 7, 3, 1) if math.gcd(step, size) == 1)
+
+
 def unknown_keys(item: Mapping[str, Any], ordinal: int) -> dict[str, str]:
-    """One unknown-question key per depth above simple, all different, none held by the spec."""
-    held = spec_keys(_deepest_spec(item))
+    """One unknown-question key per depth above simple, all different, none held by the spec, none that does not fit it."""
+    deepest = _deepest_spec(item)
+    held = spec_keys(deepest)
     wanted = [depth for depth in item_depths(item) if depth != "simple"]
-    start = (ordinal * 5) % len(UNKNOWN_KEYS)
+    pool = [key for key in UNKNOWN_KEYS if key not in held and fits_item(key, deepest, bool(item.get("hint")))]
+    start = (ordinal * _stride(len(pool))) % len(pool) if pool else 0
     chosen: dict[str, str] = {}
-    taken: set[str] = set()
-    offset = 0
-    while len(chosen) < len(wanted) and offset < len(UNKNOWN_KEYS):
-        key = UNKNOWN_KEYS[(start + offset) % len(UNKNOWN_KEYS)]
-        offset += 1
-        if key in held or key in taken:
-            continue
-        taken.add(key)
-        chosen[wanted[len(chosen)]] = key
+    for offset in range(min(len(wanted), len(pool))):
+        chosen[wanted[offset]] = pool[(start + offset) % len(pool)]
     return chosen
 
 
