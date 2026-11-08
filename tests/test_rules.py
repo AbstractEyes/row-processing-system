@@ -201,3 +201,8 @@ def test_relations_are_not_records_in_the_prompt():
     text = rules.writer_system()
     assert "no record key starts with" in text
     assert "Count the relations as records" not in text
+
+
+def test_the_deep_floor_is_reachable_within_the_caps():
+    assert "at least 1,100 bytes of thoughts in all" in rules.writer_system()
+    assert all(count * size >= 1100 for count, size in ((6, 270), (8, 185), (10, 150)))
