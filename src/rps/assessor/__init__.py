@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from ..assess import AssessContext, Assessment
-from . import checks, validator
+from . import checks, review_checks, validator
 from .problems import ERROR, Problem, errors, flags
 from .report import Report, balance_problems, row_stats
 from .similarity import SimilarityIndex
@@ -34,6 +34,7 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
         *validator.check_against_item(row, item),
         *validator.name_warnings(row),
         *checks.run_row_checks(row, item),
+        *[p for check in review_checks.REVIEW_CHECKS for p in check(row, item)],
     ]
 
 
@@ -42,10 +43,14 @@ def check_series(rows: Sequence[Mapping[str, Any]], item: Mapping[str, Any] | No
     return [*validator.check_series(rows, item), *checks.series_genre_check(rows)]
 
 
+# Errors that belong to the item, not the writer: the item is set aside under this skip class.
+SET_ASIDE_CLASS = {"person_in_hint": "person", "hint_contradicts_record": "contradiction"}
+
+
 def _assessment(problems: Sequence[Problem]) -> Assessment:
-    aside = [p for p in problems if p.code == "person_in_hint" and p.severity == ERROR]
+    aside = [p for p in problems if p.code in SET_ASIDE_CLASS and p.severity == ERROR]
     if aside:
-        return Assessment(passed=False, set_aside={"class": "person", "reason": aside[0].message})
+        return Assessment(passed=False, set_aside={"class": SET_ASIDE_CLASS[aside[0].code], "reason": aside[0].message})
     errs = errors(problems)
     codes = tuple(dict.fromkeys(p.code for p in flags(problems)))
     return Assessment(passed=not errs, flags=codes, errors=tuple(p.line() for p in errs))

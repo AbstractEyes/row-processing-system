@@ -86,9 +86,13 @@ def legacy_flags(legacy: Path, prod: Path, batches: list[str]) -> dict[str, set[
     return found
 
 
+levels: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+
+
 def assessor_flags(prod: Path, batches: list[str]):
     found: dict[str, set[str]] = defaultdict(set)
     detail: dict[tuple[str, str], str] = {}
+    levels.clear()
     for b in batches:
         rows = [json.loads(l) for l in (prod / f"batch_{b}.rows.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
         items = [json.loads(l) for l in (prod / f"batch_{b}.specs.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
@@ -96,6 +100,7 @@ def assessor_flags(prod: Path, batches: list[str]):
             if p.code == "missing":
                 continue
             found[p.code].add(p.row_id)
+            levels[(p.code, p.severity)].append((p.row_id, p.message))
             detail.setdefault((p.code, p.row_id), f"[{p.severity}] {p.message}")
     return found, detail
 
@@ -105,6 +110,7 @@ def main() -> int:
     parser.add_argument("--prod", required=True)
     parser.add_argument("--legacy", required=True)
     parser.add_argument("--show", type=int, default=6, help="differences listed per code")
+    parser.add_argument("--show-errors", type=int, default=12, help="hits listed per new error-level code")
     parser.add_argument("batches", nargs="+")
     args = parser.parse_args()
     prod, legacy = Path(args.prod), Path(args.legacy)
@@ -129,6 +135,14 @@ def main() -> int:
     print("\nFindings with no original counterpart (rows flagged)")
     for code in sorted(set(new) - set(legacy_codes)):
         print(f"  {code}: {len(new[code])}")
+    print("\nBy severity, with reasons (errors are listed first)")
+    for (code, severity), hits in sorted(levels.items(), key=lambda kv: (kv[0][1] != "error", kv[0])):
+        if code in legacy_codes:
+            continue
+        print(f"  {code} [{severity}] rows={len({r for r, _ in hits})}")
+        if severity == "error":
+            for rid, message in hits[: args.show_errors]:
+                print(f"      {rid}: {message[:150]}")
     return 0
 
 
