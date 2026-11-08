@@ -190,8 +190,8 @@ def test_hint_restatement_is_a_flag(medium):
 
 def test_one_caption_is_not_agreement(medium):
     item, row = medium
-    item = dict(item, hint=" ".join(["A cafe room with a window.", "A cafe interior with a window.", "A room in a cafe near a window.", "A cafe room with a mirror."]))
-    row["thoughts"][1]["text"] = "A mirror hangs beside the window."
+    item = dict(item, hint=" ".join(["A cafe room with a window.", "A cafe interior with a window.", "A room in a cafe near a window.", "A cafe room with a bench."]))
+    row["thoughts"][1]["text"] = "A bench stands beside the window."
     assert found(row, item, "single_caption_fact", FLAG)
 
 
@@ -247,3 +247,119 @@ def test_the_assessor_reports_the_new_errors_as_lines(medium):
     row["thoughts"][0]["text"] = "The only recorded garment is a sweater."
     result = assessor.Assessor()(row, _context(item))
     assert not result.passed and any(line.startswith("self_talk: ") for line in result.errors)
+
+
+def _problems(row, item=None):
+    return assessor.check_row(row, item)
+
+
+def _severity(row, code, item=None):
+    return {p.severity for p in _problems(row, item) if p.code == code}
+
+
+def test_fit_words_about_a_minor_are_an_error(medium):
+    item, row = medium
+    row["spec"]["person"] = {"gender": "boy", "age": "child", "count": "1"}
+    row["thoughts"][1]["text"] = "A sleek bodysuit sits on the boy."
+    assert found(row, item, "minor_fit", ERROR)
+    row["thoughts"][1]["text"] = "A tight close-up of the boy, with a plain gray bodysuit."
+    assert not found(row, item, "minor_fit")
+    row["spec"]["person"] = {"gender": "woman", "age": "30s", "count": "1"}
+    row["thoughts"][1]["text"] = "A sleek bodysuit on the woman."
+    assert not found(row, item, "minor_fit")
+
+
+def test_a_deep_row_needs_a_compare_or_change_step(deep):
+    item, row = deep
+    for t in row["thoughts"]:
+        if t["step"] in ("compare", "change"):
+            t["step"] = "check"
+    assert found(row, item, "step_missing", ERROR)
+    row["thoughts"][-1]["step"] = "change"
+    assert not found(row, item, "step_missing")
+
+
+def test_an_added_relation_is_flagged_when_the_item_holds_none(medium):
+    item, row = medium
+    assert not found(row, item, "invented_relation")
+    row["spec"]["relation"] = [{"a": "lamp", "rel": "beside", "b": "chair"}]
+    assert found(row, item, "invented_relation", FLAG)
+
+
+def test_mood_checks_second_review(deep):
+    item, row = deep
+    for t in row["thoughts"]:
+        if t["step"] in ("mood", "mean"):
+            t["text"] = "The soft light gives the room a cozy feel."
+    assert found(row, item, "mood_flat", ERROR)
+    for t in row["thoughts"]:
+        if t["step"] in ("mood", "mean"):
+            t["text"] = "The soft light gives the room what reads as a cozy feel."
+    assert not found(row, item, "mood_flat")
+    row["spec"]["mood"] = {"feeling": "cozy", "from": "thing position"}
+    assert found(row, item, "mood_weak_evidence", ERROR)
+
+
+def test_a_question_cannot_ask_for_a_key_the_row_holds(deep):
+    item, row = deep
+    chain = next(q for q in row["questions"] if q["needs"] == "chain")
+    chain["key"] = "look expression"
+    assert found(row, item, "question_held_key", ERROR)
+
+
+def test_an_unknown_question_the_text_answers_is_flagged(deep):
+    item, row = deep
+    unknown = next(q for q in row["questions"] if q["needs"] == "unknown")
+    unknown["key"] = "scene weather"
+    row["thoughts"][0]["text"] = "A rainy afternoon outside the glass."
+    row["thoughts"][0]["text"] = "A foggy morning outside the glass."
+    assert found(row, item, "unknown_stated", FLAG)
+
+
+def test_relation_readings(deep):
+    item, row = deep
+    row["thoughts"][0]["text"] = "The bottle stands to his right."
+    assert found(row, item, "relation_side", FLAG)
+    row["spec"]["relation"] = [{"a": "woman", "rel": "beside", "b": "table"}]
+    row["thoughts"][0]["text"] = "The table stays beside the woman."
+    assert found(row, item, "relation_reversed", FLAG)
+    row["thoughts"][0]["text"] = "The woman stays beside the table."
+    assert not found(row, item, "relation_reversed")
+
+
+def test_booru_tags(medium):
+    item, row = medium
+    row["wordings"]["tags"] = "1man, cafe"
+    assert found(row, item, "tag_booru", ERROR)
+    row["wordings"]["tags"] = "1boy, calm mood, warm palette"
+    assert found(row, item, "tag_phrase", FLAG) and not found(row, item, "tag_booru")
+
+
+def test_precise_invented_facts_stop_the_row(medium):
+    item, row = medium
+    row["wordings"]["caption"] = "A woman kneeling in a cafe."
+    assert _severity(row, "unrecorded_pose", item) == {ERROR}
+    row = copy.deepcopy(medium[1])
+    row["thoughts"][1]["text"] = "A worn bench by the door."
+    assert _severity(row, "unrecorded_detail", item) == {ERROR}
+    row = copy.deepcopy(medium[1])
+    row["spec"]["shot"] = {}
+    row["thoughts"][1]["text"] = "A tight crop of the sweater."
+    assert _severity(row, "unrecorded_shot", item) == {ERROR}
+    row = copy.deepcopy(medium[1])
+    row["spec"]["shot"] = {}
+    row["thoughts"][1]["text"] = "With a high angle the sweater would shrink."
+    assert not _severity(row, "unrecorded_shot", item)  # a what-if states nothing
+
+
+def test_the_assignment_for_an_item_without_a_relation():
+    from rps.rules import balance, task_text
+
+    item, _ = _example("painting_deep")
+    plain = dict(item, spec={k: v for k, v in item["spec"].items() if k != "relation"})
+    assert balance.assign(plain, 0).relation_part is None
+    assert balance.assign(item, 0).relation_part in ("a", "rel", "b")
+    assert "holds no relation: write no relation and ask no relation question" in task_text.build_task_text(plain, 0)
+    row = form.to_row(next(r for r in rules.examples() if r["name"] == "painting_deep")["output"]["rows"][0], plain, MODEL)
+    errors = [p for p in assessor.checks.assignment_check(row, balance.assign(plain, 0).to_dict()) if p.code == "assigned_relation_part"]
+    assert errors and "holds no relation" in errors[0].message

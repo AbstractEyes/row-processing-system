@@ -61,7 +61,7 @@ DEPTH_BY_RANK = {1: "simple", 2: "medium", 3: "deep"}
 class Assignment:
     """What the runner decided for one call."""
 
-    relation_part: str
+    relation_part: str | None  # None: the item holds no relation, so no relation question is asked
     unknown_keys: Mapping[str, str]  # depth -> key ("simple" never has one)
     wordings: Mapping[str, tuple[str, ...]]  # depth -> wording kinds
 
@@ -127,11 +127,16 @@ def unknown_keys(item: Mapping[str, Any], ordinal: int) -> dict[str, str]:
     return chosen
 
 
+def holds_relation(item: Mapping[str, Any]) -> bool:
+    """True when the item's deepest spec holds at least one relation."""
+    return bool(_deepest_spec(item).get("relation"))
+
+
 def assign(item: Mapping[str, Any], ordinal: int) -> Assignment:
     """The runner's choices for the spec item at position `ordinal` in its batch."""
     depths = item_depths(item)
     return Assignment(
-        relation_part=relation_part(ordinal),
+        relation_part=relation_part(ordinal) if holds_relation(item) else None,
         unknown_keys=unknown_keys(item, ordinal),
         wordings={depth: WORDINGS_BY_DEPTH[depth] for depth in depths},
     )

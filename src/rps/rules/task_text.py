@@ -68,7 +68,10 @@ def build_task_text(item: Mapping[str, Any], ordinal: int, assignment: Assignmen
         out.extend(render_spec(item["spec"]))
     out.append("")
     out.append("Assigned for this call:")
-    out.append(f"- Relation question (rows that hold a relation): ask 'rel1 {plan.relation_part}'.")
+    if plan.relation_part:
+        out.append(f"- Relation question (rows that hold a relation): ask 'rel1 {plan.relation_part}'.")
+    else:
+        out.append("- This item holds no relation: write no relation and ask no relation question.")
     if plan.unknown_keys:
         out.append(
             "- Unknown question key by depth: "

@@ -76,6 +76,14 @@ def _prose(row: Mapping[str, Any]) -> list[str]:
     return [t for _, t in _thoughts(row)] + [str(w.get(k) or "") for k in ("caption", "prompt", "critique")]
 
 
+COUNTERFACTUAL = re.compile(r"\b(?:would|could|might|if|were|instead|rather|sink|sinks|turn|turns|fade|fades|lose|loses)\b", re.I)
+
+
+def _asserted(row: Mapping[str, Any]) -> list[str]:
+    """The prose sentences that state what the picture shows (not a what-if)."""
+    return [s for text in _prose(row) for s in re.split(r"(?<=[.!?;])\s+", text) if not COUNTERFACTUAL.search(s)]
+
+
 def _spec(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return row.get("spec") or {}
 
@@ -167,8 +175,8 @@ def thought_repeat_check(row: Mapping[str, Any], item: Any = None) -> list[Probl
 THINGS = {
     "table": "table", "counter": "counter", "cushion": "pillow", "pillow": "pillow", "sofa": "sofa", "couch": "sofa", "rug": "rug",
     "curtain": "curtain", "shelf": "shelf", "shelve": "shelf", "lamp": "lamp", "window": "window", "door": "door", "fence": "fence",
-    "bench": "bench", "desk": "desk", "mirror": "mirror", "scrub": "scrub", "bush": "bush", "path": "path", "road": "road",
-    "rock": "rock", "fountain": "fountain", "bridge": "bridge", "boat": "boat", "bar": "bar",
+    "bench": "bench", "desk": "desk", "scrub": "scrub", "bush": "bush", "path": "path", "road": "road",
+    "rock": "rock", "fountain": "fountain", "bridge": "bridge", "boat": "boat",
 }
 
 
@@ -178,13 +186,13 @@ def unrecorded_thing_check(row: Mapping[str, Any], item: Any = None) -> list[Pro
         return []
     held = {THINGS.get(_stem(w), _stem(w)) for w in _words(_evidence(row, item))}
     seen: dict[str, str] = {}
-    for text in _prose(row):
+    for text in _asserted(row):
         for w in _words(text):
             key = THINGS.get(_stem(w))
             if key and key not in held:
                 seen.setdefault(key, w)
     if seen:
-        return [Problem("unrecorded_thing", _rid(row), f"things in the text that no record or hint holds: {sorted(seen.values())}", FLAG)]
+        return [Problem("unrecorded_thing", _rid(row), f"things in the text that no record or hint holds: {sorted(seen.values())}; remove {sorted(seen.values())[0]!r}", FLAG)]
     return []
 
 
@@ -202,7 +210,7 @@ def unrecorded_light_check(row: Mapping[str, Any], item: Any = None) -> list[Pro
     if (spec.get("shot") or {}).get("light"):
         return []
     evidence = _evidence(row, item)
-    for text in _prose(row):
+    for text in _asserted(row):
         for match in LIGHT.finditer(text):
             word = match.group(0).lower()
             root = next((r for r in LIGHT_ROOTS if r in word), word)
@@ -219,10 +227,10 @@ DETAIL = re.compile(r"\b(small|large|big|tiny|huge|low|chipped|weathered|rusty|w
 def unrecorded_detail_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     """A size or wear adjective on a thing when no record or hint gives it."""
     stems = _evidence_stems(row, item)
-    for text in _prose(row):
+    for text in _asserted(row):
         for match in DETAIL.finditer(text):
             if _stem(match.group(2)) in THINGS and _stem(match.group(1)) not in stems:
-                return [Problem("unrecorded_detail", _rid(row), f"{match.group(0)!r}: no record or hint gives that detail", FLAG)]
+                return [Problem("unrecorded_detail", _rid(row), f"{match.group(0)!r}: no record or hint gives that detail; remove {match.group(1).lower()!r}", FLAG)]
     return []
 
 
@@ -238,12 +246,12 @@ def unrecorded_shot_check(row: Mapping[str, Any], item: Any = None) -> list[Prob
     if shot.get("framing") and shot.get("angle"):
         return []
     evidence = _evidence(row, item).replace("-", " ").replace("'", "")
-    for text in _prose(row):
+    for text in _asserted(row):
         for match in SHOT.finditer(text):
             phrase = match.group(0).lower().replace("-", " ").replace("'", "")
             key = phrase.split()[0]
             if key not in evidence and not (shot.get("framing") and key in ("close", "extreme", "tight", "wide", "medium")):
-                return [Problem("unrecorded_shot", _rid(row), f"the shot {match.group(0)!r} is not recorded and the hint does not give it", FLAG)]
+                return [Problem("unrecorded_shot", _rid(row), f"the shot {match.group(0)!r} is not recorded and the hint does not give it; remove {match.group(0)!r}", FLAG)]
     return []
 
 
@@ -267,14 +275,14 @@ def unrecorded_pose_check(row: Mapping[str, Any], item: Any = None) -> list[Prob
                 continue
             return [Problem("state_conflict", _rid(row), f"{match.group(0)!r} in the text, but the record says {state or pose}", FLAG)]
         if "person" in spec and not pose and match.group(0).lower() not in _hint(item).lower():
-            return [Problem("unrecorded_pose", _rid(row), f"{match.group(0)!r}: no pose is recorded", FLAG)]
+            return [Problem("unrecorded_pose", _rid(row), f"{match.group(0)!r}: no pose is recorded; remove {match.group(0)!r}", FLAG)]
     return []
 
 
 # ------------------------------------------------------------------ mood
 
-WEAK_FROM_ERROR = frozenset({"thing count"})
-WEAK_FROM_FLAG = frozenset({"thing colour", "thing name", "thing position"})
+WEAK_FROM_ERROR = frozenset({"thing count", "thing position"})
+WEAK_FROM_FLAG = frozenset({"thing colour", "thing name"})
 SYNONYMS = {"moving": ("motion", "movement", "move", "moves"), "standing": ("stands", "stand", "upright"), "still": ("stillness", "calm")}
 # Words that show a sentence is reading the mood from this kind of record.
 COLOR_CUES = ("color", "colour", "paint", "hue", "palette", "beige", "brown", "green", "blue", "red", "white", "black", "gray", "yellow")
@@ -559,6 +567,136 @@ def caption_hint_list_check(row: Mapping[str, Any], item: Any = None) -> list[Pr
     return []
 
 
+# ------------------------------------------------------------------ what the second blind review found
+
+MINOR_AGES = frozenset({"child", "teen", "baby"})
+FIT_WORDS = re.compile(
+    r"\b(?:fitted|sleek|tight(?=[ -](?:fit|fitting|jeans|pants|dress|top|shirt|clothes|clothing|suit|bodysuit|leggings|sweater|trousers|skirt))|tightly fitted|form-fitting|skin-tight|clingy|clinging|figure-hugging|body-hugging|curvy|shapely|snug|slim-fitting|revealing)\b",
+    re.I,
+)
+
+
+def minor_fit_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """Fit or shape words about the clothes or body of a minor: describe them plainly."""
+    person = _spec(row).get("person") or {}
+    if str(person.get("age") or "").lower() not in MINOR_AGES and not (not person.get("age") and str(person.get("gender") or "").lower() in ("boy", "girl")):
+        return []
+    for text in _prose(row):
+        match = FIT_WORDS.search(text)
+        if match:
+            return [Problem("minor_fit", _rid(row), f"{match.group(0)!r} describes the clothes or body of a minor; describe the clothes plainly (color, kind, pattern)")]
+    return []
+
+
+def deep_steps_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A deep row holds a thought labeled compare or change."""
+    if row.get("depth") == "deep" and not any(step in ("compare", "change") for step, _ in _thoughts(row)):
+        return [Problem("step_missing", _rid(row), "a deep row needs a thought labeled compare or change (two things set against each other, or what would change)")]
+    return []
+
+
+def _item_relations(item: Any, depth: Any) -> list[tuple[str, str, str]]:
+    if not isinstance(item, Mapping):
+        return []
+    spec = (item.get("specs") or {}).get(depth) if item.get("kind") == "series" else item.get("spec")
+    return [(str(r.get("a")), str(r.get("rel")), str(r.get("b"))) for r in (spec or {}).get("relation") or []]
+
+
+def invented_relation_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A relation the row holds that the item did not give: writers made one up to answer a relation question."""
+    if not isinstance(item, Mapping):
+        return []
+    given = set(_item_relations(item, row.get("depth")))
+    extra = [(r.get("a"), r.get("rel"), r.get("b")) for r in _spec(row).get("relation") or [] if (str(r.get("a")), str(r.get("rel")), str(r.get("b"))) not in given]
+    if extra and not given:
+        a, rel, b = extra[0]
+        return [Problem("invented_relation", _rid(row), f"the item holds no relation, but the row adds {a} {rel} {b}; write no relation the records do not give", FLAG)]
+    return []
+
+
+FLAT_MOOD = re.compile(r"\b(?:gives?|lends?|creates?|evokes?)\b", re.I)
+
+
+def mood_flat_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A mood stated with a flat verb and no hedge in its sentence."""
+    for sentence in _mood_sentences(row):
+        match = FLAT_MOOD.search(sentence)
+        if match and not HEDGE.search(sentence):
+            return [Problem("mood_flat", _rid(row), f"the mood is stated flatly ({match.group(0)!r}); hedge it: suggests, seems, reads as, may, feels")]
+    return []
+
+
+def chain_held_key_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A chain or unknown question must ask for a key the row holds no record for."""
+    held = {f"{system} {attribute}" for system, body in _spec(row).items() if system != "relation" and isinstance(body, Mapping) for attribute in body}
+    for q in row.get("questions", []):
+        if q.get("needs") in ("chain", "unknown") and str(q.get("key", "")) in held:
+            return [Problem("question_held_key", _rid(row), f"{q.get('needs')} question {q.get('key')!r} asks for a key the row already holds as a record; ask for a key it lacks")]
+    return []
+
+
+UNKNOWN_CUES = {
+    "thing position": re.compile(r"\b(?:in the )?(?:middle|center|centre)\b|\b(?:left|right|top|bottom|upper|lower) (?:third|side|edge|of the frame)\b", re.I),
+    "scene weather": re.compile(r"\b(?:overcast|cloudy|rainy|foggy|sunny|stormy|snowy|windy|clear sky|clear weather)\b", re.I),
+    "scene time": re.compile(r"\b(?:morning|evening|noon|dusk|dawn|midday|afternoon|night|sunset|sunrise)\b", re.I),
+    "shot angle": re.compile(r"\b(?:high angle|low angle|eye level|eye-level|bird's-eye|worm's-eye|from above|from below)\b", re.I),
+    "shot lens": re.compile(r"\b(?:wide-angle|telephoto|macro lens|fisheye|wide angle)\b", re.I),
+    "body pose": re.compile(r"\b(?:standing|sitting|seated|kneeling|leaning|lying|crouching)\b", re.I),
+}
+
+
+def unknown_stated_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """An unknown question whose answer the row's own text states."""
+    for q in row.get("questions", []):
+        pattern = UNKNOWN_CUES.get(str(q.get("key", ""))) if q.get("needs") == "unknown" else None
+        if pattern is None:
+            continue
+        for text in _prose(row):
+            match = pattern.search(text)
+            if match:
+                return [Problem("unknown_stated", _rid(row), f"the unknown question {q.get('key')!r} is answered by the text ({match.group(0)!r}); ask about something the row leaves out", FLAG)]
+    return []
+
+
+OWN_SIDE = re.compile(r"\bto (?:his|her|their|its) (?:left|right)\b", re.I)
+DIRECTIONAL = ("left of", "right of", "above", "below", "behind", "in front of", "under", "over", "beside", "next to")
+
+
+def relation_reading_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    """A relation read backwards in prose, or a side given from a person's own point of view."""
+    texts = _prose(row)
+    for text in texts:
+        match = OWN_SIDE.search(text)
+        if match:
+            return [Problem("relation_side", _rid(row), f"{match.group(0)!r} can flip the relation; say left or right of the frame or of the named thing", FLAG)]
+    for relation in _spec(row).get("relation") or []:
+        a, rel, b = (str(relation.get(k, "")).lower() for k in ("a", "rel", "b"))
+        if rel not in DIRECTIONAL or not a or not b:
+            continue
+        reversed_ = re.compile(rf"\b{re.escape(b)}\b[^.;]{{0,24}}\b{re.escape(rel)}\b[^.;]{{0,16}}\b{re.escape(a)}\b", re.I)
+        for text in texts:
+            match = reversed_.search(text)
+            if match:
+                return [Problem("relation_reversed", _rid(row), f"{match.group(0)!r} reads the relation {a} {rel} {b} backwards", FLAG)]
+    return []
+
+
+BOORU_COUNT = re.compile(r"^\d+(?:man|men|woman|women|person|people|male|female)$")
+TAG_PHRASE = re.compile(r"\b(?:mood|palette|tones?|contrast|composition|atmosphere|feeling|leading lines)\b", re.I)
+
+
+def tag_booru_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+    items = _tag_items(_wordings(row).get("tags"))
+    bad = [t for t in items if BOORU_COUNT.match(t.replace(" ", ""))]
+    out: list[Problem] = []
+    if bad:
+        out.append(Problem("tag_booru", _rid(row), f"tags {bad} are not booru tags; use 1girl, 1boy, 1other, solo, 2girls, 2boys, multiple girls, multiple boys"))
+    phrases = [t for t in items if TAG_PHRASE.search(t)]
+    if phrases:
+        out.append(Problem("tag_phrase", _rid(row), f"tags {phrases[:3]} name a mood, palette or composition; tags name what the picture shows", FLAG))
+    return out
+
+
 REVIEW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     self_talk_check,
     self_hedge_check,
@@ -581,4 +719,12 @@ REVIEW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     caption_garment_check,
     style_on_scene_check,
     caption_hint_list_check,
+    minor_fit_check,
+    deep_steps_check,
+    invented_relation_check,
+    mood_flat_check,
+    chain_held_key_check,
+    unknown_stated_check,
+    relation_reading_check,
+    tag_booru_check,
 )

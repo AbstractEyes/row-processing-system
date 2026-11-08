@@ -138,11 +138,12 @@ def test_task_text_carries_ids_records_hint_and_assignment():
     example = next(e for e in rules.examples() if e["name"] == "seeded_single")
     text = task_text.build_task_text(example["item"], 4)
     assert "art-096005" in text and "Hint:" in text and "thing name = grasshopper" in text
-    assert "rel1 rel" in text  # ordinal 4 -> second part
+    assert "holds no relation" in text  # the seeded item gives no relation: no relation question
     series = next(e for e in rules.examples() if e["name"] == "people_series")
     text = task_text.build_task_text(series["item"], 0)
     assert "art-900001, art-900002, art-900003" in text
     assert "relation 1: woman | beside | table" in text
+    assert "ask 'rel1 a'" in text  # ordinal 0 -> first part, for an item that holds a relation
     assert "medium = caption, prompt, tags" in text
 
 
@@ -206,7 +207,7 @@ def test_relations_are_not_records_in_the_prompt():
 
 
 def test_the_deep_floor_is_reachable_within_the_caps():
-    assert "at least 1,100 bytes of thoughts in all" in rules.writer_system()
+    assert "about 1,100 bytes of thoughts only when the records are full" in rules.writer_system()
     assert all(count * size >= 1100 for count, size in ((6, 270), (8, 185), (10, 150)))
 
 

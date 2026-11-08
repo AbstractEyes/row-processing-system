@@ -296,18 +296,36 @@ def person_in_hint_check(row: Mapping[str, Any], item: Mapping[str, Any] | None 
     return []
 
 
+# A color a thing's own name or weather implies: it needs no record.
+IMPLIED_COLORS = {
+    "white": ("snow", "snowy", "snowfield", "frost", "ice", "cloud", "clouds"),
+    "blue": ("sky", "clear", "sea", "ocean", "lake", "water"),
+    "gray": ("overcast", "fog", "foggy", "rain", "stone", "concrete", "cement", "mist"),
+    "green": ("grass", "forest", "meadow", "leaf", "leaves", "foliage", "garden", "jungle", "moss"),
+    "brown": ("sepia", "soil", "dirt", "mud", "wood", "wooden"),
+    "black": ("night", "shadow", "coal"),
+    "yellow": ("sun", "sunny", "sunlight", "golden hour"),
+}
+COUNTERFACTUAL = re.compile(r"\b(?:would|could|might|if|were|instead|rather|sink|sinks|turn|turns|fade|fades|lose|loses)\b", re.I)
+
+
 def unrecorded_color_check(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:
     spec = row.get("spec") or {}
     evidence = " ".join(spec_values(spec))
     if isinstance(item, Mapping):
         evidence += " " + str(item.get("hint", "")).lower()
     held = {COLOR_FAMILY.get(w, w) for w in COLOR_RE.findall(evidence)}
+    words = set(re.findall(r"[a-z]+", evidence.lower()))
+    for color, causes in IMPLIED_COLORS.items():
+        if words & set(causes):
+            held.add(color)
     palette = ((spec.get("form") or {}).get("palette") or "").lower()
     held |= {COLOR_FAMILY.get(w, w) for w in COLOR_RE.findall(palette)}
-    seen = {COLOR_FAMILY.get(w, w) for t in prose_texts(row) for w in COLOR_RE.findall(t.lower())}
+    sentences = [s for t in prose_texts(row) for s in re.split(r"(?<=[.!?;])\s+", t) if not COUNTERFACTUAL.search(s)]
+    seen = {COLOR_FAMILY.get(w, w) for s in sentences for w in COLOR_RE.findall(s.lower())}
     stray = sorted(seen - held)
     if stray:
-        return [Problem("unrecorded_color", row_id(row), f"colors in the text that no record holds: {stray}", FLAG)]
+        return [Problem("unrecorded_color", row_id(row), f"colors in the text that no record or hint holds: {stray}; remove {stray[0]!r}", FLAG)]
     return []
 
 
@@ -398,6 +416,9 @@ def assignment_check(row: Mapping[str, Any], assignment: Mapping[str, Any] | Non
     out: list[Problem] = []
     rid, depth = row_id(row), str(row.get("depth"))
     part = assignment.get("relation_part")
+    asked_any = [str(q.get("key", "")) for q in row.get("questions", []) if str(q.get("key", "")).startswith("rel")]
+    if "relation_part" in assignment and part is None and asked_any:
+        out.append(Problem("assigned_relation_part", rid, f"this item holds no relation, so no relation question is asked; remove {asked_any[0]!r}"))
     asked = [m.group(2) for q in row.get("questions", []) if (m := RELATION_KEY.match(str(q.get("key", ""))) ) and m.group(1) == "1"]
     if part and asked and part not in asked:
         out.append(Problem("assigned_relation_part", rid, f"the relation question was assigned as 'rel1 {part}'; this row asks {', '.join(repr('rel1 ' + a) for a in asked)}"))
