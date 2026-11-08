@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.5. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.2.6. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
@@ -14,6 +14,15 @@ for trying one route with a handful of calls. Everything is tested offline: with
 and with each adapter against the SDKs' own types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.6
+
+| Change | What happens now |
+|---|---|
+| The Gemini batch service takes the row schema in an OpenAPI form | The probe of 0.2.5 found the schema is the part the batch service refuses: the request without it was taken; with the plain schema in `response_json_schema` every item came back "3: Request contains an invalid argument." after running; with the schema in `response_schema` the batch was refused at creation with `Unknown name "additional_properties"` at the schema and at every nested object. The SDK's `Schema` type has `additionalProperties` and sends it even as `false`; the API's Schema object has 22 keywords and not that one. The new schema mode `openapi` (`rps.providers.schemas.gemini_schema`) writes the schema with only those keywords at every depth (`additionalProperties` and the other JSON Schema keywords outside the list are left out, `$ref` is written out in place, every `required` list is kept, a value list stays a list only on a text field where all its values are non-empty text and otherwise moves into the description). The documented batch form (`batch_form: documented`, and the step down after a refused batch) sends it in `response_schema` whatever the `schema` option says. The probe has a variant `openapi` (the request as sent with this form in `response_schema`). `plain` and `exact` are as they were. **Not yet run against the live service**: whether the batch service takes the `openapi` form is what the next probe shows |
+| The explicit cache's 404 is a matter of the API version | `caches.create` answered `404 Not Found` with an empty body (the SDK prints `{'message': '', 'status': 'Not Found'}` when the body is not JSON), which is a path the service does not have. google-genai 3.0.0 sends a Gemini API client's requests to `v1` unless told otherwise, and Google's caching page says explicit caching is in Beta, "endpoints and SDK methods are available under `v1beta`", with `/v1beta/cachedContents` the only path in its REST reference. The model name form (`gemini-3.8-flash`, sent as `models/gemini-3.8-flash`) is the one its examples use, and the page names Gemini 3 and 2.5 models as having explicit caching, so neither the model nor the size is the cause. The new route option `api_version` (`auto`, `v1`, `v1beta`) sets the version for the whole route; `auto` leaves it to the SDK except that a route with `cache: true` uses `v1beta` for the cache, the batch that names it and every poll, and `cache: true` with `api_version: v1` is refused when the route is made. The probe has `--api-version`, uses `v1beta` for a whole run that makes a cache, and prints the version it used in its first line. **Not yet run against the live service** |
+| Claude writers and Claude reviewers get the pictures of public datasets | The routing table now allows `public_common`, `coco` and `ffhq` for Claude, as for the other families; `deepfashion`, `hico` and `synthetic` stay closed to every outside provider. The Anthropic adapter had its own text-only rule ahead of the table, so a task with pictures for a Claude route, refused when it was added before, would have been taken and failed when its calls were built; it now asks the table like the other adapters and sends the picture first in the user message as a base64 image block. Review packets already followed the table by the reviewer's family, so Claude reviewers get those pictures too. This sends no picture by itself: no task has one until a picture run is started |
+| Notebook | The install line names `v0.2.6` |
 
 ## What changed in 0.2.5
 
@@ -135,7 +144,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.5"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.6"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -777,6 +786,10 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 - Two lost Anthropic batches of the same size are matched to their groups in the order the groups
   were sent; if that guess is wrong the check at collection sends the calls again.
 - The prices of a prompt over a long-prompt threshold are not modeled: such a call is refused.
-- The part of the Gemini batch request that the service refuses is not known: the second form of the
-  request is built from the batch pages, not from a live answer, and the cause is not confirmed until
-  `python -m rps.geminiprobe --route flash-batch --batch` has been run once against the service.
+- Whether the Gemini batch service takes the `openapi` form of the row schema is not known: the probe of
+  0.2.5 named the schema as the refused part and the rejected name, and this form leaves that name out, but
+  it has not been run against the service. `python -m rps.geminiprobe --route flash-batch --batch --only
+  as_sent,openapi,documented,no_schema` (and the same with `--api-version v1beta`, since the SDK defaults to
+  `v1` and the first form's refusal has not been tried on the other version) shows it. Until then a route is
+  best left on `batch_form: auto`.
+- The explicit cache has not been made against the live service since it was moved to `v1beta`.
