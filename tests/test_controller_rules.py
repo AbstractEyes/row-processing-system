@@ -52,6 +52,8 @@ def conform(payload, output):
     unknown = dict(re.findall(r"(simple|medium|deep) = '([^']+)'", line))
     out = json.loads(json.dumps(output))
     for row in out["rows"]:
+        if not part:  # the item holds no relation: no relation question
+            row["questions"] = [q for q in row["questions"] if not re.fullmatch(r"rel\d+ (a|rel|b)", q["key"])]
         for q in row["questions"]:
             if part and re.fullmatch(r"rel1 (a|rel|b)", q["key"]):
                 q["key"] = f"rel1 {part.group(1)}"

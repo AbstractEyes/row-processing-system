@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
@@ -103,6 +104,7 @@ def test_normalize_output():
     assert form.normalize_output("not json", example["item"], "m") == "not json"
     broken = json.dumps({"skip": False, "reason": "", "class": "", "rows": [{"id": "x"}]})
     assert form.normalize_output(broken, example["item"], "m") == broken
+    assert form.explain_failures(broken, example["item"], "m")[0].startswith("x: the row lacks")
 
 
 def test_relation_part_cycle_keeps_the_second_thing_to_a_third():
@@ -136,11 +138,12 @@ def test_task_text_carries_ids_records_hint_and_assignment():
     example = next(e for e in rules.examples() if e["name"] == "seeded_single")
     text = task_text.build_task_text(example["item"], 4)
     assert "art-096005" in text and "Hint:" in text and "thing name = grasshopper" in text
-    assert "rel1 rel" in text  # ordinal 4 -> second part
+    assert "holds no relation" in text  # the seeded item gives no relation: no relation question
     series = next(e for e in rules.examples() if e["name"] == "people_series")
     text = task_text.build_task_text(series["item"], 0)
     assert "art-900001, art-900002, art-900003" in text
     assert "relation 1: woman | beside | table" in text
+    assert "ask 'rel1 a'" in text  # ordinal 0 -> first part, for an item that holds a relation
     assert "medium = caption, prompt, tags" in text
 
 
@@ -204,5 +207,90 @@ def test_relations_are_not_records_in_the_prompt():
 
 
 def test_the_deep_floor_is_reachable_within_the_caps():
-    assert "at least 1,100 bytes of thoughts in all" in rules.writer_system()
+    assert "about 1,100 bytes of thoughts only when the records are full" in rules.writer_system()
     assert all(count * size >= 1100 for count, size in ((6, 270), (8, 185), (10, 150)))
+
+
+def _row_in_writer_form():
+    example = next(e for e in rules.examples() if e["name"] == "people_series")
+    return copy.deepcopy(example["output"]["rows"][1]), example["item"]
+
+
+def test_a_numeric_depth_and_rank_are_named():
+    row, _ = _row_in_writer_form()
+    row["depth"], row["rank"] = 2, "2"
+    problems = form.row_problems(row)
+    assert any("'depth' is 2" in p and "simple, medium, deep" in p for p in problems)
+    assert any("'rank' is '2'" in p and "number 1, 2 or 3" in p for p in problems)
+
+
+def test_a_one_word_record_key_names_the_keys_its_system_adds():
+    row, item = _row_in_writer_form()
+    row["records"] = [{"key": "mood", "value": "cozy"}, {"key": "story", "value": "a pause"}, {"key": "palette", "value": "warm"}]
+    problems = form.row_problems(row)
+    assert any("'mood' is one word" in p and "'mood feeling' and 'mood from'" in p for p in problems)
+    assert any("'story' is one word" in p and "'story before', 'story after', 'story cause'" in p for p in problems)
+    assert any("'palette' is one word" in p and "'system attribute'" in p for p in problems)
+    wrapper = json.dumps(form.wrap([row]))
+    assert form.normalize_output(wrapper, item, "m") == wrapper
+    lines = form.explain_failures(wrapper, item, "m")
+    assert len(lines) == 1 and lines[0].startswith(row["id"] + ": ") and "'mood' is one word" in lines[0]
+    assert form.explain_failures(json.dumps(form.wrap([_row_in_writer_form()[0]])), item, "m") == []
+    assert form.explain_failures("not json", item, "m") == []
+
+
+def test_list_fields_say_the_form_they_need():
+    row, _ = _row_in_writer_form()
+    row["wordings"] = {"caption": "A woman."}
+    row["thoughts"] = [{"text": "No step."}]
+    problems = form.row_problems(row)
+    assert any("'wordings'" in p and "a list" in p for p in problems)
+    assert any("thoughts item 1" in p and "step" in p for p in problems)
+
+
+def test_a_good_row_has_no_problem():
+    row, _ = _row_in_writer_form()
+    assert form.row_problems(row) == []
+
+
+def test_the_prompt_states_the_format_and_the_keys_each_depth_adds():
+    text = rules.writer_system()
+    for phrase in ("FORMAT:", "depth is a word", '"mood feeling" and "mood from"', '"story before", "story after", "story cause"', "prefer US spelling", "the deep rank keeps every record and relation of the medium rank unchanged"):
+        assert phrase in text
+
+
+def test_the_json_format_block_is_placeholders_only():
+    text = rules.json_format()
+    assert '"depth": "<simple or medium or deep>"' in text and "Never 1, 2 or 3" in text
+    assert '"mood feeling", "mood from"' in text and '"story before", "story after", "story cause"' in text
+    assert "skip" in text and "<one sentence>" in text
+    for example in rules.examples():
+        for row in example["output"]["rows"]:
+            assert row["id"] not in text and not any(t["text"] in text for t in row["thoughts"])
+
+
+def test_the_format_block_is_part_of_the_version():
+    assert "json_format.md" in rules_compile.VERSIONED
+
+
+def test_the_genres_drawn_specs_carry_are_on_the_list_and_in_the_prompt():
+    from rps.assessor.checks import EXTRA_GENRES, GENRES
+
+    text = rules.writer_system()
+    assert "animal study" in GENRES and EXTRA_GENRES <= GENRES
+    assert all(genre in text for genre in EXTRA_GENRES)
+    assert "so replace it" in text and "only in a row that has a relation" in text
+
+
+def test_an_off_list_drawn_genre_is_named_in_the_task_text():
+    item = dict(_example_item(), genre="amphora")
+    text = task_text.build_task_text(item, 0)
+    assert 'the drawn genre "amphora" is not on the genre list' in text and "choose the genre that fits from the list" in text
+    assert "Genre: amphora." not in text
+    listed = task_text.build_task_text(dict(item, genre="animal study"), 0)
+    assert "Genre: animal study." in listed
+    assert "choose the one that fits" in task_text.build_task_text({k: v for k, v in item.items() if k != "genre"}, 0)
+
+
+def _example_item():
+    return copy.deepcopy(next(e for e in rules.examples() if e["name"] == "painting_deep")["item"])

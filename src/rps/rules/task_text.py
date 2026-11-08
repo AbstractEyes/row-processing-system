@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from ..assessor.checks import GENRES
 from .balance import Assignment, assign
 
 RANK_BY_DEPTH = {"simple": 1, "medium": 2, "deep": 3}
@@ -44,7 +45,12 @@ def build_task_text(item: Mapping[str, Any], ordinal: int, assignment: Assignmen
         out.append(f"Write one single row. Series id {item['series']}. Row id {ids[0]}. Rank 1, depth {depth}.")
     out.append(f"Domain: {item['domain']}.")
     genre = item.get("genre")
-    out.append(f"Genre: {genre}." if genre else "Genre: choose the one that fits, from the genre list.")
+    if not genre:
+        out.append("Genre: choose the one that fits, from the genre list.")
+    elif genre in GENRES:
+        out.append(f"Genre: {genre}.")
+    else:
+        out.append(f'Genre: the drawn genre "{genre}" is not on the genre list (it is a topic or an object name, not a genre); choose the genre that fits from the list.')
     if seeded:
         out.append("")
         out.append(
@@ -62,7 +68,10 @@ def build_task_text(item: Mapping[str, Any], ordinal: int, assignment: Assignmen
         out.extend(render_spec(item["spec"]))
     out.append("")
     out.append("Assigned for this call:")
-    out.append(f"- Relation question (rows that hold a relation): ask 'rel1 {plan.relation_part}'.")
+    if plan.relation_part:
+        out.append(f"- Relation question (rows that hold a relation): ask 'rel1 {plan.relation_part}'.")
+    else:
+        out.append("- This item holds no relation: write no relation and ask no relation question.")
     if plan.unknown_keys:
         out.append(
             "- Unknown question key by depth: "

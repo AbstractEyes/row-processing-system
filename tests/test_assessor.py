@@ -98,7 +98,6 @@ def test_item_checks(series):
         (lambda r: r["thoughts"][2].update(text="This is an inference from the sweater."), "formula_word"),
         (lambda r: r["wordings"].pop("critique"), "wording_missing"),
         (lambda r: r["questions"][0].update(key="rel1 second"), "relation_key"),
-        (lambda r: r["wordings"].update(caption="A woman in a mustard colour sweater."), "us_spelling"),
         (lambda r: r["thoughts"][3].update(text="A baroque feel in the soft window light."), "style_lowercase"),
         (lambda r: r["wordings"].update(tags="1girl, solo, yellow sweater, striped sweater, blue skirt, cafe"), "garment_missing_tags"),
         (lambda r: r["wordings"].update(caption="A woman in a dress in a cafe."), "dress_caption"),
@@ -160,7 +159,7 @@ def test_assessor_gives_error_lines_and_flag_codes(series):
     result = assessor.Assessor()(row, _context(item))
     assert result.passed is False
     assert any(line.startswith("dress_caption: ") for line in result.errors)
-    assert any(line.startswith("us_spelling: ") for line in result.errors)
+    assert not any("spelling" in line for line in result.errors)
     assert "unrecorded_color" in result.flags
 
 

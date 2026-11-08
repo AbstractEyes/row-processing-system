@@ -27,15 +27,21 @@ def _item(spec: Any) -> Mapping[str, Any] | None:
     return spec if isinstance(spec, Mapping) else None
 
 
+# Findings raised as flags by their check that stop a row: each names the word to remove, and each
+# had almost no hits on the released rows (see tools/parity.py).
+ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "unrecorded_detail", "unrecorded_shot"})
+
+
 def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:
     """Every finding about one row: the validator, the item checks, the row checks."""
-    return [
+    found = [
         *validator.validate_row(row),
         *validator.check_against_item(row, item),
         *validator.name_warnings(row),
         *checks.run_row_checks(row, item),
         *[p for check in review_checks.REVIEW_CHECKS for p in check(row, item)],
     ]
+    return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED else p for p in found]
 
 
 def check_series(rows: Sequence[Mapping[str, Any]], item: Mapping[str, Any] | None = None) -> list[Problem]:

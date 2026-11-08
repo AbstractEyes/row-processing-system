@@ -7,6 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
+from .checks import british_words
 from .problems import ERROR, FLAG, Problem
 
 RELATION_B_SHARE_MAX = 0.5  # the second thing may be asked about on at most half of a batch's relation questions
@@ -68,6 +69,7 @@ def row_stats(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
             hedges[hedge] += text.lower().count(hedge)
     relation_total = sum(relation_keys.values())
     return {
+        "british_spelling_rows": sum(1 for r in rows if british_words(r)),
         "by_depth": dict(Counter(r.get("depth") for r in rows)),
         "by_domain": dict(Counter(r.get("domain") for r in rows)),
         "unknown_keys": dict(unknown.most_common()),

@@ -64,7 +64,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 |---|---|---|---|
 | 36 | Caption: one natural sentence. Prompt: comma-separated phrases that would recreate the picture. Tags: lower-case booru tags with colors as booru color words; 1girl, 1boy, 1other, solo only where the person records agree; "high angle", never "from above". | READER | |
 | 37 | Critique: one or two specific, craft-based sentences. | READER | |
-| 38 | American spelling in prose and tags (color, gray, center, favorite, jewelry, harbor, armor, theater, cozy). Record values and step kinds keep the lists' spellings. | ASSESSOR | us_spelling |
+| 38 | Prose and tags prefer American spelling (color, gray, center, harbor); records keep theirs. British spelling never rejects or flags a row; `americanize_row` corrects it after writing and the report counts it. | WRITER | |
 | 39 | Style, period and nationality names are capitalized in prose, caption, prompt and critique, lower-case in tags. | ASSESSOR | style_lowercase |
 | 40 | No stock sentence repeated across rows; vary openings and critics. | ASSESSOR | near_duplicate (flag) |
 
