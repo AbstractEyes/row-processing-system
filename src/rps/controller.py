@@ -1457,7 +1457,11 @@ class Controller:
         waiting = self.state.rows_awaiting_assessment()
         if self.assess_call is None:
             for row in waiting:
-                self._settle_assessment(row, self.assess(row.record, self._assess_context(row)))
+                try:
+                    assessment = self.assess(row.record, self._assess_context(row))
+                except Exception as error:  # a rule function must not stop the run
+                    assessment = self._assessor_failure(error)
+                self._settle_assessment(row, assessment)
             return
         # A call-level function sees every row one call returned, so checks that compare the
         # rows of a call (a series' nesting, one genre for the whole series) can run.
@@ -1468,7 +1472,10 @@ class Controller:
             call = self.state.calls[call_id]
             context = self._assess_context(rows[0])
             records = [self.state.rows[row_id].record for row_id in call.row_ids]
-            assessments = list(self.assess_call(records, context))
+            try:
+                assessments = list(self.assess_call(records, context))
+            except Exception as error:  # a rule function must not stop the run
+                assessments = [self._assessor_failure(error)] * len(records)
             if len(assessments) != len(records):
                 raise ControllerError(
                     f"the call-level assess function returned {len(assessments)} assessments "
@@ -1477,6 +1484,18 @@ class Controller:
             by_row = dict(zip(call.row_ids, assessments))
             for row in rows:
                 self._settle_assessment(row, by_row[row.row_id])
+
+    def _assessor_failure(self, error: Exception) -> Assessment:
+        """The assessment of a row the checker could not read: failed, with the error as the reason.
+
+        A row of a shape the checker does not expect (a field of the wrong type, say) is a bad row,
+        not a reason to stop a run; it is rejected and written again like any row that fails a check.
+        """
+        text = f"the assessor could not check the row ({type(error).__name__}: {redact(str(error))[:200]})"
+        if text not in self._reported:
+            self._warn(f"{text}; a row it cannot check is rejected and written again")
+        self._note_problem(text)
+        return Assessment(passed=False, errors=(text,))
 
     def _assess_context(self, row: RowState) -> AssessContext:
         call = self.state.calls[row.call_id]
