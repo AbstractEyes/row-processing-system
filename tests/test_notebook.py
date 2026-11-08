@@ -21,7 +21,7 @@ from fakes import FakeBucketApi
 
 NOTEBOOK_PATH = Path(__file__).resolve().parents[1] / "notebooks" / "controller_colab.ipynb"
 COLAB_URL = "https://colab.research.google.com/github/AbstractEyes/row-processing-system/blob/main/notebooks/controller_colab.ipynb"
-INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.6"'
+INSTALL_COMMAND = 'pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.7"'
 
 
 @pytest.fixture(scope="module")
@@ -223,7 +223,7 @@ def test_the_tasks_file_is_a_file_in_the_state_store_and_the_install_names_this_
     namespace, printed = execute(notebook, tmp_path, monkeypatch, {}, only=("config", "tasks"))
     assert namespace["config"].tasks_file == "store:control/tasks.json" and namespace["config"].tasks_store_path() == "control/tasks.json"
     assert "tasks file: store:control/tasks.json" in printed
-    assert "version 0.2.6" in source(cell_named(notebook, "intro")) and "@v0.2.6" in source(cell_named(notebook, "install"))
+    assert "version 0.2.7" in source(cell_named(notebook, "intro")) and "@v0.2.7" in source(cell_named(notebook, "install"))
 
 
 def test_the_bucket_setting_can_name_a_folder_and_the_tasks_cell_writes_into_that_folder(notebook, tmp_path, monkeypatch):

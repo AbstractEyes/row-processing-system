@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.6. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.2.7. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool and its assessor (`rps.rules`, `rps.assessor`), and a dry-run tool
@@ -14,6 +14,53 @@ for trying one route with a handful of calls. Everything is tested offline: with
 and with each adapter against the SDKs' own types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.2.7
+
+| Change | What happens now |
+|---|---|
+| The writer template leads with the facts | A blind review sent back 92 of 102 rows that had passed the checks, most for details no fact gave (a default pose, light, materials, sizes, a held thing) and for shallower rows that used facts only the deep row records, and the prompt forbade most of it in the middle of seventy rules. The template (`src/rps/rules/templates/writer_system.tpl.md`) now opens with THE FIRST RULE: ONLY THE FACTS (the usual slips are named, with one right and one wrong sentence, and a word with no record or hint sentence behind it is deleted), then RANKS (each row of a series knows only its own records; the framing limits what shows) and THE RECORDS YOU ADD (what mood, intent and each story slot hold). Also stated now: the mood is claimed once, with its source in the same sentence; directions belong to the frame and never to a person; the hint is never followed in its order; a person tag whenever a person is recorded; no appraisal of a minor's face or body; a record that cannot be what it says (a misspelled word, a thing the hint never mentions) is skipped, class `other`, and never written around. Seven checks close the prompt (BEFORE YOU ANSWER). The compiled prompt grew from 21,229 to 25,682 bytes |
+| The task text names what a row may not use | For a drawn series, one line for each shallower row lists the facts only a deeper row records. For every item, a line lists the habitual details it records nowhere (a pose or motion, an expression, light, weather, time of day, materials, sizes, camera angle, focus, a held thing, sound); a seeded row may still take one where its hint states it plainly. Each unknown-question key now says what it covers ("that row says nothing about the lens"), and no thought, wording or tag may answer it. The task text is not inside the rules version: a shipped row says which version of this package wrote it (`writer.package_version`) |
+| The assessor checks what that review sent back | 20 new finding codes (15 errors, 5 flags) and 7 codes that were flags and now stop a row, in the table below. An error rejects the row and is sent back to the writer on the one retry as `code: message`; a flag puts the row in question for the reviewers and rejects nothing. The pool names the checks behind its rules (22, 59, 66, 68 and the new rules 83-93) |
+| A garbled seed is set aside before any call | `rps.assessor.screen_item(item)` finds a seeded item whose record name (one word, four letters or more, in the item's deepest spec) is one edit away from a word its hint also uses at least as often (a record `medal` under a hint about a metal plate). Such an item cannot be written around, and writing it only costs a call and a rejected row. The controller now reads each spec line with the rule set's screen before the line's first call. A reason sets the line aside with no call: the event `line_screened` (`task_id`, `line`, `item_id`, `route`, `class` `other`, `reason`) is counted apart from `row_set_aside`, which is a writer's own skip or the assessor's set-aside of a written row. The line is finished (outcome `screened`, counted as `lines_screened` in the progress counts and `screened_lines` in the state counts, and listed by `State.screened_lines()`): it is never written, retried or reviewed. A line is read once, and never when it is due a retry; a screened line does not use up a free worker of a one-call route. The rule pool brings `rps.assessor.screen_item`; `rules.screen` (`"module:name"`, or `"none"`) names another or turns it off, `Controller(screen=...)` replaces it, and a rule set without one screens nothing. A screen that raises on a line lets the line through and is noted once in the run's problems |
+| Rules version `e48cccb70779` (was `acc36e4d1592`) | The template above, in the compiled `writer_system.md` and its example rows (the format block and the schema are unchanged). The pool has a new section K (rules 83-93) and the review brief lists the five new flags among the pointers a reviewer gets |
+| The Gemini OpenAPI form is built at setup only where it can be sent | 0.2.6 test-built the OpenAPI form of the row schema at setup on every Gemini route. A batch route (which can step down to the documented form) and a route whose `schema` option is `openapi` still do, so a schema that cannot be written so is found before the run; a one-call route with `plain` or `exact` no longer does, so a schema that cannot be written in that form (a recursive one) does not stop a route that never sends it |
+| Notebook | The install line names `v0.2.7` |
+
+The assessor's finding codes that are new or raised in 0.2.7. An error stops the row; a flag does not.
+
+| Code | Kind | What it stops or marks |
+|---|---|---|
+| `rank_scope` | new error | a row of a series that uses a word (five letters or more) which only another rank of the series records |
+| `added_record` | new error | on a seeded item, a record the writer added (scene setting, weather or time, form space or contrast, shot sharpness) that the hint does not support, or clear or sunny weather against a hint with clouds or rain |
+| `relation_placement` | new error | a place word (beside, next to, behind, in front of) for two things whose only relation places neither (same colour as, smaller than, looking at, holding); items with no hint |
+| `hint_name` | new error | an animal's name taken from the hint (a word before the animal's noun) when no record holds it |
+| `caption_hint_copy` | new error | a caption that restates the hint's first sentence |
+| `tag_color_missing` | new error | a recorded color that is in no tag |
+| `tag_color_detached` | new error | a recorded color that is only a bare color tag, not written with its thing |
+| `tag_person` | new error | a person is recorded and no tag names the person (1girl, 1boy, 1other, 2girls and the like) |
+| `tag_solo` | new error | the tag `solo` when no person is recorded |
+| `story_slot` | new error | a story before or after that is a moment word (instant, moment, before, after, later) and not an event |
+| `story_cause` | new error | a story cause that is only a time (evening) and not a reason |
+| `chain_kind` | new error | a chain answer that is not a value of its key's kind (a lens under `shot lens`, a weather under `scene weather`) |
+| `spec_talk` | new error | text that talks about the records (a record key used as a phrase, such as "the dusk scene time", "that relation", "the record") |
+| `stock_opening` | new error | a thought that opens with a stock phrase ("Check the cup:", "Compare X with Y:") |
+| `check_repeat` | new error | a check thought whose content repeats an earlier thought |
+| `hint_order` | new flag | thoughts that take three or more of the hint's sentences one after the other in the hint's order |
+| `mood_weak_source` | new flag | a mood read from the shot angle or from a relation |
+| `second_mood` | new flag | a second mood claimed in the thoughts beside the recorded feeling |
+| `unrecorded_size` | new flag | a size word (narrow, towering, vast, tiny and the like) that no record or hint holds |
+| `unrecorded_material` | new flag | a material word (brick, concrete, stone, wood, metal and the like) that no record or hint holds |
+| `unrecorded_pose` | error, wider | a pose word (stands, sits, perched, leans, walks, jumps and the like) about a person or an animal, in any text of the row, when no record or hint gives it, or when only another rank records it (the older check read the caption and prompt for sitting words only) |
+| `state_conflict` | flag, now error | a pose word that conflicts with the recorded pose, or a look up under an overhead shot |
+| `unrecorded_light` | flag, now error | a kind of light (soft or warm light, a warm glow, cool tones) when no light record or hint gives light; a looser form of the older check stays a flag |
+| `caption_hint_list` | flag, now error | a caption that lists the things the hint depicts |
+| `mood_cause_differs` | flag, now error | a mood record read from one thing whose mood thoughts credit another |
+| `position_as_place` | flag, now error | a position record (center, left third) written as a place in the scene |
+| `relation_side` | flag, now error | a side that can flip a relation ("to his left") where the frame's side or the named thing is meant |
+| `unknown_stated` | flag, now error | an unknown question that the row's own text answers |
+| `mood_weak_evidence` | error, wider | now also a mood read from the shot framing (it already stopped a mood read from a count or a position) |
+| `minor_fit` | error, wider | now also loose (except for hair), delicate, fragile, vulnerable, intimate, intimacy and alluring, said of a minor's clothes or body |
 
 ## What changed in 0.2.6
 
@@ -92,6 +139,7 @@ Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 | Step | What happens | Recorded as |
 |---|---|---|
 | plan | Task definitions (a batch of spec lines for one source and route) are read from the tasks file | `task_created` |
+| screen | Before a line's first call, the rule set's screen reads the line's item; a reason sets the line aside, and no call is made for it (a retry is never screened) | `line_screened` |
 | prepare | Each spec line becomes a call; a picture is checked against the routing table; the estimated cost is checked against the route and purpose budgets | `call_prepared`, or `budget_refused` |
 | submit | Calls go to the provider as a batch or one by one; the provider's batch id is made durable before anything waits on it | `batch_submitted` |
 | poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
@@ -144,7 +192,7 @@ files alone.
     .venv\Scripts\python.exe -m pytest -q
 
 `requirements.txt` holds the exact versions the tests ran against. `pyproject.toml` declares
-looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.6"`
+looser bounds for `pip install "git+https://github.com/AbstractEyes/row-processing-system@v0.2.7"`
 (it also installs `thought-image-seeds`, which the assessor uses as a library). The tests never
 touch the network: a fixture refuses socket connections and empties `HF_TOKEN` and the provider keys.
 
@@ -449,9 +497,11 @@ A rule set may also bring:
 | `explain(text, spec, model)` | for an answer `normalize` could not convert: one line for each row that cannot be read, `<row id>: <what is wrong and the form it needs>`. The lines follow the sentence that names the rows, in the advice the retry is given, as many whole lines as fit in 1,500 characters (then `and N more`) |
 | `json_format()`, or a file `json_format.md` | the form of the answer as a template, field by field, with placeholders and no content, for a provider that has no schema mode. Notes in HTML comments are left out. Only the DeepSeek writer sends it (appended to the system message after the rules text); the others have a schema and ignore it. A package brings it as `json_format()` (which wins) or the file; `make_rules(..., json_format=...)` takes it as text. It is part of the rules version (a package's own version covers it; a hash version includes it) |
 | an assessor | checks the rows (see "Plugging in") |
+| `screen(spec)` | reads a spec line before its first call and returns the reason to set the line aside, or `None` to send it on (see "Plugging in") |
 
-With the package `rps.rules` all of these come from the rule pool and the assessor is `rps.assessor`.
-`rules.assessor` (`"module:name"`, or `"none"`) names a different one.
+With the package `rps.rules` all of these come from the rule pool, the assessor is `rps.assessor` and the
+screen is `rps.assessor.screen_item`. `rules.assessor` and `rules.screen` (`"module:name"`, or `"none"`)
+name different ones.
 
 ## Failures
 
@@ -745,6 +795,17 @@ and check that the resumed run ends in the same place with no repeated call or r
   with the exception as its error line. The
   context carries `assignment`, the runner's choices for the call as plain data (for the rule pool
   `{"relation_part", "unknown_keys", "wordings"}`, the same values the task text told the writer).
+- **Screen.** A function of one spec line (`ScreenFn`: the line's spec as the tasks file gave it) that returns
+  the reason to set the line aside, or `None`/an empty string to send it on. The controller asks it once for a
+  line that has no call yet, in the pass that would build the line's first call, and never for a line that is
+  due a retry. A reason is recorded as `line_screened` (class `other`; the reason is kept to 300 characters)
+  and the line is finished with the outcome `screened`: no call is built, prepared, submitted or paid for,
+  and no row exists for it. Read it with `State.screened_lines()`, `lines_screened` in `job_progress()` and
+  `screened_lines` in `counts()`; none of these is mixed with `lines_set_aside`, the lines whose writer
+  skipped them or whose rows the assessor set aside. Pass `build_controller(config, screen=...)` to
+  replace the rule set's own (the rule pool brings `rps.assessor.screen_item`), or name one in the
+  configuration with `"rules": {"screen": "module:name"}` (`"none"` turns the pool's off). A screen that raises
+  does not stop the run: the line goes to the writer and the failure is noted once in the run's problems.
 - **Writers.** `rps.providers.base.Writer` has `prepare`, `submit`, `poll`, `results` and `recover`,
   and optional `accepting`, `split`, `release`, `close`, `check_rules`, `restore` and `drain_notes`.
   `recover(requests, *, since, recorded)` is told the earliest moment the requests were prepared and the
