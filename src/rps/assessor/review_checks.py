@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Mapping
 
-from .problems import ERROR, FLAG, Problem
+from .problems import FLAG, Problem
 
 STOP = frozenset(
     """a an the and or but of in on at to from by with without for as is are was were be been it its this that these those there
@@ -146,7 +146,7 @@ def thought_repeat_check(row: Mapping[str, Any], item: Any = None) -> list[Probl
     sentences = [(i, s, _content(s)) for i, (_, text) in enumerate(thoughts) for s in _sentences(text)]
     for x in range(len(sentences)):
         for y in range(x + 1, len(sentences)):
-            (i, a, ca), (j, b, cb) = sentences[x], sentences[y]
+            (i, _, ca), (j, b, cb) = sentences[x], sentences[y]
             if i == j or min(len(ca), len(cb)) < 5:
                 continue
             share = len(ca & cb) / min(len(ca), len(cb))

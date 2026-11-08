@@ -19,7 +19,7 @@ from typing import Any
 
 HERE = Path(__file__).resolve().parent
 EXAMPLE_FOR_PROMPT: str | None = None  # name of the example file whose medium row sits inside the system prompt; None: no example
-VERSIONED = ("pool.md", "writer_system.md", "row_schema.json", "review_brief.md")
+VERSIONED = ("pool.md", "writer_system.md", "row_schema.json", "review_brief.md", "json_format.md")
 SKIP_CLASSES = ("person", "contradiction", "ungrounded", "other")
 
 
@@ -48,7 +48,10 @@ def list_text(tp, held) -> str:
 
 
 def genres(tp, held) -> str:
-    return ", ".join(tp.lists_for(held, "train")["genre"])
+    from rps.assessor.checks import EXTRA_GENRES
+
+    listed = list(tp.lists_for(held, "train")["genre"])
+    return ", ".join(listed + sorted(g for g in EXTRA_GENRES if g not in listed))
 
 
 def sealed_text(tp, held) -> str:

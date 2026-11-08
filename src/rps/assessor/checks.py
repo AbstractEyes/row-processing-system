@@ -12,7 +12,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .problems import ERROR, FLAG, Problem
 
-GENRES = frozenset(
+# Genres the drawn specs carry that the validator's genre list lacks; the compiled prompt offers them too.
+EXTRA_GENRES = frozenset(
+    {"animal study", "object study", "sculpture", "drawing", "concept art", "allegory", "mythological", "religious art", "illustration"}
+)
+GENRES = EXTRA_GENRES | frozenset(
     {
         "portrait", "landscape", "still life", "street", "documentary", "fashion", "product", "architecture", "wildlife",
         "abstract", "sport", "interior", "aerial", "macro", "war", "history piece", "genre scene", "self portrait", "cityscape",
@@ -208,12 +212,11 @@ def relation_key_check(row: Mapping[str, Any], item: Any = None) -> list[Problem
     return out
 
 
-def spelling_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
+def british_words(row: Mapping[str, Any]) -> list[str]:
+    """British spellings in a row's prose and tags. Never a finding: British spelling is corrected after writing
+    (`rps.rules.spelling.americanize_row`), and the count is only a statistic in the batch report."""
     texts = all_texts(row) + [str(q.get("value", "")) for q in row.get("questions", []) if q.get("needs") != "record"]
-    found = sorted({m.group(0).lower() for t in texts for m in BRITISH.finditer(t)})
-    if found:
-        return [Problem("us_spelling", row_id(row), f"use American spelling in prose and tags: {found}")]
-    return []
+    return sorted({m.group(0).lower() for t in texts for m in BRITISH.finditer(t)})
 
 
 def style_case_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
@@ -361,7 +364,6 @@ ROW_CHECKS: tuple[Callable[..., list[Problem]], ...] = (
     domain_medium_check,
     wording_check,
     relation_key_check,
-    spelling_check,
     style_case_check,
     garment_check,
     label_opener_check,

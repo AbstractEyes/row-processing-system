@@ -6,6 +6,7 @@ Files in this folder (package data):
     writer_system.md    the system prompt for a writing call (built by `compile`)
     row_schema.json     JSON Schema for a writer's output (built by `compile`)
     review_brief.md     the brief for reviewers
+    json_format.md      a field-by-field description of the answer (placeholders only), for routes with no schema
     examples/           worked examples: a spec item and the output a writer returns
     VERSION             a content hash of the files above; recorded on every row
 
@@ -41,6 +42,11 @@ def row_schema() -> dict[str, Any]:
 
 def review_brief() -> str:
     return _read("review_brief.md")
+
+
+def json_format() -> str:
+    """The answer's form, field by field, for a route that cannot enforce a schema (appended to its system message)."""
+    return _read("json_format.md")
 
 
 def pool() -> str:

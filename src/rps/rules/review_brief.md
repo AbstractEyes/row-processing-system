@@ -51,4 +51,4 @@ Return one line per row: row_id, verdict, reasons (the codes above; at least one
 
 ## Rules the script already holds (named only)
 
-Sizes and counts; closed lists and sealed values; nesting of ranks; wordings present; no pixel or file talk; no meta-language or spec talk; no advice words; genre on the list and one per series; American spelling; capitalized style names; recorded garments named in text and tags; relation question keys; the assigned relation part, unknown key and wordings; hint-implied people in plain records.
+Sizes and counts; closed lists and sealed values; nesting of ranks; wordings present; no pixel or file talk; no meta-language or spec talk; no advice words; genre on the list and one per series; capitalized style names; recorded garments named in text and tags; relation question keys; the assigned relation part, unknown key and wordings; hint-implied people in plain records.
