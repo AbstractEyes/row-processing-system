@@ -7,16 +7,18 @@ ROW = {"id", "series", "depth", "rank", "domain", "genre", "records": [{"key", "
 {{EXAMPLE_NOTE}}
 
 RECORDS
-- Keep every record you are given, word for word. Never change, drop or reorder one. A key is "system attribute" (person gender). A relation is a, rel, b; keep the order of relations.
+- KEEP THE GIVEN RECORDS: copy every record you are given exactly: the same key (with its spelling: "colour", "grey" and "harbour" stay as given), the same value, none dropped, none changed, none reordered. The checker refuses the row (spec_kept) when a given record is missing or changed. A key is "system attribute" (person gender).
+- RELATIONS LIVE ONLY IN "relations": each is {"a", "rel", "b"}, kept in the given order. Never write a relation as a record: no record key starts with "rel" or "relation" (the checker refuses it as an unknown system). "rel1" names the first relation in exactly two places: the value of "mood from" and an assigned question key ("rel1 a", "rel1 rel", "rel1 b").
 - A value is plain lower-case words, at most 20 bytes; key and value together at most 27 bytes. Take values from the lists below; an attribute with no list is open.
-- Count the relations as records. Simple holds 1-4 records, medium 6-14, deep 14-30.
+- Each relation counts as one toward these totals, though it is written only in "relations": simple holds 1-4 records and relations together, medium 6-14, deep 14-30.
 - You add records only for these: mood (feeling, from), intent (purpose, for), story (moment, plus one of before, after, cause), and, for a real picture, facts its hint states plainly. A drawn item gets no other new facts.
-- Simple rows add nothing. Medium adds mood. Deep adds mood, intent and story. "mood from" is the key of a record of the same row that shows the mood (look expression, shot light, rel1 rel). Draw the evidence from light, time, palette, pose, setting, weather or a relation as often as from the face.
-- A series nests: every record of a lower rank appears, word for word, in the higher ranks, relations in the same order, and a mood, intent or story record written at one rank repeats at the ranks above it. For a real picture the deep records are the picture; cut the medium and simple ranks from them as subsets.
+- Simple rows add nothing. Medium adds mood. Deep adds mood, intent and story. "mood from" is the key of a record of the same row that shows the mood (look expression, shot light; for a relation, "rel1 rel"). Draw the evidence from light, time, palette, pose, setting, weather or a relation as often as from the face.
+- A SERIES NESTS: every record and relation of a lower rank appears in the next rank up, with the same key and value and the relations in the same order, and a mood, intent or story record written at one rank repeats at every rank above it. The checker refuses the series (rule_7) when a lower rank holds a record the next rank lacks, or when two rows share a depth. For a real picture the deep records are the picture; cut the medium and simple ranks from them as subsets.
 - Never use these values in a record, a relation end, a question value or a tag item: {{SEALED}}. Prose may say any word.
 
 THOUGHTS
-- Steps: {{STEPS}}. A text is one to four sentences. Simple: 1-2 thoughts, about 200 bytes in all. Medium: 3-5 thoughts, about 400 bytes in all, 80 bytes each. Deep: 6-10 thoughts, 1,100-1,450 bytes in all when the records are full; never pad.
+- Steps: {{STEPS}}. A text is one to four sentences. Simple: 1-2 thoughts. Medium: 3-5 thoughts. Deep: 6-10 thoughts; never pad.
+- HARD LENGTH LIMIT (the checker refuses a row over it, rule_3). A thought costs one slice for every 29 bytes of (its text in bytes + the length of its step name + 7), rounded up. A row's thoughts may cost at most 8 slices (simple), 16 (medium) or 64 (deep). Count bytes, not characters. These caps on each text always fit: simple, 1 or 2 thoughts of at most 100 bytes; medium, 3 thoughts of at most 110 bytes, or 4 of at most 80, or 5 of at most 50 (never more than 330 bytes of thoughts in all); deep, 6 thoughts of at most 270 bytes, or 8 of at most 185, or 10 of at most 150. Stop at the cap; a shorter row is fine.
 - Every thought looks at THIS picture. Never define a word, never explain what a term means, never write a sentence that would read the same for any picture holding that word. "Robe: a long outer garment." is wrong; "Her robe falls past her knees and hides her legs." is right.
 - Never open a thought with a label and a colon ("Count one:", "Colour:"). Say it as the picture: "A single finch, the only bird in view."
 - The "name" step names what a thing in THIS picture is ("The cloth wrapped from her shoulder to her ankles is a sari").

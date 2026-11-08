@@ -54,7 +54,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 30 | A relation is read as the picture would show it; size and order claims agree with the relations. | READER | |
 | 31 | A relation end names a thing, never a direction or a part of the frame. | ASSESSOR | relation_direction |
 | 32 | Step kinds spread: color where colors matter, count where a count matters, a check in each deep row, compare or change in deep rows. | WRITER | |
-| 33 | Deep length 1,100-1,450 bytes when the records are full; never pad. | WRITER | |
+| 33 | Hard length frame: a thought costs ceil((7 + step name + text bytes) / 29) slices; at most 8 slices simple, 16 medium, 64 deep. Never pad. | ASSESSOR | rule_3 |
 | 34 | In a row with no person an imagined passer-by stays conditional. | ASSESSOR | passerby_present (flag) |
 | 35 | A recorded role names the person by the role. | READER | |
 
