@@ -89,6 +89,8 @@ HAND_DECISIONS = ("accept", "discard", "replace")
 TASKS_CHECK_SECONDS = 15.0
 # A one-call (api) route keeps at most this many calls per worker prepared and unfinished (see `_api_room`).
 API_CALLS_PER_WORKER = 4
+# A row that could not be converted is kept whole in the log of the failed call up to this many characters.
+UNCONVERTED_ROW_CHARS = 4000
 
 
 class ControllerError(RuntimeError):
@@ -148,11 +150,25 @@ def format_progress(
     return " | ".join(parts)
 
 
-def parse_output(text: str | None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+def is_wrapper(item: Mapping[str, Any]) -> bool:
+    """True for a writer's answer wrapper: a skip flag next to a list of rows.
+
+    A rule set's `normalize` function turns the wrapper into a list of stored rows. A wrapper
+    that is still one when the output is read was not converted, so it is not a row.
+    """
+    return "skip" in item and isinstance(item.get("rows"), list)
+
+
+def parse_output(
+    text: str | None, explain_wrapper: Callable[[Sequence[Mapping[str, Any]]], str] | None = None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
     """Split a model's output into (rows, skip objects, problem).
 
     The output is a JSON object or a list of objects; an object with "skip": true is a
-    skip object, any other object is a row. A leading code fence is tolerated.
+    skip object, any other object is a row, except a writer's wrapper that was not turned into
+    rows (a skip flag with a list of rows, see `is_wrapper`), which is a problem: the answer is
+    never stored whole as one row. `explain_wrapper` is handed the wrappers found and returns the
+    problem text for them. A leading code fence is tolerated.
     """
     if text is None or not text.strip():
         return [], [], "the output is empty"
@@ -167,13 +183,34 @@ def parse_output(text: str | None) -> tuple[list[dict[str, Any]], list[dict[str,
     items = data if isinstance(data, list) else [data]
     rows: list[dict[str, Any]] = []
     skips: list[dict[str, Any]] = []
+    wrappers: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
             return [], [], "the output holds something other than JSON objects"
-        (skips if item.get("skip") is True else rows).append(item)
+        if item.get("skip") is True:
+            skips.append(item)
+        elif is_wrapper(item):
+            wrappers.append(item)
+        else:
+            rows.append(item)
+    if wrappers:
+        if explain_wrapper is not None:
+            return [], [], explain_wrapper(wrappers)
+        count = sum(len(wrapper["rows"]) for wrapper in wrappers)
+        return [], [], f"the answer is the writer's wrapper holding {count} rows, and it was not turned into rows"
     if not rows and not skips:
         return [], [], "the output holds no row"
     return rows, skips, None
+
+
+def _converts_alone(normalize: Callable[..., Any], wrapper: Mapping[str, Any], row: Any, spec: Any, model: str) -> bool:
+    """True when one row of a wrapper, handed to a `normalize` function in a wrapper of its own, comes back as rows."""
+    alone = json.dumps({**wrapper, "rows": [row]}, ensure_ascii=False)
+    try:
+        converted = normalize(alone, spec, model)
+    except Exception:  # a rule function must not stop the run
+        return False
+    return converted is not None and parse_output(converted)[2] is None
 
 
 def _parse_ts(value: str) -> datetime:
@@ -1279,9 +1316,16 @@ class Controller:
         output, problem = self._normalized(task, call.line, call.route, result.output)
         rows: list[dict[str, Any]] = []
         skips: list[dict[str, Any]] = []
+        unconverted: list[Any] = []
         if problem is None:
-            rows, skips, problem = parse_output(output)
+
+            def explain(wrappers: Sequence[Mapping[str, Any]]) -> str:
+                text, unconverted[:] = self._wrapper_problem(task, call.line, call.route, wrappers)
+                return text
+
+            rows, skips, problem = parse_output(output, explain_wrapper=explain)
         if problem:
+            details: dict[str, Any] = {"unconverted_rows": unconverted} if unconverted else {}
             self._emit(
                 "call_failed",
                 {
@@ -1291,6 +1335,7 @@ class Controller:
                     "billed": True,
                     "kind": KIND_INVALID_OUTPUT,
                     "output": (result.output or "")[:2000],
+                    **details,
                 },
             )
             return False
@@ -1316,6 +1361,45 @@ class Controller:
         if converted is None:
             return None, "the answer could not be turned into rows"
         return converted, None
+
+    def _wrapper_problem(
+        self, task: TaskState, line_id: str, route_name: str, wrappers: Sequence[Mapping[str, Any]]
+    ) -> tuple[str, list[Any]]:
+        """Why a writer's wrapper was not turned into rows: the problem text and the rows that failed.
+
+        A rule set's `normalize` function gives the whole wrapper back when one of its rows cannot
+        be converted. To name the rows, each is handed to the function alone, in a wrapper of its
+        own: the ones that do not come back as rows are the ones to fix. The second value holds
+        up to three of them as they were written (as text, cut short, when one is very long), for the log.
+        """
+        normalize = self.rules.normalize if self.rules is not None else None
+        spec = task.lines[line_id].spec
+        model = self.config.routes[route_name].model
+        total = 0
+        names: list[str] = []
+        shown: list[Any] = []
+        for wrapper in wrappers:
+            for position, row in enumerate(wrapper["rows"], 1):
+                total += 1
+                if normalize is None or _converts_alone(normalize, wrapper, row, spec, model):
+                    continue
+                row_id = row.get("id") if isinstance(row, Mapping) else None
+                names.append(row_id if isinstance(row_id, str) and row_id else f"row {position}")
+                text = json.dumps(row, ensure_ascii=False)
+                shown.append(row if len(text) <= UNCONVERTED_ROW_CHARS else text[:UNCONVERTED_ROW_CHARS] + " ...")
+        if names:
+            listed = ", ".join(names[:6]) + (f" and {len(names) - 6} more" if len(names) > 6 else "")
+            text = (
+                f"the answer is the writer's wrapper, and {len(names)} of its {total} rows cannot be turned into "
+                f"stored rows ({listed}); check each of them, field by field, against the format in the rules"
+            )
+        elif total == 0:
+            text = "the answer is the writer's wrapper with no rows in it and no skip"
+        elif normalize is None:
+            text = f"the answer is the writer's wrapper holding {total} rows, and the rules have no function that turns it into rows"
+        else:
+            text = f"the answer is the writer's wrapper holding {total} rows, and the rules did not turn it into stored rows"
+        return text, shown[:3]
 
     def _stamp(
         self, call_id: str, task: TaskState, line_id: str, image_size: int | None, rows: Sequence[dict[str, Any]]
