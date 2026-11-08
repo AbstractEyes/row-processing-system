@@ -49,6 +49,9 @@ class WriterLabel:
     `image_size` is the longest side in pixels of the picture the writer saw, or
     None when it saw no picture. `rules_version` is the version of the writing rules
     the writer was given; it is part of the label only when rules were used.
+    `package_version` is the version of this package that built the request (the task text
+    is not part of the rules version, so this says which text the row was written from);
+    it is part of the label only for a row a model wrote.
     """
 
     provider: str
@@ -60,10 +63,13 @@ class WriterLabel:
     pool_version: str
     image_size: int | None
     rules_version: str | None = None
+    package_version: str | None = None
 
     def __post_init__(self) -> None:
         if self.rules_version is not None:
             _require_text(self.rules_version, "rules_version")
+        if self.package_version is not None:
+            _require_text(self.package_version, "package_version")
         _require_text(self.provider, "provider")
         _require_text(self.model, "model")
         if self.route not in LABEL_ROUTES:
@@ -93,6 +99,8 @@ class WriterLabel:
         }
         if self.rules_version is not None:
             label["rules_version"] = self.rules_version
+        if self.package_version is not None:
+            label["package_version"] = self.package_version
         return label
 
     @classmethod
@@ -101,11 +109,11 @@ class WriterLabel:
         if not isinstance(data, Mapping):
             raise ProvenanceError("writer label is not an object")
         missing = [name for name in fields if name not in data]
-        extra = sorted(set(data) - set(fields) - {"rules_version"})
+        extra = sorted(set(data) - set(fields) - {"rules_version", "package_version"})
         if missing or extra:
             raise ProvenanceError(f"writer label fields are wrong (missing {missing}, unexpected {extra})")
         values = {name: data[name] for name in fields}
-        return cls(**values, rules_version=data.get("rules_version"))
+        return cls(**values, rules_version=data.get("rules_version"), package_version=data.get("package_version"))
 
 
 @dataclass(frozen=True)

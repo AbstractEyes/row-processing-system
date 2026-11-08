@@ -60,6 +60,21 @@ def test_a_model_cannot_supply_the_labels():
     assert not is_human_row(row)
 
 
+def test_the_package_version_is_part_of_the_label_only_when_it_is_given():
+    plain = writer()
+    assert "package_version" not in plain.to_dict() and plain.package_version is None
+    labelled = writer(package_version="0.2.5", rules_version="abc123")
+    assert list(labelled.to_dict())[-2:] == ["rules_version", "package_version"]  # it follows the pool and rules versions
+    assert labelled.to_dict()["package_version"] == "0.2.5"
+    assert WriterLabel.from_dict(labelled.to_dict()) == labelled
+    assert WriterLabel.from_dict(plain.to_dict()) == plain
+    row = stamp_row({"id": "a1"}, row_id="r1", writer=labelled, source=SOURCE)
+    assert row["writer"]["package_version"] == "0.2.5"
+    require_label(row)
+    with pytest.raises(ProvenanceError):
+        writer(package_version=" ")
+
+
 def test_image_size_and_effort_may_be_none():
     label = writer(image_size=None, effort=None)
     assert label.to_dict()["image_size"] is None

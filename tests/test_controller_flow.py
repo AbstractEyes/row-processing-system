@@ -44,6 +44,21 @@ def test_format_progress_names_job_size_done_time_spent_and_time_left():
     assert status_line == "job 4 lines | done 2 (50%) | rows 3 | $0.5000 spent"  # a status print belongs to no run, so no clock
 
 
+def test_a_row_a_model_wrote_says_which_version_of_the_package_built_its_request(tmp_path):
+    from rps import __version__
+
+    world = World(tmp_path)
+    controller = world.controller()
+    controller.add_task(task_spec(("001", "002")))
+    world.drive(controller)
+    rows = world.shipped_rows()
+    assert len(rows) == 2
+    for row in rows:
+        assert row["writer"]["package_version"] == __version__
+        assert list(row["writer"])[:8] == ["provider", "model", "route", "effort", "date", "task_id", "pool_version", "image_size"]
+        require_label(row)
+
+
 def test_a_task_runs_from_spec_lines_to_shipped_rows(tmp_path):
     world = World(tmp_path)
     controller = world.controller()

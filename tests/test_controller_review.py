@@ -272,6 +272,7 @@ def test_a_human_written_row_carries_the_human_label(tmp_path):
     assert shipped["writer"]["model"] == "phil"
     assert shipped["writer"]["route"] == "hand"
     assert shipped["writer"]["image_size"] is None
+    assert "package_version" not in shipped["writer"]  # a person wrote it, not a request this package built
     assert shipped["thoughts"] == ["written by hand"]
     assert is_human_row(shipped)
     require_label(shipped)

@@ -1427,6 +1427,7 @@ class Controller:
             pool_version=task.pool_version,
             image_size=image_size,
             rules_version=self.rules.version if self.rules is not None else None,
+            package_version=__version__,
         )
         source = SourceLabel(
             dataset=task.dataset or task.source,
