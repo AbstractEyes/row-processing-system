@@ -167,6 +167,22 @@ def test_a_rule_sets_format_block_follows_the_rules_in_the_system_message():
     assert others == {key: value for key, value in plain.payload["arguments"].items() if key != "messages"}
 
 
+def test_the_rule_pools_own_block_follows_its_rules_in_the_system_message():
+    from rps import rules as pool
+    from rps.config import RulesConfig
+    from rps.prompting import load_writer_rules
+
+    loaded = load_writer_rules(RulesConfig(package="rps.rules"))
+    block = pool.json_format().strip()
+    assert block and loaded.json_format == block and loaded.version == pool.rules_version()
+    writer = DeepSeekWriter("deepseek-sync", make_route())
+    writer.check_rules(loaded)  # the word json is there, and the block counts toward it
+    [request] = writer.prepare([make_call(rules=loaded)])
+    system = request.payload["arguments"]["messages"][0]["content"]
+    assert system == loaded.system.rstrip() + "\n\n" + block
+    assert system.endswith(block) and "depth is a WORD" in block and "Never 1, 2 or 3" in block
+
+
 def test_a_rule_set_without_a_format_block_is_sent_as_it_is():
     for found in (None, "", "   \n", "<!-- to be written -->", "<!-- a note\nover two lines -->\n"):
         [request] = DeepSeekWriter("deepseek-sync", make_route()).prepare([make_call(rules=rules(json_format=found))])
