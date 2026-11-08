@@ -279,3 +279,17 @@ def test_the_genres_drawn_specs_carry_are_on_the_list_and_in_the_prompt():
     assert "animal study" in GENRES and EXTRA_GENRES <= GENRES
     assert all(genre in text for genre in EXTRA_GENRES)
     assert "so replace it" in text and "only in a row that has a relation" in text
+
+
+def test_an_off_list_drawn_genre_is_named_in_the_task_text():
+    item = dict(_example_item(), genre="amphora")
+    text = task_text.build_task_text(item, 0)
+    assert 'the drawn genre "amphora" is not on the genre list' in text and "choose the genre that fits from the list" in text
+    assert "Genre: amphora." not in text
+    listed = task_text.build_task_text(dict(item, genre="animal study"), 0)
+    assert "Genre: animal study." in listed
+    assert "choose the one that fits" in task_text.build_task_text({k: v for k, v in item.items() if k != "genre"}, 0)
+
+
+def _example_item():
+    return copy.deepcopy(next(e for e in rules.examples() if e["name"] == "painting_deep")["item"])
