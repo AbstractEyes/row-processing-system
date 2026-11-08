@@ -27,10 +27,14 @@ batch has run, as a code and a sentence for each item. `probe_gemini_batch` ther
 the batch writer builds it, then the same request with one part left out or changed (the schema, the system
 instruction, the thinking setting, the metadata, the explicit cache, the field that carries the schema, the
 name of the metadata, the OpenAPI form of the schema), then the documented form and the bare request, each as
-a batch of one item. It
-waits for each batch, prints the provider's whole error for a refusal, cancels the batches that have not
-answered, and says in plain sentences which part the service refuses. A refused item costs nothing; a taken
-one is billed at the batch rate, which `cap_usd` bounds.
+a batch of one item. It waits for each batch, prints the provider's whole error for a refusal, cancels the
+batches that have not answered, and says in plain sentences which part the service refuses. A refused item
+costs nothing; a taken one is billed at the batch rate, which `cap_usd` bounds.
+
+The batches go to one version of the Gemini API: the route's `api_version` option, or `--api-version`, or the
+SDK's own choice (`v1` in google-genai 3.0.0). The explicit-cache variants need `v1beta`, the only version that
+has caching, and the probe uses it for the whole run when one of them is asked for. The first line says which
+version the run used, so two runs can be told apart.
 """
 
 from __future__ import annotations
@@ -49,7 +53,7 @@ from .ledger import PriceError, PriceTable, Usage
 from .prompting import WriterRules, load_writer_rules, render_task_text
 from .providers.base import CallSpec
 from .providers.common import lookup
-from .providers.gemini_api import GeminiBatchWriter, parse_response
+from .providers.gemini_api import API_VERSIONS, CACHE_API_VERSION, GeminiBatchWriter, api_version_of, parse_response
 from .providers.schemas import GEMINI_SCHEMA_MODES
 from .routes import standard_route
 from .store.remote import describe_error
@@ -445,6 +449,7 @@ def probe_gemini_batch(
     keys: Sequence[str] | None = None,
     try_cache: bool = False,
     compare_models: Sequence[str] = (),
+    api_version: str | None = None,
     wait_seconds: float = DEFAULT_WAIT_SECONDS,
     poll_seconds: float = DEFAULT_POLL_SECONDS,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
@@ -469,6 +474,8 @@ def probe_gemini_batch(
     the request with an explicit cache when the route has none (a cache is made for it and deleted after).
     Each name in `compare_models` gets the bare request too, to tell a refusal that comes from the model from
     one that comes from a part of the request (it is priced as the route's model, an upper bound for a cheaper one).
+    `api_version` ("v1" or "v1beta"; the route's option, else the SDK's own, when omitted) is the version of the API
+    the batches go to; a run that makes a cache uses "v1beta" unless told otherwise, and refuses "v1".
     """
 
     def refuse(reason: str, **extra: Any) -> BatchProbeReport:
@@ -499,7 +506,25 @@ def probe_gemini_batch(
     call = _real_call(route, config, rules, item, text, stamp)
     today: date = now().astimezone(timezone.utc).date()
     route_cache = bool(config.options.get("cache"))
+    if keys:
+        wanted = list(dict.fromkeys(keys))
+    else:
+        wanted = [
+            key
+            for key in BATCH_VARIANTS
+            if key not in ("cache_off", "cache_on") or (key == "cache_off" and route_cache) or (key == "cache_on" and try_cache and not route_cache)
+        ]
+    makes_cache = route_cache or "cache_on" in wanted
+    version = api_version or str(config.options.get("api_version", "auto"))
+    if version not in API_VERSIONS:
+        return refuse(f"the API version is one of {list(API_VERSIONS)}, not {version!r}")
+    if makes_cache and version == "v1":
+        return refuse(f"an explicit cache exists only in the {CACHE_API_VERSION} API, and the API version is v1; use {CACHE_API_VERSION}")
+    if makes_cache and version == "auto":
+        version = CACHE_API_VERSION
     options = {**config.options, "cache_ttl_seconds": DEFAULT_CACHE_SECONDS}
+    if version != "auto":
+        options["api_version"] = version
     full = GeminiBatchWriter(route, dataclasses.replace(config, options={**options, "batch_form": "full"}), client=client)
     documented = GeminiBatchWriter(
         route, dataclasses.replace(config, options={**options, "cache": False, "batch_form": "documented"}), client=client
@@ -514,14 +539,6 @@ def probe_gemini_batch(
     if not acceptance.ok:
         return refuse(f"route {route} is closed: {acceptance.reason}")
 
-    if keys:
-        wanted = list(dict.fromkeys(keys))
-    else:
-        wanted = [
-            key
-            for key in BATCH_VARIANTS
-            if key not in ("cache_off", "cache_on") or (key == "cache_off" and route_cache) or (key == "cache_on" and try_cache and not route_cache)
-        ]
     plan: list[tuple[str, str, str, str, Any, bool]] = []  # key, title, detail, model, request, whether it names the cache
     for key in wanted:
         title, detail = BATCH_VARIANTS[key]
@@ -537,11 +554,13 @@ def probe_gemini_batch(
         return refuse(f"the batches may cost up to ${estimate:.4f}, over the ${cap_usd:.2f} cap", estimate_usd=estimate)
 
     report = BatchProbeReport(route=route, estimate_usd=estimate)
+    service = full._client()
+    sent_to = version if version != "auto" else f"{api_version_of(service) or 'the SDK default'} (the SDK default)"
     printer(
         f"[geminiprobe] {route} ({config.model}): {len(plan)} batch(es) of one item, {len(text)} characters of task text, "
-        f"{len(rules.system)} of rules; at most ${estimate:.4f} if every one is taken; waiting up to {wait_seconds:g} s"
+        f"{len(rules.system)} of rules; API version {sent_to}; at most ${estimate:.4f} if every one is taken; "
+        f"waiting up to {wait_seconds:g} s"
     )
-    service = full._client()
     cache_name: str | None = None
     pending: dict[str, BatchOutcome] = {}
     started: dict[str, float] = {}
@@ -694,7 +713,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--only", default=None, help=f"with --batch: some of the variants, comma-separated: {','.join(BATCH_VARIANTS)}")
     parser.add_argument("--with-cache", action="store_true", help="with --batch: also try an explicit cache (one is made and deleted)")
     parser.add_argument("--compare-model", action="append", default=[], help="with --batch: also send the bare request to this model (repeatable)")
+    parser.add_argument(
+        "--api-version",
+        choices=("v1", "v1beta"),
+        default=None,
+        help="with --batch: the version of the Gemini API the batches go to (default: the route's option, else the SDK's own)",
+    )
     args = parser.parse_args(argv)
+    if args.api_version and not args.batch:
+        parser.error("--api-version goes with --batch")
     if args.batch:
         keys = [part.strip() for part in args.only.split(",") if part.strip()] if args.only else None
         batch_report = probe_gemini_batch(
@@ -702,6 +729,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             keys=keys,
             try_cache=args.with_cache,
             compare_models=args.compare_model,
+            api_version=args.api_version,
             wait_seconds=args.wait,
             max_output_tokens=args.max_output_tokens,
             cap_usd=args.cap,

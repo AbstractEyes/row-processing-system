@@ -22,17 +22,25 @@ CACHE = {"name": "cachedContents/cache-1", "model": "models/gemini-3.8-flash", "
 
 
 class Wire:
-    """Records each request the SDK makes (method, URL, JSON body) and answers it with a canned body."""
+    """Records each request the SDK makes (method, URL, JSON body) and answers it with a canned body.
 
-    def __init__(self, job: dict[str, Any] | None = None, cache: dict[str, Any] | None = None) -> None:
+    A request whose URL has one of the `missing` parts in it is answered the way the live service answered a
+    path it does not have: 404 and an empty body.
+    """
+
+    def __init__(self, job: dict[str, Any] | None = None, cache: dict[str, Any] | None = None, missing: tuple[str, ...] = ()) -> None:
         self.job = job or JOB
         self.cache = cache or CACHE
+        self.missing = missing
         self.requests: list[tuple[str, str, Any]] = []
 
     def __call__(self, request: Any) -> Any:
         body = json.loads(request.content) if request.content else None
-        self.requests.append((request.method, str(request.url), body))
-        return httpx2.Response(200, json=self.cache if "cachedContents" in str(request.url) else self.job)
+        url = str(request.url)
+        self.requests.append((request.method, url, body))
+        if any(part in url for part in self.missing):
+            return httpx2.Response(404)
+        return httpx2.Response(200, json=self.cache if "cachedContents" in url else self.job)
 
     def to(self, part: str) -> list[tuple[str, str, Any]]:
         """The requests whose URL has `part` in it."""

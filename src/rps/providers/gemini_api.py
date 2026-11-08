@@ -18,6 +18,16 @@ by the size of the cache: each note carries the size in tokens and the stretch o
 it covers, and the controller charges that stretch to the ledger (a `cache_storage` event). The
 one-time cost of making the cache is not stated on the provider's page and is not counted.
 
+The version of the API. The SDK sends its requests to one version of the Gemini API, and the version it
+picks depends on the SDK (google-genai 3.0.0 picks `v1`, the stable one; older releases picked `v1beta`).
+Explicit caching is a Beta feature whose endpoints exist only in `v1beta` (Google's caching pages: "Endpoints
+and SDK methods are available under `v1beta`"; the REST reference lists `/v1beta/cachedContents` and no `v1`
+path). A cache created through a client on `v1` is therefore a request to a path that does not exist: the live
+probe got "404 Not Found" with an empty body, which the SDK reports as `{'message': '', 'status': 'Not Found'}`.
+The route option `api_version` ("auto", "v1" or "v1beta", default "auto") sets the version for the whole route:
+"auto" leaves the choice to the SDK, except that a route with `cache` on uses "v1beta" (the cache, the batch
+that names it and every poll go to the same version); "v1" with `cache` on is refused when the route is made.
+
 A batch carries a digest of its calls in its display name, so a batch created just before a crash
 can be found again. Results come back in the order of the requests, each with the metadata of its
 request; they are matched to calls by the `custom_id` (or `key`) in it.
@@ -83,6 +93,9 @@ RESOLUTIONS = ("low", "medium", "high")
 DEFAULT_SCHEMA_MODE = "plain"
 SCHEMA_FIELDS = ("response_json_schema", "response_schema")  # the request field that carries the schema
 DEFAULT_SCHEMA_FIELD = "response_json_schema"
+API_VERSIONS = ("auto", "v1", "v1beta")  # the API version the route's requests go to ("auto": see the module description)
+DEFAULT_API_VERSION = "auto"
+CACHE_API_VERSION = "v1beta"  # explicit caching exists only in this version of the API
 BATCH_FORMS = ("auto", "documented", "full")
 DEFAULT_BATCH_FORM = "auto"
 FORM_FULL = 0  # the request the writer is built to send
@@ -205,6 +218,14 @@ def _with_note(result: CallResult, note: str, *, retry: bool = False) -> CallRes
     return dataclasses.replace(result, **changes)
 
 
+def api_version_of(client: Any) -> str | None:
+    """The API version a client sends its requests to, as the SDK holds it (None when it cannot be read)."""
+    try:
+        return str(client._api_client._http_options.api_version) or None
+    except AttributeError:
+        return None
+
+
 def digest_of(custom_ids: Sequence[str]) -> str:
     """A short digest of a group of custom ids, kept in the batch's display name so the batch can be found again."""
     return hashlib.sha256("\n".join(sorted(custom_ids)).encode("utf-8")).hexdigest()[:24]
@@ -232,7 +253,7 @@ class _GeminiCommon:
     route_name: str
 
     def _setup(self, client: Any | None, *, batch: bool = False) -> None:
-        allowed = {"schema", "schema_field", "media_resolution", "cache", "cache_ttl_seconds"}
+        allowed = {"schema", "schema_field", "media_resolution", "cache", "cache_ttl_seconds", "api_version"}
         check_options(self.route, self.route_name, allowed | ({"batch_form"} if batch else set()))
         self._schema_mode = option(self.route, self.route_name, "schema", DEFAULT_SCHEMA_MODE, choices=GEMINI_SCHEMA_MODES, kind=str)
         self._schema_field = option(self.route, self.route_name, "schema_field", DEFAULT_SCHEMA_FIELD, choices=SCHEMA_FIELDS, kind=str)
@@ -242,7 +263,13 @@ class _GeminiCommon:
             else DEFAULT_BATCH_FORM
         )
         self._resolution = option(self.route, self.route_name, "media_resolution", "medium", choices=RESOLUTIONS, kind=str)
+        self._api_version = option(self.route, self.route_name, "api_version", DEFAULT_API_VERSION, choices=API_VERSIONS, kind=str)
         self._use_cache = bool(option(self.route, self.route_name, "cache", False, kind=bool))
+        if self._use_cache and self._api_version == "v1":
+            raise ConfigError(
+                f"route {self.route_name!r}: option 'cache' needs the {CACHE_API_VERSION} API, the only version that has "
+                "explicit caching, and option 'api_version' is 'v1' (use 'auto' or 'v1beta')"
+            )
         self._cache_ttl = int(option(self.route, self.route_name, "cache_ttl_seconds", 21600, kind=int))
         if self._cache_ttl < 60:
             raise ConfigError(f"route {self.route_name!r}: option 'cache_ttl_seconds' must be at least 60")
@@ -273,6 +300,12 @@ class _GeminiCommon:
         """The row schema in the form this route sends (None when the route sends none)."""
         return gemini_schema(rules.schema, self._schema_mode_now())
 
+    def resolved_api_version(self) -> str | None:
+        """The API version this route's requests go to: the option, else v1beta with the explicit cache, else None (the SDK's own)."""
+        if self._api_version != "auto":
+            return self._api_version
+        return CACHE_API_VERSION if self._use_cache else None
+
     def _client(self) -> Any:
         with self._client_lock:
             if self._client_obj is None:
@@ -283,6 +316,8 @@ class _GeminiCommon:
                 from google.genai import types
 
                 http: dict[str, Any] = {"retry_options": types.HttpRetryOptions(attempts=self.route.max_retries + 1)}
+                if self.resolved_api_version():
+                    http["api_version"] = self.resolved_api_version()
                 if self.route.timeout_seconds:
                     http["timeout"] = int(self.route.timeout_seconds * 1000)
                 self._client_obj = genai.Client(api_key=key, http_options=types.HttpOptions(**http))
