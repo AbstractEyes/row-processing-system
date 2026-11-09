@@ -197,7 +197,7 @@ The assessor's finding codes that are new or raised in 0.2.7. An error stops the
 | poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
 | assess | The rule set's checker (or a function you give) checks the rows | `row_assessed`, `row_rejected`, `row_set_aside` |
 | review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows. A packet whose reviewer was switched off is taken back, and a row that waited in the hand queue for want of a reviewer is reopened when one is available | `packet_published`, `packet_withdrawn`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_reopened`, `row_accepted` |
-| repair | With `repair.enabled`, a row in the hand queue for a fix verdict is sent back, once, to the route that wrote it, with the reviewers' notes and the row as it was written. The call that writes it again is an ordinary call of the line, charged to the purpose `repair`; the row it writes is checked and reviewed like any row, and the row that was sent back never ships. A repair that comes to nothing puts the row back in the hand queue. See "The repair step" | `repair_requested`, then `call_prepared` (with `repair_of`), `batch_submitted`, `call_returned`, `row_assessed`, and `row_to_hand` for a repair that came to nothing |
+| repair | With `repair.enabled`, a row in the hand queue for a fix verdict is sent back, once, to the route that wrote it (or the route `repair.routes` names for it), with the reviewers' notes and the row as it was written. The call that writes it again is an ordinary call of the line, charged to the purpose `repair`; the row it writes is checked and reviewed like any row, and the row that was sent back never ships. A repair that comes to nothing puts the row back in the hand queue. See "The repair step" | `repair_requested`, then `call_prepared` (with `repair_of`), `batch_submitted`, `call_returned`, `row_assessed`, and `row_to_hand` for a repair that came to nothing |
 | ship | Accepted rows and the ledger are handed to the dataset repository, which sends them in its next commit; a file counts as shipped when the repository has sent it | `shipped` |
 
 The events are one JSON object per line (`ts`, `actor`, `kind`, `payload`). The controller's
@@ -341,7 +341,7 @@ is refused. Unknown keys are refused too.
 | `rules` | The writing rules, see "The writing rules are inputs" |
 | `commit` | How writes are batched, see below |
 | `review` | Reviewers (each with an `id`, a `family`, `enabled` and `solo_keep`, see "Review"), packet size, brief version and the review policy. `brief_version` applies only when no writing rules are loaded; with rules, a packet carries their version |
-| `repair` | The repair step: `enabled` (default `false`) and `min_rows` (default 20, a whole number of at least 1: how many candidates a route gathers before its repairs are sent; a smaller batch goes when the controller has nothing else to do for the route). A row a reviewer sent back with a fix verdict is written again, once, by its own writer. It needs `review.policy.fix_to_hand` and, on each route that repairs, a cap for the purpose `repair` in `purpose_caps`. See "The repair step". A reviewer's machine needs a version of the package that knows this section to read a configuration file that has it, since unknown keys are refused |
+| `repair` | The repair step: `enabled` (default `false`), `min_rows` (default 20, a whole number of at least 1: how many candidates a route gathers before its repairs are sent; a smaller batch goes when the controller has nothing else to do for the route) and `routes` (default none: a map from a writing route to the route that repairs its rows, for a writer that cannot repair its own). A row a reviewer sent back with a fix verdict is written again, once, by its own writer, or by the route `routes` names for it. It needs `review.policy.fix_to_hand` and, on each route that repairs, a cap for the purpose `repair` in `purpose_caps`. See "The repair step". A reviewer's machine needs a version of the package that knows this section to read a configuration file that has it, since unknown keys are refused |
 | `price_table` | Path to a price table file (default: the dated table in the package) |
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
@@ -983,23 +983,41 @@ writer writes it again. The step is off unless the configuration turns it on:
 |---|---|
 | `repair.enabled` | `false` unless set. Off, no row is sent back, and a fix verdict ends in the hand queue as it always did |
 | `repair.min_rows` | 20 unless set; at least 1. How many candidates a route gathers before its repairs are sent. Repairs of a batch route go out together, so a batch is worth waiting for; when the controller has nothing else to do for the route, the candidates it has go, however few |
+| `repair.routes` | Empty unless set: a route repairs its own rows. A map from a writing route to the route that repairs its rows, such as `{"luna-sync": "haiku-sync"}`. See "Repairing through another route" |
 | `purpose_caps.repair` (a route's) | The most the route may spend on repair calls. A route with none, or a cap of nothing, is never sent a row to repair, and the run says so when it starts (with the step on) |
 | `review.policy.fix_to_hand` | Has to be `true`: the step sends back the rows that wait in the hand queue for a fix verdict, and no row waits there for one otherwise. A configuration that turns the step on without it is noted when the run starts |
 
 **Which rows, and when.** A candidate is a row in the hand queue for the reason `fix_to_hand` gives ("a fix
 verdict: the row waits for the owner") that the owner has not answered, that was never sent back before, that
-is not itself the result of a repair, and that was written by a route that is switched on, is not closed for the
-run and has a repair cap. The owner's decisions are read first, in the same pass, so a row the owner answers is
-never repaired. Each route is looked at on its own: with at least `repair.min_rows` candidates, or with fewer
-when the controller has nothing else to do for the route (no call of it in flight or waiting to go, no spec line
-of it due a call, no row it wrote still to be checked), the controller records `repair_requested` (`row_id`,
-`call_id`, `route`) for every candidate of the route, in row-id order. The row leaves the hand queue file, and the
-call the event names is prepared in the next pass. A run that stops between the events of a batch finds the rest
-of the batch still in the hand queue and sends it with the next batch, or when the route has nothing else to do.
+is not itself the result of a repair, and whose repairing route (the route that wrote it, unless `repair.routes`
+names another) is switched on, is not closed for the run and has a repair cap. The owner's decisions are read
+first, in the same pass, so a row the owner answers is never repaired. Each repairing route is looked at on its
+own: with at least `repair.min_rows` candidates, or with fewer when the controller has nothing else to do for the
+route (no call on it in flight or waiting to go, no call due on it, no row it wrote still to be checked), the
+controller records `repair_requested` (`row_id`, `call_id`, `route`) for every candidate of the route, in row-id
+order. The row leaves the hand queue file, and the call the event names is prepared in the next pass. A run that
+stops between the events of a batch finds the rest of the batch still in the hand queue and sends it with the next
+batch, or when the route has nothing else to do.
 
-**What the writer is told.** The call is for the same spec line and goes through the same route, so the writer
-gets the same task text, the same picture and the same choices as the first time, then this (a profile's retry
-block is not used: that block is about failed checks):
+**Repairing through another route.** A row is repaired by the route that wrote it, which cannot work when that
+route was switched off for poor quality while its rows were still in review: its fix rows wait for the owner for
+good. `repair.routes` maps a writing route to the route that repairs its rows, for example
+`"routes": {"luna-sync": "haiku-sync"}`. The rows `luna-sync` wrote that a reviewer sent back are then written
+again by `haiku-sync`, with that route's provider, model, prompt profile and settings, charged to its `repair`
+cap, for the same spec line and with the same notes. `repair_requested` and `call_prepared` name `haiku-sync` as
+the route; the new row carries its writer label, is linked to the row it replaces as before, ships under it, and
+goes to a first review by a reviewer outside that writer's family who did not review the original. Whether a row
+may be repaired is asked of the repairing route (switched on, not closed for the run, has a repair cap), never of
+the route that wrote it, which may be switched off and needs no repair cap. Both names must be configured routes,
+a route cannot be mapped to itself, and there are no chains (a route that rows are mapped to is not itself in the
+map). A map to a route that is switched off or has no repair cap is noted when the run starts, and those rows
+wait for the owner. Repairs are batched per repairing route. Once `repair_requested` names a route the repair
+stays with it, whatever `repair.routes` says by then.
+
+**What the writer is told.** The call is for the same spec line and goes through the repairing route (the same
+route, unless `repair.routes` names another), so the writer gets the same task text (in that route's prompt
+profile), the same picture and the same choices as the first time, then this (a profile's retry block is not
+used: that block is about failed checks):
 
     An earlier row for this item was sent back by a reviewer. The notes from the review are below. Write the row
     again: fix exactly the problems the notes name, and keep everything else in the earlier row that was right.
@@ -1028,9 +1046,10 @@ number.
 call, like any row's), linked to the row that was sent back by `repair_of` in the state and the events, and
 nowhere in a stored, packeted or shipped row. They are checked like any row, and a rejected one is not written
 again. A row that passes goes to a first review by a reviewer outside the writer's family, preferring one that
-did not review the row it replaces; an accepted new row ships in the same file as any accepted row of its task.
-A new row that a reviewer sends back with a fix goes to the hand queue and is never sent back again (the file
-lists it with `repair_of`).
+did not review the row it replaces; an accepted new row ships in the same file as any accepted row of its task
+(the file is named for the route that wrote it, so a row repaired through `repair.routes` is in the file of the
+repairing route). A new row that a reviewer sends back with a fix goes to the hand queue and is never sent back
+again (the file lists it with `repair_of`).
 
 | What happens to the repair | The row that was sent back | Recorded as |
 |---|---|---|
@@ -1155,7 +1174,7 @@ the service took the request as the writer sends it, 1 when it did not and 2 whe
 | between recording a packet's withdrawal and deleting its files | deletes the files of every withdrawn packet that is still in the state store, once when the run starts (the event comes first, so no row waits for a packet whose files are gone) |
 | after rows were reopened or packets withdrawn | rebuilds the same state from the events alone: neither depends on the configuration of the run that recorded it |
 | between two `repair_requested` events of a batch | the rows already sent back are `repairing` and their calls are prepared in the next pass; the rows not yet sent back are still in the hand queue, and go with the next batch or when the route has nothing else to do. No row is sent back twice |
-| after `repair_requested` and before the repair call was prepared | prepares the call the event named (its id was recorded with the event), once |
+| after `repair_requested` and before the repair call was prepared | prepares the call the event named (its id was recorded with the event), once, on the route the event named, whatever `repair.routes` says by then |
 | while a repair call is in flight | polls it. A call on a one-call route that the stop cut off fails for a passing reason, like any call in flight, and is made again as the next repair call (charged to `repair`) while the row has had fewer than `max_attempts` of them. A repair call is never made twice for the same attempt number |
 | between a repair coming to nothing and the row's return to the hand queue | works it out again from the events (every row the writer wrote was rejected, the writer gave no row, or the call failed for good) and records the `row_to_hand`, once |
 | while shipping | rebuilds the shipped files from the accepted rows and hands them over again; `shipped` is recorded only after the ship store has sent the files (for a dataset repository, after the commit has gone out). Files that were waiting for a commit when the run died are simply handed over again |
@@ -1224,7 +1243,7 @@ reads `ANTHROPIC_API_KEY` the same way.
   reviewer sent back is repaired by asking the writer for the whole item once more, with the notes for the
   row; the rows of the first answer that were not sent back stay as they were, and every row of the new answer
   is checked and reviewed. Asking for one row of a series alone is not built. A row can be sent back once; a
-  second round, or a repair done by a different route than the row's own, is not built either.
+  second round is not built either.
 - Gemini batches from a JSONL file (only inline requests are built).
 - The pricing test that settles whether batch discounts stack with cache prices, and the probe
   phase that compares effort and picture-resolution levels (the defaults are for dry runs).

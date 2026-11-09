@@ -16,8 +16,9 @@ interrupted and run again repeats only the unfinished part.
                of a reviewer are reopened when one is now available and the policy
                still asks for their review, rows whose repair came to nothing go back
                to the hand queue, rows the reviewers sent back with a fix verdict are
-               sent to the route that wrote them to be written again (when `repair` is
-               on: see `rps.repair`), rows that need a reviewer are published in
+               sent to the route that wrote them, or the route `repair.routes` names
+               for it, to be written again (when `repair` is on: see `rps.repair`),
+               rows that need a reviewer are published in
                packets, and the pictures of answered rows are burned
     ship       accepted rows and the ledger go to the ship store
 
@@ -843,6 +844,7 @@ class Controller:
         boost: bool = False,
         max_output_tokens: int | None = None,
         repair_of: str | None = None,
+        route_name: str | None = None,
     ) -> tuple[CallSpec, int | None]:
         """Build the call for a spec line, with the size of the picture it carries (if any).
 
@@ -854,8 +856,13 @@ class Controller:
         With `repair_of` (a row's id) the call is one of the repair step: the same spec line, charged to the
         purpose `repair`, whose `feedback` is the reviewers' notes and the row as it was written, put to the
         writer in the words of `rps.prompting.repair_text` instead of as check messages.
+
+        The call is for the route of the task unless `route_name` names another: a repair call goes to the
+        route the row was sent back to (`repair.routes`), and is built from that route's provider, model,
+        settings and prompt profile, though the spec line is the task's own.
         """
-        route = self.config.routes[task.route]
+        route_name = route_name or task.route
+        route = self.config.routes[route_name]
         image = ext = None
         size = None
         if line.image:
@@ -865,17 +872,17 @@ class Controller:
             max_output_tokens = route.max_output_tokens
             if boost:
                 max_output_tokens = max(max_output_tokens + 1, int(max_output_tokens * route.truncation_factor))
-        rules = self.rules_for(task.route)
+        rules = self.rules_for(route_name)
         spec = CallSpec(
             call_id=ids.call_id(task.task_id, line.line_id, attempt),
             task_id=task.task_id,
             line=line.line_id,
             attempt=attempt,
-            route=task.route,
+            route=route_name,
             provider=route.provider,
             model=route.model,
             kind=route.kind,
-            effort=task.effort or route.effort,
+            effort=self._effort_of(task, route_name),
             max_output_tokens=max_output_tokens,
             spec=line.spec,
             pool_version=task.pool_version,
@@ -897,6 +904,20 @@ class Controller:
         """The purpose the next call of a due line is charged to: `repair` for a call of the repair step,
         else the task's purpose for a line's first call and `rebound` for any retry."""
         return effective_purpose(task.purpose, status.next_attempt, repair=status.repair_of is not None)
+
+    @staticmethod
+    def _call_route(task: TaskState, status: Any) -> str:
+        """The route the next call of a due line is made on: the route of its task, except for a call of the repair
+        step, which goes to the route the row was sent back to (`repair.routes`; the state has it from the
+        `repair_requested` event, so a restart sends the call where the event said, whatever the configuration
+        says by then)."""
+        return status.route or task.route
+
+    def _effort_of(self, task: TaskState, route_name: str) -> str | None:
+        """The effort a call on `route_name` runs at: the effort recorded with the task for a call on the task's own
+        route, and the route's own setting for a call on another (a repair call on the route of `repair.routes`)."""
+        route = self.config.routes[route_name]
+        return (task.effort or route.effort) if route_name == task.route else route.effort
 
     # -- which routes may take calls
 
@@ -954,17 +975,20 @@ class Controller:
 
     def _repair_switched_off(self, task: TaskState, status: Any) -> bool:
         """True for a call of the repair step that is due on a route where the step is no longer wanted (it was
-        switched off, or the route has no cap for `repair` any more, since the row was sent back). Such a call is
-        not made; the row goes back to the hand queue (`_settle_repairs`)."""
-        return status.repair_of is not None and not route_may_repair(self.config, task.route)
+        switched off, or the route that was to write the row again is switched off or has no cap for `repair` any
+        more, since the row was sent back). The route is the one the row was sent back to, not the row's own, which
+        may be switched off for good (`repair.routes`). Such a call is not made; the row goes back to the hand
+        queue (`_settle_repairs`)."""
+        return status.repair_of is not None and not route_may_repair(self.config, self._call_route(task, status))
 
     def _due_by_route(self) -> dict[str, list[tuple[TaskState, LineState, Any]]]:
-        """The spec lines due a call, by the route of their task."""
+        """The calls due, by the route they are made on: the route of the task of a spec line, and the route the
+        row was sent back to for a call of the repair step."""
         grouped: dict[str, list[tuple[TaskState, LineState, Any]]] = {}
         for item in self.state.lines_needing_calls(self.config.max_attempts):
             if self._repair_switched_off(item[0], item[2]):
                 continue
-            grouped.setdefault(item[0].route, []).append(item)
+            grouped.setdefault(self._call_route(item[0], item[2]), []).append(item)
         return grouped
 
     def _stage_submit(self, *, api_only: bool = False) -> None:
@@ -1114,7 +1138,13 @@ class Controller:
         for task, line, status in group:
             try:
                 spec, size = self._call_spec(
-                    task, line, status.next_attempt, status.feedback, boost=status.boost, repair_of=status.repair_of
+                    task,
+                    line,
+                    status.next_attempt,
+                    status.feedback,
+                    boost=status.boost,
+                    repair_of=status.repair_of,
+                    route_name=route_name,
                 )
             except (ImageError, ImageRoutingError) as error:
                 self._record_unpreparable(task, line, status, str(error))
@@ -1227,6 +1257,7 @@ class Controller:
     ) -> None:
         """A call that cannot be built (its picture cannot be read) fails at once, without retries."""
         call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
+        route_name = self._call_route(task, status)
         self._emit(
             "call_prepared",
             {
@@ -1234,7 +1265,7 @@ class Controller:
                 "task_id": task.task_id,
                 "line": line.line_id,
                 "attempt": status.next_attempt,
-                "route": task.route,
+                "route": route_name,
                 "purpose": self._purpose_of(task, status),
                 "est_usd": 0.0,
                 "est_input_tokens": 0,
@@ -1242,7 +1273,7 @@ class Controller:
                 "image_size": None,
                 "feedback": [],
                 "retry_of": status.retry_of,
-                **self._rules_fields(task.route),
+                **self._rules_fields(route_name),
                 **({"repair_of": status.repair_of} if status.repair_of is not None else {}),
             },
         )
@@ -1277,6 +1308,7 @@ class Controller:
                 call.feedback,
                 max_output_tokens=call.max_output_tokens or None,
                 repair_of=call.repair_of,
+                route_name=call.route,
             )
             return writer.prepare([spec])[0]
         except NotImplementedError:
@@ -1702,7 +1734,7 @@ class Controller:
                 },
             )
             return False
-        stamped, flags = self._stamp(call.call_id, task, call.line, call.image_size, rows)
+        stamped, flags = self._stamp(call.call_id, task, call.line, call.image_size, rows, route_name=call.route)
         linked = {"repair_of": call.repair_of} if call.repair_of is not None else {}  # the rows repair this row
         self._emit(
             "call_returned",
@@ -1793,16 +1825,30 @@ class Controller:
             return []
 
     def _stamp(
-        self, call_id: str, task: TaskState, line_id: str, image_size: int | None, rows: Sequence[dict[str, Any]]
+        self,
+        call_id: str,
+        task: TaskState,
+        line_id: str,
+        image_size: int | None,
+        rows: Sequence[dict[str, Any]],
+        *,
+        route_name: str | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, list[str]]]:
-        route = self.config.routes[task.route]
+        """Stamp each row a call returned with its writer label and source label.
+
+        The writer label names the route the call was made on (`route_name`; the task's own route when omitted),
+        so a row a repair wrote on another route (`repair.routes`) carries that route's provider, model, effort
+        and rules, not those of the route that wrote the row it replaces.
+        """
+        route_name = route_name or task.route
+        route = self.config.routes[route_name]
         line = task.lines[line_id]
-        rules = self.rules_for(task.route)
+        rules = self.rules_for(route_name)
         writer = WriterLabel(
             provider=route.provider,
             model=route.model,
             route=route.kind,
-            effort=task.effort or route.effort,
+            effort=self._effort_of(task, route_name),
             date=self._today(),
             task_id=task.task_id,
             pool_version=task.pool_version,
@@ -2252,14 +2298,16 @@ class Controller:
     # -- the repair step
 
     def _repair_allowed(self, route_name: str) -> bool:
-        """True when the repair step is on for the route and the route is not closed for this run: it is
-        switched on, has a cap for the purpose `repair`, and has not stopped (no key, rejected request)."""
+        """True when the repair step is on for the route that would write rows again and that route is not closed
+        for this run: it is switched on, has a cap for the purpose `repair`, and has not stopped (no key, rejected
+        request). The route asked about is the repairing route (`repair.routes`), never the route that wrote the row."""
         return route_may_repair(self.config, route_name) and self.route_state(route_name)[0] != "closed"
 
     def _route_has_nothing_else_to_do(self, route_name: str) -> bool:
-        """True when the controller has nothing left to do for a route before review: no call of it in flight or
-        waiting to go (a repair call included), no spec line of it due a call, and no row it wrote still to be
-        checked. Rows with the reviewers are not the controller's to move, so they do not count."""
+        """True when the controller has nothing left to do for a route before review: no call on it in flight or
+        waiting to go (a repair call included), no call due on it (a spec line of a task of the route, or a repair
+        call the route was sent), and no row it wrote still to be checked. Rows with the reviewers are not the
+        controller's to move, so they do not count."""
         s = self.state
         if s.unfinished_calls(route_name):
             return False
@@ -2267,19 +2315,22 @@ class Controller:
             return False
         if any(call.route == route_name for call in s.calls_with_unrecorded_skips()):
             return False
-        return not any(task.route == route_name for task, _line, _status in self._calls_due())
+        return not any(self._call_route(task, status) == route_name for task, _line, status in self._calls_due())
 
     def _request_repairs(self) -> None:
-        """Send the rows the reviewers sent back with a fix verdict to the route that wrote them, to be written again.
+        """Send the rows the reviewers sent back with a fix verdict to the route that is to write them again.
 
         The candidates are the rows in the hand queue for a fix verdict that the owner has not answered (the
         owner's decisions were read first), that were never sent back before and are not themselves a repair
-        (`rps.repair.candidates`), on a route that is on and has a cap for the purpose `repair`. A route's
-        candidates go together, in row-id order, when it has at least `repair.min_rows` of them, or fewer when
-        the controller has nothing else to do for the route (`_route_has_nothing_else_to_do`): a batch route
-        is sent its repairs in batches, and the last few rows of a job are not left waiting for a batch that
-        will never fill. `repair_requested` is recorded for each row, naming the call that will write it
-        again; the call is prepared in the next pass, like any call, under the route's cap for `repair`.
+        (`rps.repair.candidates`). A row is written again by the route that wrote it, or by the route
+        `repair.routes` names for that route, and that repairing route, not the route that wrote the row, has to
+        be on and have a cap for the purpose `repair` (`_repair_allowed`): a row of a route that is switched off
+        is repaired through the map. A repairing route's candidates, from every route it repairs for, go
+        together, in row-id order, when it has at least `repair.min_rows` of them, or fewer when the controller
+        has nothing else to do for the route (`_route_has_nothing_else_to_do`): a batch route is sent its
+        repairs in batches, and the last few rows of a job are not left waiting for a batch that will never fill.
+        `repair_requested` is recorded for each row, naming the repairing route and the call that will write the
+        row again; the call is prepared in the next pass, like any call, under that route's cap for `repair`.
         A run that stops between the events of a batch leaves some of its rows sent back and the others
         candidates still: the next run counts the others again, and they go with the next batch or when the
         route has nothing else to do, so the end of the job is the same.
@@ -2288,8 +2339,9 @@ class Controller:
             return
         by_route: dict[str, list[RowState]] = {}
         for row in repair_candidates(self.state.hand_queue()):
-            if self._repair_allowed(row.route):
-                by_route.setdefault(row.route, []).append(row)
+            repairing = self.config.repair.route_for(row.route)
+            if self._repair_allowed(repairing):
+                by_route.setdefault(repairing, []).append(row)
         for route_name in sorted(by_route):
             rows = by_route[route_name]
             if len(rows) < self.config.repair.min_rows and not self._route_has_nothing_else_to_do(route_name):
@@ -2298,16 +2350,22 @@ class Controller:
                 attempt = self.state.next_attempt(row.task_id, row.line)
                 call_id = ids.call_id(row.task_id, row.line, attempt)
                 self._emit("repair_requested", {"row_id": row.row_id, "call_id": call_id, "route": route_name})
-            self._print(f"[rps] sent {len(rows)} row(s) back to {route_name} to be written again, with the reviewers' notes")
+            others = sorted({row.route for row in rows} - {route_name})
+            if others:
+                text = f"sent {len(rows)} row(s) to {route_name} to be written again, with the reviewers' notes"
+                text += f" (including rows written by {', '.join(others)})"
+            else:
+                text = f"sent {len(rows)} row(s) back to {route_name} to be written again, with the reviewers' notes"
+            self._print(f"[rps] {text}")
 
     def _settle_repairs(self) -> None:
         """Send back to the hand queue the rows whose repair came to nothing, each with the reason.
 
         A repair comes to nothing when its call failed and may not be tried again, when the writer answered with
         no row, or when every row it wrote was rejected or set aside by the checker. A row whose call is still
-        to be made (the first, or a retry), and whose route no longer repairs (the step or the route's cap was
-        switched off since the row was sent back), goes back too. Either way the row had its one repair: it
-        stays for the owner.
+        to be made (the first, or a retry), and whose repairing route no longer repairs (the step was switched
+        off, or the route the row was sent back to was switched off or lost its repair cap, since the row was
+        sent back), goes back too. Either way the row had its one repair: it stays for the owner.
         """
         sent = []
         for row, code, detail in self.state.repairs_failed(self.config.max_attempts):
@@ -2370,10 +2428,11 @@ class Controller:
         )
 
     def _calls_due(self) -> list[Any]:
-        """Spec lines due a call, leaving out calls a budget refused and calls on closed routes.
+        """Calls due (spec lines and repair calls), leaving out calls a budget refused and calls on closed routes.
 
         A route that is closed for the run (no key, switched off, stopped) cannot do
-        them, so they do not keep the run waiting; a route that opens later does.
+        them, so they do not keep the run waiting; a route that opens later does. The route of a call is
+        the one it would be made on (`_call_route`).
         """
         status: dict[str, str] = {}
         due = []
@@ -2383,9 +2442,10 @@ class Controller:
                 continue
             if self._repair_switched_off(task, line_status):
                 continue
-            if task.route not in status:
-                status[task.route] = self._route_status(task.route)
-            if status[task.route] != "closed":
+            route_name = self._call_route(task, line_status)
+            if route_name not in status:
+                status[route_name] = self._route_status(route_name)
+            if status[route_name] != "closed":
                 due.append(item)
         return due
 

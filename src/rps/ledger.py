@@ -667,18 +667,28 @@ class Ledger:
         return "\n".join(lines)
 
     def task_lines(self, state: "State") -> list[dict[str, Any]]:
-        """One usage record per (task, route): tokens, dollars, attempts, minutes and row counts."""
+        """One usage record per (task, route): tokens, dollars, attempts, minutes and row counts.
+
+        A task's calls are on its own route, except the calls of the repair step that another route made for it
+        (`repair.routes`): those have a record of their own, for the route that made them, with that route's model
+        and effort.
+        """
         lines: dict[tuple[str, str], dict[str, Any]] = {}
         for call in state.calls.values():
             task = state.tasks.get(call.task_id)
             key = (call.task_id, call.route)
+            if task is None or task.route == call.route:
+                effort = task.effort if task else None
+            else:
+                made_on = self.config.routes.get(call.route)
+                effort = made_on.effort if made_on is not None else None
             entry = lines.setdefault(
                 key,
                 {
                     "task_id": call.task_id,
                     "route": call.route,
                     "model": self.config.routes[call.route].model if call.route in self.config.routes else "",
-                    "effort": task.effort if task else None,
+                    "effort": effort,
                     "calls": 0,
                     "attempts": 0,
                     "input_tokens": 0,
