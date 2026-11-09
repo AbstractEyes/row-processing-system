@@ -1,10 +1,13 @@
 """Usage, cost and budgets.
 
-Every call carries a purpose: test, pricing, probe, rebound or production. Each
+Every call carries a purpose: test, pricing, probe, rebound, production or repair. Each
 route has a total dollar cap and one cap per purpose. Before a call is submitted
 its estimated cost is checked against both its (route, purpose) cap and its route's
 total. A retry or re-submission after a failed or rejected call is always purpose
-"rebound", whatever the original purpose was.
+"rebound", whatever the original purpose was. The one exception is a call of the
+repair step (a row sent back to its writer once, with the reviewers' notes), which is
+purpose "repair": it is made after the line's first call, so its attempt number is
+2 or more, but it is not a retry.
 
 Money counted against a cap is what has been spent plus the estimated cost of calls
 still in flight (the money they hold), so a batch that has been submitted but not yet
@@ -36,7 +39,7 @@ from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
-from .config import PURPOSES, REBOUND, Config
+from .config import PURPOSES, REBOUND, REPAIR, Config
 
 if TYPE_CHECKING:  # pragma: no cover
     from .state import State
@@ -446,10 +449,13 @@ class PriceTable:
         return notes
 
 
-def effective_purpose(task_purpose: str, attempt: int) -> str:
-    """The purpose a call is charged to: any retry (attempt 2 or later) is "rebound"."""
+def effective_purpose(task_purpose: str, attempt: int, *, repair: bool = False) -> str:
+    """The purpose a call is charged to: any retry (attempt 2 or later) is "rebound", and every call of the
+    repair step (`repair` true, whatever its attempt number) is "repair"."""
     if task_purpose not in PURPOSES:
         raise ValueError(f"unknown purpose: {task_purpose!r}")
+    if repair:
+        return REPAIR
     return REBOUND if attempt > 1 else task_purpose
 
 
@@ -706,7 +712,7 @@ class Ledger:
             if entry is None:
                 continue
             entry["rows_out"] += 1
-            if row.status in ("passed", "in_review", "in_question", "hand", "accepted"):
+            if row.status in ("passed", "in_review", "in_question", "hand", "repairing", "repaired", "accepted"):
                 entry["rows_passed"] += 1
             if row.status == "accepted":
                 entry["rows_accepted"] += 1

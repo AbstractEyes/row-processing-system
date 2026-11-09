@@ -7,7 +7,9 @@ store, so the rules can be tested on their own.
 The protocol, with the default policy:
 
 1. The first review goes to a reviewer from a family other than the writer's,
-   chosen round-robin across the available reviewers.
+   chosen round-robin across the available reviewers. (The first review of a row that was
+   written again after a reviewer sent it back prefers a reviewer that did not review the row
+   it replaces, when there is one: see `rps.repair`.)
 2. A "keep" with no assessor flag accepts the row, unless it comes from a reviewer
    that may not keep alone (`solo_keep` off): that keep never accepts a row by itself,
    so the row is in question, as a flagged row is.
@@ -32,7 +34,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Collection, Sequence
 
 from ..config import ReviewerConfig, ReviewPolicy
 
@@ -129,7 +131,7 @@ def settle(
 
 
 def pick_first_reviewer(
-    reviewers: Sequence[ReviewerConfig], writer_family: str, ordinal: int
+    reviewers: Sequence[ReviewerConfig], writer_family: str, ordinal: int, avoid: Collection[str] = ()
 ) -> ReviewerConfig | None:
     """Choose the first reviewer: round-robin over the reviewers outside the writer's family.
 
@@ -138,11 +140,17 @@ def pick_first_reviewer(
     rows go to consecutive reviewers. The answer depends only on its arguments, which
     keeps the rotation exact across a restart. Returns None when every reviewer is
     from the writer's family.
+
+    `avoid` names reviewers (by id) that are better left out when another is available: a row that
+    was written again after a reviewer sent it back is given, for its first review, to a reviewer
+    that did not review the row it replaces, unless every reviewer outside the writer's family did.
     """
     eligible = [reviewer for reviewer in reviewers if reviewer.family != writer_family]
     if not eligible:
         return None
-    return eligible[ordinal % len(eligible)]
+    fresh = [reviewer for reviewer in eligible if reviewer.id not in avoid]
+    chosen = fresh or eligible
+    return chosen[ordinal % len(chosen)]
 
 
 def _spread(key: str) -> int:

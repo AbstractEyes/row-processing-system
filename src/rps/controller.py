@@ -14,7 +14,10 @@ interrupted and run again repeats only the unfinished part.
                are taken back, rows are settled by the review policy, the owner's
                hand decisions are read, rows that went to the hand queue only for want
                of a reviewer are reopened when one is now available and the policy
-               still asks for their review, rows that need a reviewer are published in
+               still asks for their review, rows whose repair came to nothing go back
+               to the hand queue, rows the reviewers sent back with a fix verdict are
+               sent to the route that wrote them to be written again (when `repair` is
+               on: see `rps.repair`), rows that need a reviewer are published in
                packets, and the pictures of answered rows are burned
     ship       accepted rows and the ledger go to the ship store
 
@@ -80,6 +83,9 @@ from .provenance import (
     stamp_row,
 )
 from .providers.base import CallResult, CallSpec, Handle, Request, RouteRejected, RouteUnavailable, Writer
+from .repair import candidates as repair_candidates
+from .repair import failure_reason as repair_failure_reason
+from .repair import route_may_repair
 from .review.packets import build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
     ACCEPT,
@@ -836,6 +842,7 @@ class Controller:
         *,
         boost: bool = False,
         max_output_tokens: int | None = None,
+        repair_of: str | None = None,
     ) -> tuple[CallSpec, int | None]:
         """Build the call for a spec line, with the size of the picture it carries (if any).
 
@@ -843,6 +850,10 @@ class Controller:
         (`ImageRoutingError` otherwise). With `boost` the token limit is raised by the
         route's truncation factor: the previous answer was cut off at the limit. A call
         rebuilt after a restart passes the limit it was first prepared with.
+
+        With `repair_of` (a row's id) the call is one of the repair step: the same spec line, charged to the
+        purpose `repair`, whose `feedback` is the reviewers' notes and the row as it was written, put to the
+        writer in the words of `rps.prompting.repair_text` instead of as check messages.
         """
         route = self.config.routes[task.route]
         image = ext = None
@@ -868,15 +879,24 @@ class Controller:
             max_output_tokens=max_output_tokens,
             spec=line.spec,
             pool_version=task.pool_version,
-            purpose=effective_purpose(task.purpose, attempt),
+            purpose=effective_purpose(task.purpose, attempt, repair=repair_of is not None),
             feedback=tuple(feedback),
             image=image,
             image_ext=ext,
             image_class=line.image_class if line.image else None,
-            task_text=render_task_text(line.spec, feedback, ordinal=line.ordinal, rules=rules),
+            task_text=render_task_text(
+                line.spec, feedback, ordinal=line.ordinal, rules=rules, repair=repair_of is not None
+            ),
             rules=rules,
+            repair_of=repair_of,
         )
         return spec, size
+
+    @staticmethod
+    def _purpose_of(task: TaskState, status: Any) -> str:
+        """The purpose the next call of a due line is charged to: `repair` for a call of the repair step,
+        else the task's purpose for a line's first call and `rebound` for any retry."""
+        return effective_purpose(task.purpose, status.next_attempt, repair=status.repair_of is not None)
 
     # -- which routes may take calls
 
@@ -932,10 +952,18 @@ class Controller:
         """
         return max(0, route.workers - self.state.unfinished_calls(route_name))
 
+    def _repair_switched_off(self, task: TaskState, status: Any) -> bool:
+        """True for a call of the repair step that is due on a route where the step is no longer wanted (it was
+        switched off, or the route has no cap for `repair` any more, since the row was sent back). Such a call is
+        not made; the row goes back to the hand queue (`_settle_repairs`)."""
+        return status.repair_of is not None and not route_may_repair(self.config, task.route)
+
     def _due_by_route(self) -> dict[str, list[tuple[TaskState, LineState, Any]]]:
         """The spec lines due a call, by the route of their task."""
         grouped: dict[str, list[tuple[TaskState, LineState, Any]]] = {}
         for item in self.state.lines_needing_calls(self.config.max_attempts):
+            if self._repair_switched_off(item[0], item[2]):
+                continue
             grouped.setdefault(item[0].route, []).append(item)
         return grouped
 
@@ -987,7 +1015,7 @@ class Controller:
         taken: list[tuple[TaskState, LineState, Any]] = []
         for item in items:
             task, line, status = item
-            if effective_purpose(task.purpose, status.next_attempt) in waiting:
+            if self._purpose_of(task, status) in waiting:
                 continue
             if ids.call_id(task.task_id, line.line_id, status.next_attempt) in self._parked:
                 continue
@@ -1055,7 +1083,7 @@ class Controller:
         if not blocked:
             return
         for task, line, status in items:
-            purpose = effective_purpose(task.purpose, status.next_attempt)
+            purpose = self._purpose_of(task, status)
             if purpose not in blocked:
                 continue
             call_id = ids.call_id(task.task_id, line.line_id, status.next_attempt)
@@ -1085,7 +1113,9 @@ class Controller:
         origin: dict[str, tuple[TaskState, LineState, Any]] = {}
         for task, line, status in group:
             try:
-                spec, size = self._call_spec(task, line, status.next_attempt, status.feedback, boost=status.boost)
+                spec, size = self._call_spec(
+                    task, line, status.next_attempt, status.feedback, boost=status.boost, repair_of=status.repair_of
+                )
             except (ImageError, ImageRoutingError) as error:
                 self._record_unpreparable(task, line, status, str(error))
                 continue
@@ -1150,6 +1180,7 @@ class Controller:
                     "feedback": list(spec.feedback),
                     "retry_of": retry_of[spec.call_id],
                     **self._rules_fields(route_name),
+                    **({"repair_of": spec.repair_of} if spec.repair_of is not None else {}),
                 },
             )
             self._prepared_here.add(spec.call_id)
@@ -1204,7 +1235,7 @@ class Controller:
                 "line": line.line_id,
                 "attempt": status.next_attempt,
                 "route": task.route,
-                "purpose": effective_purpose(task.purpose, status.next_attempt),
+                "purpose": self._purpose_of(task, status),
                 "est_usd": 0.0,
                 "est_input_tokens": 0,
                 "max_output_tokens": 0,
@@ -1212,6 +1243,7 @@ class Controller:
                 "feedback": [],
                 "retry_of": status.retry_of,
                 **self._rules_fields(task.route),
+                **({"repair_of": status.repair_of} if status.repair_of is not None else {}),
             },
         )
         self._emit(
@@ -1239,7 +1271,12 @@ class Controller:
             return None
         try:
             spec, _ = self._call_spec(
-                task, line, call.attempt, call.feedback, max_output_tokens=call.max_output_tokens or None
+                task,
+                line,
+                call.attempt,
+                call.feedback,
+                max_output_tokens=call.max_output_tokens or None,
+                repair_of=call.repair_of,
             )
             return writer.prepare([spec])[0]
         except NotImplementedError:
@@ -1479,7 +1516,7 @@ class Controller:
         if not counts:
             counts.update(call.purpose for call in self.state.calls.values() if call.route == route_name)
         if not counts:
-            return PURPOSES[-1]
+            return "production"
         return max(counts, key=lambda purpose: (counts[purpose], -PURPOSES.index(purpose)))
 
     def _stage_poll(self, *, api_only: bool = False) -> None:
@@ -1666,9 +1703,10 @@ class Controller:
             )
             return False
         stamped, flags = self._stamp(call.call_id, task, call.line, call.image_size, rows)
+        linked = {"repair_of": call.repair_of} if call.repair_of is not None else {}  # the rows repair this row
         self._emit(
             "call_returned",
-            {**common, "rows": stamped, "row_flags": flags, "skips": skips, "stop_reason": result.stop_reason},
+            {**common, "rows": stamped, "row_flags": flags, "skips": skips, "stop_reason": result.stop_reason, **linked},
         )
         return True
 
@@ -1900,7 +1938,9 @@ class Controller:
                 "by": "assessor",
                 "reason": "failed assessment",
                 "errors": list(errors),
-                "retry": call.attempt < self.config.max_attempts,
+                # A row a repair wrote is never written again: the repair is the one chance the row gets, and a
+                # repair that fails the checker sends the row it was made from back to the owner.
+                "retry": call.attempt < self.config.max_attempts and call.repair_of is None,
             },
         )
 
@@ -1912,6 +1952,8 @@ class Controller:
         self._decide_rows()
         self._ingest_hand_decisions()
         self._reopen_stuck_rows()  # after the owner's decisions: a row the owner resolved is never reopened
+        self._settle_repairs()
+        self._request_repairs()  # after the owner's decisions: a row the owner resolved is never repaired
         self._assign_and_publish()
         self._burn_images()
         self._write_hand_queue()
@@ -2197,7 +2239,87 @@ class Controller:
         if any(not a.audit for a in row.assignments):
             key = f"{row.row_id}:{len(row.assignments)}"
             return pick_further_reviewer(reviewers, row.families_used(), family, key) is not None
-        return pick_first_reviewer(reviewers, family, row.ordinal or 0) is not None
+        return pick_first_reviewer(reviewers, family, row.ordinal or 0, avoid=self._reviewers_of_original(row)) is not None
+
+    def _reviewers_of_original(self, row: RowState) -> set[str]:
+        """The reviewers (by id) that reviewed the row this one was written to replace; empty for any other row.
+
+        The first review of a row a repair wrote prefers a reviewer that did not see the row it repairs.
+        """
+        original = self.state.rows.get(row.repair_of) if row.repair_of is not None else None
+        return original.reviewers_used() if original is not None else set()
+
+    # -- the repair step
+
+    def _repair_allowed(self, route_name: str) -> bool:
+        """True when the repair step is on for the route and the route is not closed for this run: it is
+        switched on, has a cap for the purpose `repair`, and has not stopped (no key, rejected request)."""
+        return route_may_repair(self.config, route_name) and self.route_state(route_name)[0] != "closed"
+
+    def _route_has_nothing_else_to_do(self, route_name: str) -> bool:
+        """True when the controller has nothing left to do for a route before review: no call of it in flight or
+        waiting to go (a repair call included), no spec line of it due a call, and no row it wrote still to be
+        checked. Rows with the reviewers are not the controller's to move, so they do not count."""
+        s = self.state
+        if s.unfinished_calls(route_name):
+            return False
+        if any(row.route == route_name for row in (*s.rows_awaiting_assessment(), *s.rows_failed_unrejected())):
+            return False
+        if any(call.route == route_name for call in s.calls_with_unrecorded_skips()):
+            return False
+        return not any(task.route == route_name for task, _line, _status in self._calls_due())
+
+    def _request_repairs(self) -> None:
+        """Send the rows the reviewers sent back with a fix verdict to the route that wrote them, to be written again.
+
+        The candidates are the rows in the hand queue for a fix verdict that the owner has not answered (the
+        owner's decisions were read first), that were never sent back before and are not themselves a repair
+        (`rps.repair.candidates`), on a route that is on and has a cap for the purpose `repair`. A route's
+        candidates go together, in row-id order, when it has at least `repair.min_rows` of them, or fewer when
+        the controller has nothing else to do for the route (`_route_has_nothing_else_to_do`): a batch route
+        is sent its repairs in batches, and the last few rows of a job are not left waiting for a batch that
+        will never fill. `repair_requested` is recorded for each row, naming the call that will write it
+        again; the call is prepared in the next pass, like any call, under the route's cap for `repair`.
+        A run that stops between the events of a batch leaves some of its rows sent back and the others
+        candidates still: the next run counts the others again, and they go with the next batch or when the
+        route has nothing else to do, so the end of the job is the same.
+        """
+        if not self.config.repair.enabled:
+            return
+        by_route: dict[str, list[RowState]] = {}
+        for row in repair_candidates(self.state.hand_queue()):
+            if self._repair_allowed(row.route):
+                by_route.setdefault(row.route, []).append(row)
+        for route_name in sorted(by_route):
+            rows = by_route[route_name]
+            if len(rows) < self.config.repair.min_rows and not self._route_has_nothing_else_to_do(route_name):
+                continue
+            for row in rows:
+                attempt = self.state.next_attempt(row.task_id, row.line)
+                call_id = ids.call_id(row.task_id, row.line, attempt)
+                self._emit("repair_requested", {"row_id": row.row_id, "call_id": call_id, "route": route_name})
+            self._print(f"[rps] sent {len(rows)} row(s) back to {route_name} to be written again, with the reviewers' notes")
+
+    def _settle_repairs(self) -> None:
+        """Send back to the hand queue the rows whose repair came to nothing, each with the reason.
+
+        A repair comes to nothing when its call failed and may not be tried again, when the writer answered with
+        no row, or when every row it wrote was rejected or set aside by the checker. A row whose call is still
+        to be made (the first, or a retry), and whose route no longer repairs (the step or the route's cap was
+        switched off since the row was sent back), goes back too. Either way the row had its one repair: it
+        stays for the owner.
+        """
+        sent = []
+        for row, code, detail in self.state.repairs_failed(self.config.max_attempts):
+            sent.append((row, repair_failure_reason(code, detail)))
+        for task, _line, status in self.state.repairs_needing_calls(self.config.max_attempts):
+            if self._repair_switched_off(task, status):
+                sent.append((self.state.rows[status.repair_of], repair_failure_reason("switched_off")))
+        for row, reason in sent:
+            history = [f"{v['reviewer_id']}: {v['verdict']}" for v in row.verdicts]
+            self._emit("row_to_hand", {"row_id": row.row_id, "call_id": row.call_id, "reason": reason, "verdicts": history})
+        if sent:
+            self._print(f"[rps] {len(sent)} row(s) sent back to be written again are in the hand queue again; the repair came to nothing")
 
     def _write_hand_queue(self) -> None:
         queue = sorted(self.state.hand_queue(), key=lambda row: row.row_id)
@@ -2205,23 +2327,24 @@ class Controller:
         for row in queue:
             task = self.state.tasks[row.task_id]
             line = task.lines[row.line]
-            lines.append(
-                json.dumps(
-                    {
-                        "row_id": row.row_id,
-                        "task_id": row.task_id,
-                        "line": row.line,
-                        "route": row.route,
-                        "reason": (row.hand or {}).get("reason", ""),
-                        "flags": row.flags,
-                        "verdicts": row.verdicts,
-                        "task": {"line_id": line.line_id, "item_id": line.item_id, "image": line.image, "spec": line.spec},
-                        "row": row.record,
-                    },
-                    ensure_ascii=True,
-                    allow_nan=False,
-                )
-            )
+            entry: dict[str, Any] = {
+                "row_id": row.row_id,
+                "task_id": row.task_id,
+                "line": row.line,
+                "route": row.route,
+                "reason": (row.hand or {}).get("reason", ""),
+                "flags": row.flags,
+                "verdicts": row.verdicts,
+                "task": {"line_id": line.line_id, "item_id": line.item_id, "image": line.image, "spec": line.spec},
+                "row": row.record,
+            }
+            # The repair step, for the owner: a row a repair wrote says which row it was written to replace, and
+            # a row whose repair came to nothing lists the calls and rows of that repair (see the events).
+            if row.repair_of is not None:
+                entry["repair_of"] = row.repair_of
+            if row.repair is not None:
+                entry["repair"] = {key: row.repair[key] for key in ("calls", "rows") if key in row.repair}
+            lines.append(json.dumps(entry, ensure_ascii=True, allow_nan=False))
         text = "".join(item + "\n" for item in lines)
         if self._hand_written is None:
             try:
@@ -2258,6 +2381,8 @@ class Controller:
             task, line, line_status = item
             if ids.call_id(task.task_id, line.line_id, line_status.next_attempt) in self._parked:
                 continue
+            if self._repair_switched_off(task, line_status):
+                continue
             if task.route not in status:
                 status[task.route] = self._route_status(task.route)
             if status[task.route] != "closed":
@@ -2280,7 +2405,8 @@ class Controller:
 
         Returns (rows by reviewer id, rows that have no eligible reviewer and go to the
         hand queue). Every choice depends only on the row and the event history, so a
-        restart makes the same choices.
+        restart makes the same choices. The first review of a row a repair wrote prefers a
+        reviewer that did not review the row it was written to replace.
         """
         reviewers = self.config.review.enabled_reviewers()
         policy = self.config.review.policy
@@ -2289,7 +2415,9 @@ class Controller:
         if not reviewers:
             return plan, to_hand
         for row in self.state.rows_awaiting_first_review():
-            reviewer = pick_first_reviewer(reviewers, self._writer_family(row), row.ordinal or 0)
+            reviewer = pick_first_reviewer(
+                reviewers, self._writer_family(row), row.ordinal or 0, avoid=self._reviewers_of_original(row)
+            )
             if reviewer is None:
                 to_hand.append((row, NO_FIRST_REVIEWER))
                 continue
@@ -2532,6 +2660,8 @@ class Controller:
             return True
         if s.rows_awaiting_decision() or s.rows_with_audit_reject() or s.images_to_burn() or s.files_to_ship():
             return True
+        if s.repairs_failed(self.config.max_attempts):
+            return True
         if self._calls_due():
             return True
         plan, to_hand = self._plan_assignments()
@@ -2607,6 +2737,7 @@ class Controller:
             "calls in flight": len(s.submitted_calls()),
             "packets with the reviewers": len(s.open_packets()),
             "rows in the hand queue": len(s.hand_queue()),
+            "rows sent back to their writers": len(s.rows_being_repaired()),
         }
         for cap, count in self._waiting_for_room():
             waiting[f"calls waiting for room under {cap}"] = count
@@ -2657,6 +2788,9 @@ class Controller:
         ]
         if counts["screened_lines"]:
             lines.append(f"lines the screen set aside before any call: {counts['screened_lines']}")
+        sent_back, written_again = counts["rows"].get("repairing", 0), counts["rows"].get("repaired", 0)
+        if sent_back or written_again:
+            lines.append(f"rows sent back to their writers: {sent_back} being written again, {written_again} written again")
         lines.extend(["", self.ledger.format_status(self.state)])
         waiting = self._waiting_for_room()
         if waiting:

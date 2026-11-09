@@ -78,25 +78,25 @@ class Builder:
         )
         return task_id
 
-    def prepare(self, task_id: str, line: str, attempt: int = 1, *, route: str = "fake-batch", purpose: str = "production", est: float = 0.01, feedback=None) -> str:
+    def prepare(self, task_id: str, line: str, attempt: int = 1, *, route: str = "fake-batch", purpose: str = "production", est: float = 0.01, feedback=None, retry_of=None, repair_of=None) -> str:
         call_id = ids.call_id(task_id, line, attempt)
-        self.add(
-            "call_prepared",
-            {
-                "call_id": call_id,
-                "task_id": task_id,
-                "line": line,
-                "attempt": attempt,
-                "route": route,
-                "purpose": purpose,
-                "est_usd": est,
-                "est_input_tokens": 100,
-                "max_output_tokens": 200,
-                "image_size": None,
-                "feedback": feedback or [],
-                "retry_of": None,
-            },
-        )
+        payload = {
+            "call_id": call_id,
+            "task_id": task_id,
+            "line": line,
+            "attempt": attempt,
+            "route": route,
+            "purpose": purpose,
+            "est_usd": est,
+            "est_input_tokens": 100,
+            "max_output_tokens": 200,
+            "image_size": None,
+            "feedback": feedback or [],
+            "retry_of": retry_of,
+        }
+        if repair_of is not None:  # a call of the repair step says which row it writes again
+            payload["repair_of"] = repair_of
+        self.add("call_prepared", payload)
         return call_id
 
     def submit(self, call_ids: list[str], handle_id: str = "batch-1", route: str = "fake-batch") -> None:

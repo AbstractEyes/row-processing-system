@@ -16,7 +16,9 @@ Event kinds and their payloads:
     call_prepared        call_id, task_id, line, attempt, route, purpose, est_usd,
                          est_input_tokens, max_output_tokens, image_size, feedback, retry_of,
                          rules_version and rules_profile (the version and the prompt profile of the
-                         writing rules the call is built from, when rules are set)
+                         writing rules the call is built from, when rules are set), repair_of (only on
+                         a call of the repair step: the row it writes again; its purpose is `repair`,
+                         and its feedback holds the reviewers' notes and then the row as it was written)
     budget_refused       call_id, route, purpose, est_usd, reason, and the spend and caps
     line_screened        task_id, line, item_id, route, class (other), reason (a spec line the rule
                          set's screen set aside before its first call: no call was made for it, and
@@ -24,7 +26,9 @@ Event kinds and their payloads:
                          assessor's set-aside of a written row)
     batch_submitted      handle_id, handle, route, call_ids (recorded before any wait)
     call_returned        call_id, handle_id, usage, usd, price_table_date, minutes, rows, skips,
-                         tier (the price tier the call was billed at, when the route has tiers)
+                         tier (the price tier the call was billed at, when the route has tiers),
+                         repair_of (only on a call of the repair step: the row it wrote again; each
+                         row the call returns is linked to that row in the state)
     call_failed          call_id, handle_id, error, retryable, billed, usage, usd, minutes,
                          kind (why it failed: see rps.failures), tier, output (the start of an
                          unusable answer), unconverted_rows (the rows of a writer's wrapper that
@@ -59,6 +63,13 @@ Event kinds and their payloads:
                          first review when the row never had one, else a further one; a row the owner
                          has resolved, a row the current policy settles, and a row sent to the hand
                          queue for any other reason are never reopened)
+    repair_requested     row_id, call_id, route (a row in the hand queue for a fix verdict is sent back,
+                         once, to the route that wrote it: it leaves the hand queue and is `repairing`,
+                         and `call_id` names the call that will write it again, which is prepared with
+                         `repair_of` set to the row; the rows that call writes are linked to it by their
+                         `repair_of` in the state, never in a stored or shipped row. A row whose repair
+                         comes to nothing, or whose repairs were switched off, goes back to the hand queue
+                         with a `row_to_hand` that says why)
     row_accepted         row_id, call_id, by, reason
     hand_resolved        row_id, call_id, decision (accept, discard, replace), row (for replace)
     packet_burned        packet_id, row_ids, deleted (pictures deleted from the shared store)
@@ -98,6 +109,7 @@ EVENT_KINDS: tuple[str, ...] = (
     "row_escalated",
     "row_to_hand",
     "row_reopened",
+    "repair_requested",
     "row_accepted",
     "hand_resolved",
     "packet_burned",

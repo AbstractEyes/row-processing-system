@@ -12,6 +12,7 @@ Row life cycle (statuses):
                  |           |    \\-> in_question -> in_review ...
                  |           |    \\-> hand -> accepted / rejected / replaced
                  |           |            \\-> passed or in_question again (row_reopened, see below)
+                 |           |            \\-> repairing -> repaired (repair_requested, see below)
                  |           \\-> rejected (discarded by reviewers)
                  \\-> rejected (assessor failure, may be retried) / set_aside
 
@@ -21,6 +22,16 @@ Two events return a row to waiting for a review. `row_reopened` takes a row out 
 row of it is as it was before the packet was published to it, `passed` for a first review and
 `in_question` for a further one, and the withdrawn reviewer no longer counts among those that
 reviewed the row.
+
+The repair step. `repair_requested` takes a row out of the hand queue (one sent there for a fix verdict) and
+sends it back, once, to the route that wrote it: it is `repairing`. The call that writes it again is an
+ordinary call of the same spec line, prepared with `repair_of` (the row), but it is kept out of the line's own
+attempts: a line's retries are about the line's own calls, and a line can have several rows being repaired at
+once. The rows that call writes carry `repair_of`, are checked and reviewed like any row, and the row becomes
+`repaired` (it never ships) as soon as one of them passes the checker. A row whose repair comes to nothing (the
+call failed, the writer wrote no row, or every row it wrote failed the checker) goes back to the hand queue
+with a `row_to_hand` that says why, and is never sent back again; where a line stands is then read from the
+rows that repaired it, as if they were the row.
 """
 
 from __future__ import annotations
@@ -29,12 +40,15 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Iterable, Mapping
 
+from . import ids
 from .events import Event
 from .failures import KIND_TRUNCATED
 from .ids import canonical_json
+from .repair import repair_feedback
 
-TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside"})
-WAITING_ROW_STATUSES = frozenset({"written", "failed", "passed", "in_review", "in_question", "hand"})
+# "repaired" is the end of a row that was written again: it never ships, and what stands for it is the rows its repair wrote.
+TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside", "repaired"})
+WAITING_ROW_STATUSES = frozenset({"written", "failed", "passed", "in_review", "in_question", "hand", "repairing"})
 TERMINAL_LINE_OUTCOMES = frozenset({"accepted", "set_aside", "rejected", "exhausted", "screened"})
 
 
@@ -81,6 +95,9 @@ class CallState:
     image_size: int | None = None
     feedback: list[str] = field(default_factory=list)
     retry_of: str | None = None
+    # The row a call of the repair step writes again (None on every other call). Such a call is not one of its
+    # line's own attempts: it is kept out of `State._lines` and found through the row's `repair` record.
+    repair_of: str | None = None
     status: str = "prepared"  # prepared, submitted, returned, failed
     handle_id: str | None = None
     usage: dict[str, int] = field(default_factory=dict)
@@ -133,6 +150,13 @@ class RowState:
     # How many packets this row was taken back from (see the `packet_withdrawn` event). It goes into the
     # id of the row's next packets, so a packet sent after a withdrawal never has the withdrawn one's id.
     withdrawals: int = 0
+    # The repair step. On a row that was sent back to its writer (status `repairing`, then `repaired`, or `hand`
+    # again): {"call_id" (the call planned for it), "route", "calls" (the repair calls prepared for it, in order),
+    # "rows" (the rows its repair wrote), "failed" (why it is in the hand queue again, when it is)}.
+    repair: dict[str, Any] | None = None
+    # On a row a repair call wrote: the id of the row that was sent back to be written again. This link lives in
+    # the events and the state; it is never a column of a stored or shipped row.
+    repair_of: str | None = None
     # How many rows from the same writer provider passed assessment before this one.
     # Consecutive rows get consecutive first reviewers, and the number comes from the
     # event history alone, so a restart picks the same reviewer for the same row.
@@ -187,6 +211,10 @@ class LineStatus:
     new, retry (a new call is due), in_flight, active (rows still moving),
     accepted, set_aside, rejected, exhausted, screened (set aside by the rule set's screen before
     any call; `set_aside` is a line whose writer or assessor set it aside after a call).
+
+    A call of the repair step that is due is described the same way, with outcome `repair` and `repair_of`
+    set to the row it writes again; `feedback` then holds the reviewers' notes and the row as it was written.
+    These items come from `State.repairs_needing_calls`, not from `State.line_status`.
     """
 
     outcome: str
@@ -194,6 +222,7 @@ class LineStatus:
     retry_of: str | None = None
     feedback: tuple[str, ...] = ()
     boost: bool = False  # the retry follows a truncated answer and gets a larger token limit
+    repair_of: str | None = None  # the call is a repair: it writes this row again
 
 
 @dataclass(frozen=True)
@@ -246,6 +275,9 @@ class State:
         self.events_applied = 0
         self._spend: dict[tuple[str, str], list[float]] = {}
         self._lines: dict[tuple[str, str], list[str]] = {}
+        # The attempt numbers of the calls of the repair step that were planned or prepared for a line: they are
+        # not among the line's own attempts (`_lines`), but no later call of the line may take their numbers.
+        self._repair_attempts: dict[tuple[str, str], set[int]] = {}
         self._screened: dict[tuple[str, str], dict[str, Any]] = {}  # (task id, line id) -> class, reason, route
 
     # ------------------------------------------------------------------ building
@@ -327,12 +359,20 @@ class State:
             image_size=p.get("image_size"),
             feedback=list(p.get("feedback", [])),
             retry_of=p.get("retry_of"),
+            repair_of=p.get("repair_of"),
             prepared_ts=event.ts,
         )
         self.calls[call_id] = call
-        attempts = self._lines.setdefault((call.task_id, call.line), [])
-        attempts.append(call_id)
-        attempts.sort(key=lambda cid: self.calls[cid].attempt)
+        if call.repair_of is None:
+            attempts = self._lines.setdefault((call.task_id, call.line), [])
+            attempts.append(call_id)
+            attempts.sort(key=lambda cid: self.calls[cid].attempt)
+        else:
+            # A repair call is one of the row's own, not an attempt of the line.
+            self._repair_attempts.setdefault((call.task_id, call.line), set()).add(call.attempt)
+            original = self.rows.get(call.repair_of)
+            if original is not None and original.repair is not None and call_id not in original.repair["calls"]:
+                original.repair["calls"].append(call_id)
         self._spend_cell(call.route, call.purpose)[1] += call.est_usd
         self.refusals.pop(call_id, None)
 
@@ -407,8 +447,13 @@ class State:
                 route=call.route,
                 record=record,
                 flags=list(flags_by_row.get(row_id, [])),
+                repair_of=call.repair_of,
             )
             call.row_ids.append(row_id)
+        if call.repair_of is not None:
+            original = self.rows.get(call.repair_of)
+            if original is not None and original.repair is not None:
+                original.repair["rows"] = list(call.row_ids)
 
     def _on_call_failed(self, event: Event) -> None:
         p = event.payload
@@ -461,6 +506,11 @@ class State:
             provider = str(row.record.get("writer", {}).get("provider", ""))
             row.ordinal = self._passed_by_provider.get(provider, 0)
             self._passed_by_provider[provider] = row.ordinal + 1
+            if row.repair_of is not None:
+                # The row it was written again from is done with: its repair has a row that passed the checker.
+                original = self.rows.get(row.repair_of)
+                if original is not None and original.status == "repairing":
+                    original.status = "repaired"
 
     def _on_row_rejected(self, event: Event) -> None:
         p = event.payload
@@ -583,10 +633,31 @@ class State:
     def _on_row_to_hand(self, event: Event) -> None:
         p = event.payload
         row = self.rows.get(p["row_id"])
-        if row is None or row.status not in ("passed", "in_review", "in_question"):
+        if row is None or row.status not in ("passed", "in_review", "in_question", "repairing"):
             return
+        if row.status == "repairing" and row.repair is not None:
+            # A row sent back to its writer whose repair came to nothing: it keeps the record of what was tried.
+            row.repair = {**row.repair, "failed": str(p.get("reason", ""))}
         row.status = "hand"
         row.hand = {"reason": str(p.get("reason", "")), "ts": event.ts}
+
+    def _on_repair_requested(self, event: Event) -> None:
+        """A row in the hand queue is sent back, once, to the route that wrote it, to be written again.
+
+        The row leaves the hand queue (`repairing`) and its repair is on record from now on: it is never sent
+        back a second time, whatever happens to the repair. The call planned for it is named by the event; the
+        number it carries is reserved for the row's line from here on.
+        """
+        p = event.payload
+        row = self.rows.get(p["row_id"])
+        if row is None or row.status != "hand" or row.repair is not None:
+            return
+        call_id, route = str(p["call_id"]), str(p["route"])
+        attempt = ids.parse_call_id(call_id)[2]  # read first: a call id that cannot be read changes nothing
+        self._repair_attempts.setdefault((row.task_id, row.line), set()).add(attempt)
+        row.status = "repairing"
+        row.hand = None
+        row.repair = {"call_id": call_id, "route": route, "calls": [], "rows": []}
 
     def _on_row_reopened(self, event: Event) -> None:
         """A row in the hand queue (and not resolved by the owner) is waiting for a review again.
@@ -678,6 +749,7 @@ class State:
         "row_escalated": _on_row_escalated,
         "row_to_hand": _on_row_to_hand,
         "row_reopened": _on_row_reopened,
+        "repair_requested": _on_repair_requested,
         "row_accepted": _on_row_accepted,
         "hand_resolved": _on_hand_resolved,
         "packet_burned": _on_packet_burned,
@@ -748,6 +820,16 @@ class State:
 
     # ------------------------------------------------------------------ queries: lines
 
+    def next_attempt(self, task_id: str, line: str) -> int:
+        """The attempt number of the next call for a spec line: one more than any call made, or planned, for it.
+
+        The calls of the repair step count here too, so that no call of the line ever takes the number of
+        another. Without any repair this is one more than the line's latest attempt.
+        """
+        used = [self.calls[call_id].attempt for call_id in self._lines.get((task_id, line), [])]
+        used.extend(self._repair_attempts.get((task_id, line), ()))
+        return max(used, default=0) + 1
+
     def line_status(self, task_id: str, line: str, max_attempts: int) -> LineStatus:
         attempts = self._lines.get((task_id, line), [])
         if not attempts:
@@ -762,9 +844,10 @@ class State:
                 truncated = latest.kind == KIND_TRUNCATED
                 # A cut-off answer needs room, not advice; any other billed failure tells the writer what went wrong.
                 feedback = (latest.error,) if latest.billed and latest.error and not truncated else ()
-                return LineStatus("retry", latest.attempt + 1, latest.call_id, feedback, boost=truncated)
+                return LineStatus("retry", self.next_attempt(task_id, line), latest.call_id, feedback, boost=truncated)
             return LineStatus("exhausted")
         rows = [self.rows[row_id] for row_id in latest.row_ids if row_id in self.rows]
+        rows = self._through_repairs(rows)
         if not rows:
             return LineStatus("set_aside")
         if any(row.status not in TERMINAL_ROW_STATUSES for row in rows):
@@ -773,12 +856,30 @@ class State:
             return LineStatus("accepted")
         retry_rows = [row for row in rows if row.status == "rejected" and (row.rejection or {}).get("retry")]
         if retry_rows and latest.attempt < max_attempts:
-            return LineStatus("retry", latest.attempt + 1, latest.call_id, _feedback_from(retry_rows))
+            return LineStatus(
+                "retry", self.next_attempt(task_id, line), latest.call_id, _feedback_from(retry_rows)
+            )
         if retry_rows:
             return LineStatus("exhausted")
         if any(row.status == "rejected" for row in rows):
             return LineStatus("rejected")
         return LineStatus("set_aside")
+
+    def _through_repairs(self, rows: list[RowState]) -> list[RowState]:
+        """The rows of a call, with each row that was written again replaced by the rows its repair wrote.
+
+        A row that is `repaired` is done with and never ships; where its line stands depends on the rows that
+        took its place. Any other row, a row being repaired included, stands for itself.
+        """
+        result: list[RowState] = []
+        for row in rows:
+            written = (
+                [self.rows[row_id] for row_id in (row.repair or {}).get("rows", []) if row_id in self.rows]
+                if row.status == "repaired"
+                else []
+            )
+            result.extend(written or [row])
+        return result
 
     def is_screened(self, task_id: str, line: str) -> bool:
         """True when the rule set's screen set the line aside before any call."""
@@ -789,14 +890,87 @@ class State:
         return {key: dict(value) for key, value in self._screened.items()}
 
     def lines_needing_calls(self, max_attempts: int) -> list[tuple[TaskState, LineState, LineStatus]]:
-        """Spec lines that are due a call: never called, or a retry is due."""
-        due = []
+        """Spec lines that are due a call: never called, or a retry is due.
+
+        The calls of the repair step that are due come first (`repairs_needing_calls`): a row waiting to be
+        written again is further along than a line not yet written, and a one-call route takes calls in order.
+        """
+        due = self.repairs_needing_calls(max_attempts)
         for task in self.tasks.values():
             for line in task.lines.values():
                 status = self.line_status(task.task_id, line.line_id, max_attempts)
                 if status.outcome in ("new", "retry"):
                     due.append((task, line, status))
         return due
+
+    # ------------------------------------------------------------------ queries: the repair step
+
+    def rows_being_repaired(self) -> list[RowState]:
+        """Rows sent back to their writer whose repair is not over yet, in row-id order."""
+        return sorted(self.rows_with_status("repairing"), key=lambda row: row.row_id)
+
+    def _repair_progress(self, row: RowState, max_attempts: int) -> tuple[str, Any]:
+        """Where the repair of a row stands: ("due", LineStatus) when a call is due, ("failed", (code, detail))
+        when it has come to nothing, else ("waiting", None).
+
+        The first call is the one the row's `repair_requested` planned. A repair call that failed in a way a
+        retry may mend (the same ones a line's own calls are retried for) is made again, as a new attempt
+        that carries the same notes and row, while the row has had fewer than `max_attempts` calls. A call that
+        came back counts only through its rows: the repair is over when none of them passed the checker.
+        """
+        record = row.repair or {}
+        calls = [self.calls[call_id] for call_id in record.get("calls", []) if call_id in self.calls]
+        if not calls:
+            attempt = ids.parse_call_id(record["call_id"])[2]
+            return "due", LineStatus("repair", next_attempt=attempt, feedback=repair_feedback(row), repair_of=row.row_id)
+        last = calls[-1]
+        if last.status in ("prepared", "submitted"):
+            return "waiting", None
+        if last.status == "failed":
+            if last.retryable and len(calls) < max_attempts:
+                status = LineStatus(
+                    "repair",
+                    next_attempt=self.next_attempt(row.task_id, row.line),
+                    retry_of=last.call_id,
+                    feedback=tuple(last.feedback),
+                    boost=last.kind == KIND_TRUNCATED,
+                    repair_of=row.row_id,
+                )
+                return "due", status
+            return "failed", ("call_failed", last.kind or last.error or "")
+        written = [self.rows[row_id] for row_id in last.row_ids if row_id in self.rows]
+        if not written:
+            return "failed", ("no_row", "")
+        if all(item.status in ("rejected", "set_aside") for item in written):
+            return "failed", ("checker", "")
+        return "waiting", None
+
+    def repairs_needing_calls(self, max_attempts: int) -> list[tuple[TaskState, LineState, LineStatus]]:
+        """The calls of the repair step that are due: a row sent back to its writer whose call has not been
+        made yet, or has to be made again. Each comes as (task, line, status) like a spec line that is due,
+        with `status.repair_of` set to the row, in row-id order."""
+        due = []
+        for row in self.rows_being_repaired():
+            outcome, status = self._repair_progress(row, max_attempts)
+            task = self.tasks.get(row.task_id)
+            line = task.lines.get(row.line) if task is not None else None
+            if outcome == "due" and task is not None and line is not None:
+                due.append((task, line, status))
+        return due
+
+    def repairs_failed(self, max_attempts: int) -> list[tuple[RowState, str, str]]:
+        """The rows whose repair has come to nothing, as (row, code, detail), in row-id order.
+
+        `code` is `call_failed` (the repair call failed and may not be tried again; `detail` is the kind of
+        failure), `no_row` (the writer answered with no row) or `checker` (every row it wrote was rejected or
+        set aside by the checker). Such a row goes back to the hand queue; a repair is never tried twice.
+        """
+        failed = []
+        for row in self.rows_being_repaired():
+            outcome, detail = self._repair_progress(row, max_attempts)
+            if outcome == "failed":
+                failed.append((row, detail[0], detail[1]))
+        return failed
 
     def job_progress(self, max_attempts: int) -> dict[str, int]:
         """Counts of lines by outcome, plus totals, for progress reports."""

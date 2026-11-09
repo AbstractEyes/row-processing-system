@@ -27,7 +27,9 @@ answer is read as it comes. When an earlier attempt failed its checks, the check
 messages follow the task text so the writer can fix them (the lines `explain` gives are
 part of the message for an answer whose rows could not be read). The choices are also handed
 to the assessor (`AssessContext.assignment`), as plain data, so a check can compare a
-row with what the writer was told.
+row with what the writer was told. A row a reviewer sent back (the repair step, see `rps.repair`)
+is written again from the same task text followed by a block of its own wording (`repair_text`):
+the reviewers' notes and the row as it was written, in place of the check messages.
 
 A rule set can also carry a format block (`json_format`): text that shows the form of the
 answer to a provider that has no schema mode. A package supplies it as a file called
@@ -484,6 +486,41 @@ def retry_text(template: str, feedback: Sequence[str]) -> str:
     return fill_fields(template, {CHECK_MESSAGES_FIELD: "\n".join(f"- {line}" for line in feedback)})
 
 
+# The words that send a row back to its writer (the repair step, see `rps.repair`). One wording for every
+# prompt profile: it says nothing about checks, which is what a retry block is about.
+REPAIR_INTRO = (
+    "An earlier row for this item was sent back by a reviewer. The notes from the review are below. "
+    "Write the row again: fix exactly the problems the notes name, and keep everything else in the earlier row "
+    "that was right. Change nothing the notes do not mention, and add no fact the item does not give."
+)
+REPAIR_NOTES_HEAD = "The notes from the review:"
+REPAIR_ROW_HEAD = "The earlier row, as it was written:"
+REPAIR_CLOSING = (
+    "Answer in the form the task above asks for, with the problems fixed: "
+    "the complete result, not a patch and not an explanation."
+)
+
+
+def repair_text(feedback: Sequence[str]) -> str:
+    """The block that sends a row back to its writer to be written again (empty when there is no feedback).
+
+    `feedback` is what a repair call carries (`rps.repair.repair_feedback`): the reviewers' notes, one item
+    each, then the row as it was written (JSON text) as the last item. The block tells the writer that a
+    reviewer sent the earlier row back, lists the notes, shows the earlier row, and asks for the row again with
+    exactly those problems fixed and everything else that was right kept.
+    """
+    items = [str(item) for item in feedback]
+    if not items:
+        return ""
+    *notes, earlier = items
+    parts = [REPAIR_INTRO]
+    if notes:
+        parts.append(REPAIR_NOTES_HEAD + "\n" + "\n".join("- " + note.replace("\n", "\n  ") for note in notes))
+    parts.append(REPAIR_ROW_HEAD + "\n" + earlier)
+    parts.append(REPAIR_CLOSING)
+    return "\n\n".join(parts)
+
+
 def assignment_for(spec: Any, ordinal: int, rules: WriterRules | None) -> Any:
     """The runner's choices for one call, as the rule set's `assign` function returns them (or None)."""
     if rules is None or rules.assign is None:
@@ -500,18 +537,27 @@ def assignment_data(choices: Any) -> dict[str, Any] | None:
     return dict(choices) if isinstance(choices, Mapping) else None
 
 
-def render_task_text(spec: Any, feedback: Sequence[str] = (), *, ordinal: int = 0, rules: WriterRules | None = None) -> str:
+def render_task_text(
+    spec: Any, feedback: Sequence[str] = (), *, ordinal: int = 0, rules: WriterRules | None = None, repair: bool = False
+) -> str:
     """The user text of one call: the task text for the spec line, then any check messages.
 
     The runner's choices (`assign`) are worked out once here and handed to the task text,
     so the text and the assessor's `AssessContext.assignment` carry the same values. Rules with a
     retry block of their own (a prompt profile) follow the task text with it, after one blank line.
+
+    For a call of the repair step (`repair` true) the feedback is not check messages but the reviewers'
+    notes and the row that was sent back: the task text is followed by `repair_text` instead, whatever the
+    prompt profile.
     """
     if rules is not None and rules.task_text is not None:
         choices = assignment_for(spec, ordinal, rules)
         text = rules.task_text(spec, ordinal) if choices is None else rules.task_text(spec, ordinal, choices)
     else:
         text = spec_text(spec)
+    if repair:
+        block = repair_text(feedback)
+        return text + ("\n" if text.endswith("\n") else "\n\n") + block if block else text
     if rules is not None and rules.retry is not None:
         block = retry_text(rules.retry, feedback)
         if not block:

@@ -110,6 +110,9 @@ class CallSpec:
     image_class: str | None = None
     task_text: str | None = None
     rules: WriterRules | None = field(default=None, repr=False)
+    # Set on a call of the repair step: the id of the row the call asks the writer to write again. Its
+    # `feedback` is then the reviewers' notes and the row as it was written, and its `purpose` is `repair`.
+    repair_of: str | None = None
 
     @property
     def custom_id(self) -> str:
@@ -388,6 +391,7 @@ class FakeWriter(Writer):
                 "attempt": call.attempt,
                 "spec": call.spec,
                 "feedback": list(call.feedback),
+                "repair_of": call.repair_of,
                 "has_image": call.image is not None,
                 "model": call.model,
                 "max_output_tokens": call.max_output_tokens,

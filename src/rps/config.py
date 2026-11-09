@@ -13,7 +13,7 @@ Example:
         "fast-batch": {
           "provider": "anthropic", "model": "model-id", "kind": "batch",
           "budget_usd": 50.0,
-          "purpose_caps": {"test": 2, "pricing": 3, "probe": 1, "rebound": 8, "production": 40}
+          "purpose_caps": {"test": 2, "pricing": 3, "probe": 1, "rebound": 8, "production": 40, "repair": 4}
         }
       },
       "sources": {"photos": {"image_size": 512, "license": "CC BY-NC"}},
@@ -36,10 +36,13 @@ from .keys import looks_like_secret
 from .layout import NAME_PATTERN, PathError, normalize_path, parse_bucket
 from .routing import SOURCE_CLASSES
 
-# Why a call is made. Each (route, purpose) pair has its own dollar cap.
-PURPOSES: tuple[str, ...] = ("test", "pricing", "probe", "rebound", "production")
 # A retry or re-submission after a failed or rejected call always counts as this purpose.
 REBOUND = "rebound"
+# Every call of the repair step (a row sent back to its own writer, once, with the reviewers' notes) counts as this
+# purpose, whatever the purpose of the task the row came from. A route with no cap for it gets no repair calls.
+REPAIR = "repair"
+# Why a call is made. Each (route, purpose) pair has its own dollar cap.
+PURPOSES: tuple[str, ...] = ("test", "pricing", "probe", REBOUND, "production", REPAIR)
 ROUTE_KINDS: tuple[str, ...] = ("api", "batch", "claude-code", "codex", "gemini-cli")
 
 # The Hub's documented ceiling is about 320 commits per hour per repository.
@@ -659,6 +662,44 @@ class ReviewConfig:
         )
 
 
+# How many candidates a route gathers before its repairs are sent, unless it has nothing else to do.
+DEFAULT_REPAIR_MIN_ROWS = 20
+
+
+@dataclass(frozen=True)
+class RepairConfig:
+    """The repair step: a row a reviewer sent back with a "fix" verdict is written again, once, by its own writer.
+
+    Reviewers never edit a row. With `review.policy.fix_to_hand` on, a row with a fix verdict waits in the hand
+    queue for the owner; with `enabled` on, such a row is instead sent back, once, to the route that wrote it,
+    together with the reviewers' notes and the row as it was written. The new row goes through the checker and a
+    first review like any row; a row that came out of a repair and is sent back again goes to the owner, never to
+    a second repair (see `rps.repair`). A route is repaired through only when it is switched on and its
+    `purpose_caps` name a cap for the purpose `repair`; every repair call is charged to that purpose.
+
+    `min_rows` is how many candidates a route gathers before its repairs are sent, so that the repairs of a
+    batch route go out in batches. When the controller has nothing else to do for a route, a smaller batch is sent.
+    """
+
+    enabled: bool = False
+    min_rows: int = DEFAULT_REPAIR_MIN_ROWS
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "min_rows": self.min_rows}
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "RepairConfig":
+        where = "repair"
+        if not isinstance(data, Mapping):
+            _fail(f"{where}: expected an object")
+        _check_keys(data, {"enabled", "min_rows"}, where)
+        default = cls()
+        return cls(
+            enabled=_flag(data.get("enabled", default.enabled), f"{where}.enabled"),
+            min_rows=_number(data.get("min_rows", default.min_rows), f"{where}.min_rows", minimum=1, integer=True),
+        )
+
+
 _TOP_KEYS = {
     "data_repo",
     "bucket",
@@ -669,6 +710,7 @@ _TOP_KEYS = {
     "sources",
     "commit",
     "review",
+    "repair",
     "time_budget_seconds",
     "poll_seconds",
     "max_attempts",
@@ -700,6 +742,10 @@ class Config:
     example "store:control/tasks.json", which is under the bucket's folder when there is one).
     The controller reads it again on every pass, and a missing file means no tasks, so tasks
     can be added from outside while a run goes on.
+
+    `repair` switches on the repair step (see `RepairConfig`): rows the reviewers sent back with a fix
+    verdict are written again, once, by their own writer. It needs `review.policy.fix_to_hand` and, on each
+    route that repairs, a cap for the purpose `repair`.
     """
 
     data_repo: str | None = None
@@ -711,6 +757,7 @@ class Config:
     sources: Mapping[str, SourceConfig] = field(default_factory=dict)
     commit: CommitConfig = field(default_factory=CommitConfig)
     review: ReviewConfig = field(default_factory=ReviewConfig)
+    repair: RepairConfig = field(default_factory=RepairConfig)
     time_budget_seconds: float | None = None
     poll_seconds: float = 30.0
     max_attempts: int = 2
@@ -755,6 +802,7 @@ class Config:
             "sources": {name: self.sources[name].to_dict() for name in sorted(self.sources)},
             "commit": self.commit.to_dict(),
             "review": self.review.to_dict(),
+            "repair": self.repair.to_dict(),
             "time_budget_seconds": self.time_budget_seconds,
             "poll_seconds": self.poll_seconds,
             "max_attempts": self.max_attempts,
@@ -779,6 +827,8 @@ class Config:
             if route.budget_usd <= 0:
                 notes.append(f"route {name}: total budget is $0, so every call with a cost will be refused")
             for purpose in PURPOSES:
+                if purpose == REPAIR and not self.repair.enabled:
+                    continue  # nothing is sent back to its writer unless the repair step is on
                 if route.cap_for(purpose) <= 0:
                     notes.append(f"route {name}: no cap for purpose '{purpose}' (calls with that purpose are refused)")
             total = sum(route.cap_for(purpose) for purpose in PURPOSES)
@@ -792,6 +842,11 @@ class Config:
             notes.append(
                 "review: no enabled reviewer may keep alone (solo_keep), so no keep can accept a row;"
                 " a row is discarded by two rejects or goes to the hand queue"
+            )
+        if self.repair.enabled and not self.review.policy.fix_to_hand:
+            notes.append(
+                "repair: the step is on, but review.policy.fix_to_hand is off, so no row waits in the hand queue"
+                " with a fix verdict and nothing is sent back to its writer"
             )
         return notes
 
@@ -838,6 +893,7 @@ class Config:
             sources={name: SourceConfig.from_dict(name, spec) for name, spec in sources_in.items()},
             commit=CommitConfig.from_dict(data.get("commit", {})),
             review=ReviewConfig.from_dict(data.get("review", {})),
+            repair=RepairConfig.from_dict(data.get("repair", {})),
             time_budget_seconds=None if budget is None else float(_number(budget, "time_budget_seconds", minimum=1)),
             poll_seconds=float(_number(data.get("poll_seconds", default.poll_seconds), "poll_seconds", minimum=0)),
             max_attempts=_number(data.get("max_attempts", default.max_attempts), "max_attempts", minimum=1, integer=True),
