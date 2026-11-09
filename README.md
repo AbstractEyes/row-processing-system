@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.1.dev0 (unreleased; the last release is 0.3.0). It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -16,7 +16,7 @@ types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 
-## What changed in 0.3.1 (unreleased)
+## What changed in 0.3.1
 
 | Change | What happens now |
 |---|---|
@@ -27,7 +27,8 @@ Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 | Running it | `ApiSeat.step()` (one pass), `ApiSeat.run(stop_event)`, `start_in_thread(config, run_config=...)` (a handle with `status()` and `stop()`) and `python -m rps.review.api_seat --config seat.json [--once]` |
 | Notebook | One optional cell between the tasks cell and the run cell starts a seat from a small dict and prints its status. It does nothing until the dict is filled in; every other cell is as it was |
 | Packaging | The judging rules are package data (`review/*.md`). The seat's files live under `review/<reviewer>/seat/` in the state store, a path the controller never reads |
-| Version | `0.3.1.dev0`. The notebook's install line is unchanged |
+| Repairing through another route | `repair.routes` maps a writing route to the route that repairs its rows, for a writer switched off while its rows are still in review: the mapped route writes the repair with its own model, rules profile and repair cap, from the same task line and the same reviewer notes, and the rewritten row carries its label. Without a map, every route repairs its own rows as in 0.3.0 (the event logs of such runs are unchanged). See "Repairing through another route" |
+| Version | `0.3.1`; the notebook installs @v0.3.1 |
 
 ## What changed in 0.3.0
 
