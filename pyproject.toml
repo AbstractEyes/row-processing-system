@@ -30,6 +30,7 @@ where = ["src"]
 rps = [
     "data/*.json", "rules/*.md", "rules/*.json", "rules/VERSION", "rules/examples/*.json", "rules/templates/*.md",
     "rules/profiles/*/*.md", "rules/profiles/*/*.txt", "rules/profiles/*/*.json", "rules/profiles/*/VERSION",
+    "review/*.md",
 ]
 
 [tool.pytest.ini_options]
