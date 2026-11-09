@@ -77,7 +77,7 @@ def test_the_install_step_says_colab_may_ask_for_a_restart_and_where_to_go_on(no
 
 
 def test_the_code_cells_come_in_the_documented_order(notebook):
-    assert [cell["id"] for cell in code_cells(notebook)] == ["install", "secrets", "dryrun", "config", "tasks", "run", "status"]
+    assert [cell["id"] for cell in code_cells(notebook)] == ["install", "secrets", "dryrun", "config", "tasks", "seat", "run", "status"]
 
 
 def test_cells_are_whole_and_colab_safe(notebook):
@@ -242,3 +242,84 @@ def test_the_bucket_setting_can_name_a_folder_and_the_tasks_cell_writes_into_tha
     assert list(api.files) == ["test/control/tasks.json"]
     assert json.loads(api.files["test/control/tasks.json"])[0]["batch"] == "demo-1"
     assert api.created == [{"bucket_id": "owner/rps-state", "private": True, "exist_ok": True}]  # the bucket, not the folder
+
+
+# ------------------------------------------------------------------ the optional cell that starts an API review seat
+
+
+def seat_cell_text(notebook, seat):
+    """The seat cell's Python with the setting filled in."""
+    return runnable(source(cell_named(notebook, "seat"))).replace("SEAT = None", f"SEAT = {seat!r}", 1)
+
+
+def test_the_seat_cell_sits_between_the_tasks_cell_and_the_run_cell_and_the_introduction_lists_it(notebook):
+    cell_ids = [cell["id"] for cell in notebook["cells"]]
+    assert cell_ids.index("config") < cell_ids.index("tasks") < cell_ids.index("seat") < cell_ids.index("run")
+    steps = [line for line in source(cell_named(notebook, "intro")).splitlines() if line[:2] in {f"{number}." for number in range(1, 10)}]
+    assert len(steps) == 8 and "Optionally start an automated reviewer" in steps[5] and steps[6].startswith("7. Run the controller")
+
+
+def test_the_seat_cell_does_nothing_until_a_seat_is_named(notebook, tmp_path, monkeypatch):
+    from rps.review import api_seat
+
+    monkeypatch.setattr(api_seat, "start_in_thread", lambda *args, **kwargs: pytest.fail("a seat was started"))
+    namespace, printed = execute(notebook, tmp_path, monkeypatch, {})
+    assert namespace["SEAT"] is None and namespace["seat"] is None
+    assert "reviewer reviewer-1" not in printed  # the cell printed nothing about a seat
+
+
+def test_the_seat_cell_starts_a_seat_on_a_thread_from_a_small_dict_and_prints_its_status(notebook, tmp_path, monkeypatch):
+    from rps.review import api_seat
+    from seat_helpers import FakeAnthropic
+
+    monkeypatch.setattr(api_seat, "make_client", lambda: FakeAnthropic())
+    namespace, _printed = execute(notebook, tmp_path, monkeypatch, {}, only=("config", "tasks"))
+    text = seat_cell_text(notebook, {"reviewer_id": "reviewer-1", "model": "claude-haiku-5-5", "effort": "high", "budget_usd": 5.0})
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        exec(compile(text, "seat", "exec"), namespace)
+    seat = namespace["seat"]
+    try:
+        assert seat.alive
+        assert "reviewer reviewer-1 (claude-haiku-5-5, effort high): running" in out.getvalue() and "spent $0.00 of $5.00" in out.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(text, "seat", "exec"), namespace)  # run again: it reports, it does not start another
+        assert namespace["seat"] is seat
+    finally:
+        seat.stop(timeout=30)
+    assert not seat.alive
+
+
+def test_a_seat_started_by_the_cell_answers_the_controllers_packets_and_the_run_cell_reads_its_verdicts(notebook, tmp_path, monkeypatch):
+    import time
+
+    from rps import rules
+    from rps.review import api_seat
+    from seat_helpers import FakeAnthropic
+
+    api = FakeAnthropic()
+    api.batches.auto_end = True
+    monkeypatch.setattr(api_seat, "make_client", lambda: api)
+    namespace, _printed = execute(notebook, tmp_path, monkeypatch, {}, only=("config", "tasks"))
+    # The pretend run loads no rule pool, so its packets carry review.brief_version: make it the brief this package renders.
+    review = {**namespace["CONFIG"]["review"], "brief_version": rules.rules_version()}
+    namespace["config"] = Config.from_dict({**namespace["CONFIG"], "review": review})
+    run_cell = runnable(source(cell_named(notebook, "run")))
+    seat_text = seat_cell_text(notebook, {"reviewer_id": "reviewer-1", "model": "claude-haiku-5-5", "budget_usd": 5.0, "poll_seconds": 0.01})
+    with contextlib.redirect_stdout(io.StringIO()):
+        exec(compile(seat_text, "seat", "exec"), namespace)
+        exec(compile(run_cell, "run", "exec"), namespace)  # the controller publishes the packets
+    seat = namespace["seat"]
+    try:
+        deadline = time.monotonic() + 30
+        while seat.status()["packets_answered"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert seat.status()["packets_answered"] == 1
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(run_cell, "run", "exec"), namespace)  # run again: the controller reads the verdicts
+    finally:
+        seat.stop(timeout=30)
+    events = replay(LocalStore(tmp_path / "work" / "state")).events
+    verdicts = [event.payload for event in events if event.kind == "verdict_received" and event.payload["reviewer_id"] == "reviewer-1"]
+    assert len(verdicts) == 3 and {payload["verdict"] for payload in verdicts} == {"keep"}
+    assert namespace["controller"].state.counts()["packets_open"] == 1  # reviewer-2's packet waits for its desk seat

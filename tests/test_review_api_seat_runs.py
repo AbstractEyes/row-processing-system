@@ -691,6 +691,7 @@ def test_start_in_thread_runs_the_seat_beside_the_caller_and_stop_ends_it(remote
     handle = api_seat.start_in_thread(
         seat_config(poll_seconds=0.01), store=remote, client=api, work_dir=tmp_path / "seat-work", printer=lambda line: None, fsync=False
     )
+    assert handle.status()["running"] is True and "running" in handle.format_status()  # said from the first moment, before the thread has stepped
     deadline = time.monotonic() + 30
     while handle.status()["packets_answered"] < 1 and time.monotonic() < deadline:
         time.sleep(0.02)

@@ -1294,6 +1294,7 @@ def start_in_thread(
     seat = open_seat(config, store=store, run_config=run_config, work_dir=work_dir, client=client, printer=printer, **options)
     stop = threading.Event()
     thread = threading.Thread(target=seat.run, args=(stop,), name=f"rps-seat-{seat.reviewer_id}", daemon=True)
+    seat.running = True  # so a status read right after the start already says so; the thread clears it when it ends
     thread.start()
     return SeatHandle(seat, thread, stop)
 
