@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import typing
+from pathlib import Path
 
 import pytest
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
@@ -154,7 +155,8 @@ def test_the_reason_codes_are_the_ones_in_the_what_to_read_for_table_and_not_the
 
 def test_the_package_brief_is_the_rule_pools_with_its_version():
     brief = package_brief()
-    assert brief.version == rules.rules_version() == (rules.__file__ and open(rules.__file__.replace("__init__.py", "VERSION"), encoding="utf-8").read().strip())
+    version_file = Path(rules.__file__).with_name("VERSION")
+    assert brief.version == rules.rules_version() == version_file.read_text(encoding="utf-8").strip()
     assert brief.text == rules.review_brief()
 
 
@@ -172,7 +174,8 @@ def test_the_judging_rules_are_plain_and_hold_nothing_of_the_place_they_came_fro
     for word in ("keep", "fix", "reject", "reasons", "notes"):
         assert word in text
     lowered = text.lower()
-    for leak in ("\\", "powershell", "python -m", "claude", "haiku", "sonnet", "opus", ":/", rules.rules_version()):  # paths, commands, model names, a version line
+    # paths, shell commands, model names and a version line
+    for leak in ("\\", "powershell", "python -m", "claude", "haiku", "sonnet", "opus", ":/", rules.rules_version()):
         assert leak not in lowered, leak
 
 
@@ -293,7 +296,12 @@ def test_the_effort_the_model_the_token_limit_and_the_extra_instructions_come_fr
 
 
 def test_a_packet_is_answered_through_a_batch_and_the_verdict_file_is_the_clients(remote, tmp_path):
-    api = FakeAnthropic(answer=lambda request: verdict_text("fix", ["wording"], "the caption is two sentences") if asked_row(request)["row_id"].endswith("_1") else verdict_text("keep"))
+    def answer(request):
+        if asked_row(request)["row_id"].endswith("_1"):
+            return verdict_text("fix", ["wording"], "the caption is two sentences")
+        return verdict_text("keep")
+
+    api = FakeAnthropic(answer=answer)
     packet = publish(remote, rows=3)
     seat, printed = make_seat(remote, tmp_path, api)
     assert seat.step().sent == 1

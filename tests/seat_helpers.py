@@ -169,7 +169,9 @@ class FakeBatches:
                 "id": batch_id,
                 "type": "message_batch",
                 "processing_status": batch["status"],
-                "request_counts": {"processing": 0 if ended else total, "succeeded": total if ended else 0, "errored": 0, "canceled": 0, "expired": 0},
+                "request_counts": {
+                    "processing": 0 if ended else total, "succeeded": total if ended else 0, "errored": 0, "canceled": 0, "expired": 0,
+                },
                 "created_at": batch["created"].isoformat().replace("+00:00", "Z"),
                 "expires_at": (batch["created"] + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
                 "ended_at": None,

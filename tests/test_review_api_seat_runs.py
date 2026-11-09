@@ -185,7 +185,8 @@ def test_a_row_that_keeps_failing_leaves_its_packet_unanswered_and_no_verdict_is
     assert [len(batch["requests"]) for batch in api.batches.batches.values()] == [3, 1, 1]  # the rows that were fine are not sent again
     assert verdict_file(remote, packet) is None
     (left,) = seat.status()["left_unanswered"].items()
-    assert left[0] == packet.packet_id and f"row {packet.rows[1].row_id} failed 3 attempts" in left[1] and "last: the answer is not valid JSON" in left[1]
+    assert left[0] == packet.packet_id
+    assert f"row {packet.rows[1].row_id} failed 3 attempts" in left[1] and "last: the answer is not valid JSON" in left[1]
     assert [line for line in printed if "left unanswered" in line] == [f"[seat {REVIEWER}] packet {packet.packet_id} left unanswered: {left[1]}"]
     assert len(ledger_records(remote, "gave_up")) == 1
     seat.step()
@@ -261,7 +262,9 @@ def test_a_result_that_did_not_succeed_is_a_failed_attempt_and_costs_nothing(rem
 
 
 def test_a_partial_batch_keeps_the_valid_verdicts_and_only_the_failed_row_goes_again(remote, tmp_path, api):
-    api.batches.answer = lambda request: errored(request["custom_id"]) if row_of(request).endswith("_1") and attempt_of(request) == 1 else verdict_text("keep")
+    api.batches.answer = lambda request: (
+        errored(request["custom_id"]) if row_of(request).endswith("_1") and attempt_of(request) == 1 else verdict_text("keep")
+    )
     packet = publish(remote, rows=3)
     seat, _ = make_seat(remote, tmp_path, api)
     seat.step()
@@ -319,7 +322,9 @@ def test_the_results_settle_the_usage_that_was_billed_and_the_estimate_is_releas
     status = seat.status()
     assert status["spend_usd"] == pytest.approx(expected) and status["held_usd"] == 0
     (settled,) = ledger_records(remote, "settled")
-    assert settled["usage"] == {"input_tokens": 600, "cache_write_tokens": 3000, "cache_read_tokens": 3000, "output_tokens": 300, "reasoning_tokens": 400}
+    assert settled["usage"] == {
+        "input_tokens": 600, "cache_write_tokens": 3000, "cache_read_tokens": 3000, "output_tokens": 300, "reasoning_tokens": 400,
+    }
 
 
 def test_a_batch_that_does_not_fit_the_budget_is_not_sent_and_the_seat_says_so(remote, tmp_path, api):
@@ -446,7 +451,8 @@ def test_a_batch_taken_up_by_its_size_that_holds_none_of_the_requests_is_dropped
     with pytest.raises(ConnectionError):
         seat.step()
     api.batches.fail_create = None
-    api.batches.create(requests=[{"custom_id": "a-strangers-1", "params": {}}, {"custom_id": "a-strangers-2", "params": {}}])  # same size, made after the plan
+    # a batch of the same size, made after the plan, that is not the seat's
+    api.batches.create(requests=[{"custom_id": "a-strangers-1", "params": {}}, {"custom_id": "a-strangers-2", "params": {}}])
     api.batches.answer = lambda request: verdict_text("keep") if not request["custom_id"].startswith("a-strangers") else "x"
     api.batches.end()
     seat.step()  # takes up the stranger's batch, reads its results and finds none of its own
@@ -501,7 +507,8 @@ def test_a_batch_whose_results_can_no_longer_be_read_is_settled_as_lost_at_its_w
     api.batches.end()
     api.batches.results_error = ApiError(404, "the results have expired")
     seat.step()
-    assert seat.status()["failures"] == {"lost": 2} and seat.status()["spend_usd"] == held and seat.status()["held_usd"] > 0  # and the rows went again
+    status = seat.status()
+    assert status["failures"] == {"lost": 2} and status["spend_usd"] == held and status["held_usd"] > 0  # and the rows went again
     assert any("2 failed (2 lost)" in line for line in printed)
     api.batches.results_error = None
     run_until_quiet(seat, api)
@@ -533,7 +540,8 @@ def test_a_ledger_record_this_version_cannot_read_is_left_out_and_the_rest_is_ke
     first, _ = make_seat(remote, tmp_path, api)
     first.step()
     path = f"review/{REVIEWER}/seat/ledger.jsonl"
-    remote.append_lines(path, [json.dumps({"kind": "planned", "key": "k1"}), json.dumps({"kind": "settled", "key": "k2", "usd": "x"}), json.dumps({"kind": "future-kind"})])
+    records = [{"kind": "planned", "key": "k1"}, {"kind": "settled", "key": "k2", "usd": "x"}, {"kind": "future-kind"}]
+    remote.append_lines(path, [json.dumps(record) for record in records])
     second, _ = make_seat(remote, tmp_path, api)
     assert second.status()["in_flight"]["batches"] == 1 and second.status()["spend_usd"] == 0
 
@@ -616,7 +624,9 @@ def test_the_status_counts_packets_rows_verdicts_spend_what_is_out_and_failures(
     assert status["spend_usd"] == pytest.approx(7 * PER_REQUEST) and status["held_usd"] == 0
     assert (status["reviewer_id"], status["model"], status["effort"], status["budget_usd"]) == (REVIEWER, MODEL, "high", 5.0)
     text = seat.format_status()
-    for expected in ("packets answered 1; rows judged 4 (keep 2, fix 1, reject 1)", "failed attempts: 3 invalid", "left unanswered: 1 packets", "of $5.00"):
+    for expected in (
+        "packets answered 1; rows judged 4 (keep 2, fix 1, reject 1)", "failed attempts: 3 invalid", "left unanswered: 1 packets", "of $5.00",
+    ):
         assert expected in text
     json.dumps(status)  # it is plain data
 
@@ -746,7 +756,8 @@ def test_it_works_on_a_buffered_bucket_store_and_leaves_nothing_unsent(tmp_path)
     assert seat_store.pending_count == 0
     assert f"test/review/{REVIEWER}/{packet.packet_id}.jsonl" in bucket.files
     assert f"test/review/{REVIEWER}/seat/judged/{packet.packet_id}.jsonl" not in bucket.files
-    assert ActorStore(store(), controller_actor("20261108T110000Z-aaaa")).read_text(layout.verdicts_path(REVIEWER, packet.packet_id))  # the controller reads it like any other
+    controller_view = ActorStore(store(), controller_actor("20261108T110000Z-aaaa"))
+    assert controller_view.read_text(layout.verdicts_path(REVIEWER, packet.packet_id))  # the controller reads it like any other
 
 
 # ---------------------------------------------------------------------------- the command line
@@ -866,7 +877,8 @@ def test_the_controller_reads_the_seats_verdict_files_like_any_other_and_needs_n
     assert [payload["reasons"] for payload in received if payload["verdict"] == "reject"] == [["invented"]]
     shipped = {row["row_id"].split("_")[1] for row in world.shipped_rows()}
     assert shipped == {"001", "002", "003", "004", "006"}  # two rejects discarded the row of line 005, the seat's and the desk's
-    assert seat.status()["packets_answered"] == 1 and seat.status()["rows_judged"] == 3 and seat.status()["halted"] is None  # lines 001, 003 and 005
+    status = seat.status()
+    assert status["packets_answered"] == 1 and status["rows_judged"] == 3 and status["halted"] is None  # lines 001, 003 and 005
 
 
 def test_open_seat_needs_a_store_from_somewhere(api):

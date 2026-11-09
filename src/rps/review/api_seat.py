@@ -434,7 +434,8 @@ def outcome_of(item: Any, row_id: str, rates: Rates) -> Outcome:
     stop = lookup(message, "stop_reason")
     if stop == "refusal":
         category = lookup(message, "stop_details", "category")
-        return Outcome(kind="refusal", reason=f"the model declined to answer ({category})" if category else "the model declined to answer", usage=usage, usd=usd)
+        reason = f"the model declined to answer ({category})" if category else "the model declined to answer"
+        return Outcome(kind="refusal", reason=reason, usage=usage, usd=usd)
     if stop == "max_tokens":
         return Outcome(kind="max_tokens", reason="the answer was cut off at the token limit", usage=usage, usd=usd)
     if stop != "end_turn":
@@ -746,7 +747,9 @@ class ApiSeat:
             kept: dict[str, dict[str, Any]] = {}
             for verdict in verdicts:
                 if not validate_verdict(verdict) and verdict["row_id"] not in kept:
-                    kept[verdict["row_id"]] = {key: verdict.get(key, "" if key == "notes" else []) for key in ("row_id", "verdict", "reasons", "notes")}
+                    kept[verdict["row_id"]] = {
+                        key: verdict.get(key, "" if key == "notes" else []) for key in ("row_id", "verdict", "reasons", "notes")
+                    }
             if kept:
                 found[packet_id] = kept
         return found
@@ -855,7 +858,8 @@ class ApiSeat:
                 self.ledger.add({"kind": "submitted", "key": entry.key, "at": self._stamp(), "batch_id": found, "adopted": True}, durable=True)
                 self._say(f"took up batch {found}, sent before the last stop ({requests} requests)")
             elif self._now() - entry.planned_at >= RECOVER_WAIT:
-                self.ledger.add({"kind": "dropped", "key": entry.key, "at": self._stamp(), "reason": "no batch was found for this send"}, durable=True)
+                dropped = {"kind": "dropped", "key": entry.key, "at": self._stamp(), "reason": "no batch was found for this send"}
+                self.ledger.add(dropped, durable=True)
                 self._say(f"dropped a send of {requests} requests: the provider has no batch for it")
 
     def _find_batch(self, entry: Batch) -> str | None:
@@ -914,7 +918,8 @@ class ApiSeat:
             return True
         if entry.adopted and not outcomes:
             # Taken up after a crash by its size and time alone, and it holds none of the requests: not ours.
-            self.ledger.add({"kind": "dropped", "key": entry.key, "at": self._stamp(), "reason": "the batch taken up held none of these requests"}, durable=True)
+            dropped = {"kind": "dropped", "key": entry.key, "at": self._stamp(), "reason": "the batch taken up held none of these requests"}
+            self.ledger.add(dropped, durable=True)
             self._say(f"batch {entry.batch_id} holds none of the requests that were sent; its rows are sent again")
             return False
         for ask in entry.asks:
@@ -1087,7 +1092,9 @@ class ApiSeat:
             todo = [(place, entry) for place, entry in enumerate(document["rows"], start=1) if entry["row_id"] not in have]
             if not todo:
                 continue  # complete: the next pass writes it
-            exhausted = [entry["row_id"] for _, entry in todo if self.ledger.failed_attempts(packet_id, entry["row_id"]) >= self.config.max_attempts]
+            exhausted = [
+                entry["row_id"] for _, entry in todo if self.ledger.failed_attempts(packet_id, entry["row_id"]) >= self.config.max_attempts
+            ]
             if exhausted:
                 self._give_up(packet_id, exhausted[0])
                 continue
