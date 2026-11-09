@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,14 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.3.2
+
+| Change | What happens now |
+|---|---|
+| Reviewer weights | `review.reviewers[].weight` (a whole number from 1 to 100, default 1) is how many turns a reviewer takes in each round of the rotation that hands out rows. Among the reviewers that may take a row, one of weight 6 is given about six times as many rows as one of weight 1, so a fast or cheap reviewer can take most of the work while the others keep a share. It counts for first reviews (each reviewer's turns are spread through the round) and for further reviews and the audit (the hash of the row picks a turn). Families, the rule that a rewritten row avoids the reviewers of the row it replaces, and the settlement are unchanged. See "Reviewer settings" |
+| Unchanged without weights | A weight of 1 is not written out, so a configuration without weights reads, digests and hands out rows exactly as in 0.3.1 |
+| Version | `0.3.2`; the notebook installs @v0.3.2 |
 
 ## What changed in 0.3.1
 
@@ -707,16 +715,17 @@ mapping in its own events and matches verdicts back by row id.
 | `family` | The model family the reviewer belongs to (`anthropic`, `openai`, `google`, `deepseek` and so on). The policy asks reviewers of different families for a row, and the family decides which pictures a packet carries (see "Which pictures go where") |
 | `enabled` | `true` (the default) or `false`. A reviewer that is off is given no packet. A packet already addressed to it that it has not answered is withdrawn, and its rows go to reviewers that are on (see "Switching a reviewer off or on") |
 | `solo_keep` | `true` (the default) or `false`. With `false`, a keep from this reviewer never accepts a row on its own: when the only keeps on a row come from such reviewers, the row is in question and goes on to a further reviewer, as a flagged keep does. At least one keep from a reviewer that may keep alone is needed to accept it (see the policy below) |
+| `weight` | A whole number from 1 to 100 (default 1): how many turns the reviewer takes in each round of the rotation that hands out rows. Among the reviewers that may take a row, one of weight 6 is given about six times as many rows as one of weight 1, for first reviews, further reviews and the audit alike. A weight of 1 is not written out, so a configuration without weights is unchanged |
 
 Any other key is refused, and the reviewer commands read the same configuration file, so a reviewer's
-machine needs a version of the package that knows `solo_keep` to read a file that sets it. A configuration
+machine needs a version of the package that knows `solo_keep` (or, from 0.3.2, `weight`) to read a file that sets it. A configuration
 whose enabled reviewers all have `solo_keep` false is noted when the run starts: no keep could accept a
 row, so a row would be discarded by two rejects or end in the hand queue.
 
 **Policy** (the protocol with the default settings; the `review.policy` keys follow it):
 
 1. The first review goes to a reviewer from a family other than the row's writer family, taken in
-   turn from all available reviewers.
+   turn from all available reviewers, each taking as many turns in a round as its `weight`.
 2. A `keep` with no assessor flag accepts the row, unless it comes from a reviewer that may not keep
    alone (`solo_keep` false): that keep puts the row in question, as a flag does.
 3. A `fix` or `reject`, or an assessor flag, puts the row in question. It goes to a further reviewer
