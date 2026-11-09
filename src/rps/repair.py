@@ -5,14 +5,19 @@ queue for the owner. With `repair.enabled` on, such a row is sent back instead, 
 (the `repair_requested` event), so that the writer writes it again:
 
     which rows     a row in the hand queue for a fix verdict that the owner has not answered, that was never
-                   sent back before, that is not itself a repair, and that was written by a route that is on
-                   and has a cap for the purpose `repair` (`candidates`, `route_may_repair`)
-    what it is     the same spec line, the same route, and as feedback the notes of every fix verdict on the
-    told           row (the notes alone, no reviewer's name) followed by the row as it was written
-                   (`repair_feedback`); the wording around them is `rps.prompting.repair_text`
-    what comes     a new row with an id of its own, linked to the row it repairs in the events and the state
-    back           (never as a column of a stored or shipped row), checked and reviewed like any row. A row
-                   that is sent back again is never repaired again: it goes to the owner
+                   sent back before, that is not itself a repair, and whose repairing route is on and has a
+                   cap for the purpose `repair` (`candidates`, `route_may_repair`). The repairing route is
+                   the route that wrote the row, or the route `repair.routes` names for it
+                   (`RepairConfig.route_for`), so the rows of a route that is switched off can be repaired
+                   by another
+    what it is     the same spec line, through the repairing route (its model, prompt profile and settings),
+    told           and as feedback the notes of every fix verdict on the row (the notes alone, no reviewer's
+                   name) followed by the row as it was written (`repair_feedback`); the wording around them
+                   is `rps.prompting.repair_text`
+    what comes     a new row with an id of its own, written by the repairing route (its writer label is that
+    back           route's), linked to the row it repairs in the events and the state (never as a column of
+                   a stored or shipped row), checked and reviewed like any row. A row that is sent back
+                   again is never repaired again: it goes to the owner
 
 Nothing here touches a store or the state; the controller does the recording (see `rps.controller`).
 """
@@ -79,7 +84,11 @@ def candidates(rows: Iterable["RowState"]) -> list["RowState"]:
 
 
 def route_may_repair(config: "Config", route_name: str) -> bool:
-    """True when the repair step is on and the route is switched on and has a cap for the purpose `repair`."""
+    """True when the repair step is on and the route is switched on and has a cap for the purpose `repair`.
+
+    Asked about the repairing route of a row (`config.repair.route_for(row.route)`), not about the route that wrote
+    it: the route that wrote it may be switched off, which is what `repair.routes` is for.
+    """
     route = config.routes.get(route_name)
     return config.repair.enabled and route is not None and route.is_enabled and route.cap_for(REPAIR) > 0
 

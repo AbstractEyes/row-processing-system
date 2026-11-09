@@ -24,14 +24,15 @@ row of it is as it was before the packet was published to it, `passed` for a fir
 reviewed the row.
 
 The repair step. `repair_requested` takes a row out of the hand queue (one sent there for a fix verdict) and
-sends it back, once, to the route that wrote it: it is `repairing`. The call that writes it again is an
-ordinary call of the same spec line, prepared with `repair_of` (the row), but it is kept out of the line's own
-attempts: a line's retries are about the line's own calls, and a line can have several rows being repaired at
-once. The rows that call writes carry `repair_of`, are checked and reviewed like any row, and the row becomes
-`repaired` (it never ships) as soon as one of them passes the checker. A row whose repair comes to nothing (the
-call failed, the writer wrote no row, or every row it wrote failed the checker) goes back to the hand queue
-with a `row_to_hand` that says why, and is never sent back again; where a line stands is then read from the
-rows that repaired it, as if they were the row.
+sends it back, once, to the route that is to write it again (the route that wrote it, or the one `repair.routes`
+names for that route; the event records which): it is `repairing`. The call that writes it again is an
+ordinary call of the same spec line, prepared with `repair_of` (the row) on that route, but it is kept out of
+the line's own attempts: a line's retries are about the line's own calls, and a line can have several rows
+being repaired at once. The rows that call writes carry `repair_of`, are checked and reviewed like any row,
+and the row becomes `repaired` (it never ships) as soon as one of them passes the checker. A row whose repair
+comes to nothing (the call failed, the writer wrote no row, or every row it wrote failed the checker) goes
+back to the hand queue with a `row_to_hand` that says why, and is never sent back again; where a line stands
+is then read from the rows that repaired it, as if they were the row.
 """
 
 from __future__ import annotations
@@ -150,9 +151,10 @@ class RowState:
     # How many packets this row was taken back from (see the `packet_withdrawn` event). It goes into the
     # id of the row's next packets, so a packet sent after a withdrawal never has the withdrawn one's id.
     withdrawals: int = 0
-    # The repair step. On a row that was sent back to its writer (status `repairing`, then `repaired`, or `hand`
-    # again): {"call_id" (the call planned for it), "route", "calls" (the repair calls prepared for it, in order),
-    # "rows" (the rows its repair wrote), "failed" (why it is in the hand queue again, when it is)}.
+    # The repair step. On a row that was sent back to be written again (status `repairing`, then `repaired`, or `hand`
+    # again): {"call_id" (the call planned for it), "route" (the route that writes it again: its own, or the one
+    # `repair.routes` names for it), "calls" (the repair calls prepared for it, in order), "rows" (the rows its
+    # repair wrote), "failed" (why it is in the hand queue again, when it is)}.
     repair: dict[str, Any] | None = None
     # On a row a repair call wrote: the id of the row that was sent back to be written again. This link lives in
     # the events and the state; it is never a column of a stored or shipped row.
@@ -213,8 +215,9 @@ class LineStatus:
     any call; `set_aside` is a line whose writer or assessor set it aside after a call).
 
     A call of the repair step that is due is described the same way, with outcome `repair` and `repair_of`
-    set to the row it writes again; `feedback` then holds the reviewers' notes and the row as it was written.
-    These items come from `State.repairs_needing_calls`, not from `State.line_status`.
+    set to the row it writes again; `feedback` then holds the reviewers' notes and the row as it was written,
+    and `route` the route the call goes to. These items come from `State.repairs_needing_calls`, not from
+    `State.line_status`.
     """
 
     outcome: str
@@ -223,6 +226,10 @@ class LineStatus:
     feedback: tuple[str, ...] = ()
     boost: bool = False  # the retry follows a truncated answer and gets a larger token limit
     repair_of: str | None = None  # the call is a repair: it writes this row again
+    # The route a call of the repair step goes to: the route the row was sent back to (`repair_requested` names it,
+    # and it is not always the route of the row's task: see `repair.routes`). None for every other call, which goes
+    # to the route of its task.
+    route: str | None = None
 
 
 @dataclass(frozen=True)
@@ -919,10 +926,12 @@ class State:
         came back counts only through its rows: the repair is over when none of them passed the checker.
         """
         record = row.repair or {}
+        route = record.get("route")  # the route the row was sent back to, as the event recorded it
         calls = [self.calls[call_id] for call_id in record.get("calls", []) if call_id in self.calls]
         if not calls:
             attempt = ids.parse_call_id(record["call_id"])[2]
-            return "due", LineStatus("repair", next_attempt=attempt, feedback=repair_feedback(row), repair_of=row.row_id)
+            status = LineStatus("repair", next_attempt=attempt, feedback=repair_feedback(row), repair_of=row.row_id, route=route)
+            return "due", status
         last = calls[-1]
         if last.status in ("prepared", "submitted"):
             return "waiting", None
@@ -935,6 +944,7 @@ class State:
                     feedback=tuple(last.feedback),
                     boost=last.kind == KIND_TRUNCATED,
                     repair_of=row.row_id,
+                    route=route,
                 )
                 return "due", status
             return "failed", ("call_failed", last.kind or last.error or "")

@@ -18,7 +18,9 @@ Event kinds and their payloads:
                          rules_version and rules_profile (the version and the prompt profile of the
                          writing rules the call is built from, when rules are set), repair_of (only on
                          a call of the repair step: the row it writes again; its purpose is `repair`,
-                         and its feedback holds the reviewers' notes and then the row as it was written)
+                         its feedback holds the reviewers' notes and then the row as it was written,
+                         and its route is the route the row was sent back to, which is not always the
+                         route of the row's task: see `repair.routes`)
     budget_refused       call_id, route, purpose, est_usd, reason, and the spend and caps
     line_screened        task_id, line, item_id, route, class (other), reason (a spec line the rule
                          set's screen set aside before its first call: no call was made for it, and
@@ -64,12 +66,14 @@ Event kinds and their payloads:
                          has resolved, a row the current policy settles, and a row sent to the hand
                          queue for any other reason are never reopened)
     repair_requested     row_id, call_id, route (a row in the hand queue for a fix verdict is sent back,
-                         once, to the route that wrote it: it leaves the hand queue and is `repairing`,
-                         and `call_id` names the call that will write it again, which is prepared with
-                         `repair_of` set to the row; the rows that call writes are linked to it by their
-                         `repair_of` in the state, never in a stored or shipped row. A row whose repair
-                         comes to nothing, or whose repairs were switched off, goes back to the hand queue
-                         with a `row_to_hand` that says why)
+                         once, to the route that is to write it again: the route that wrote it, or the
+                         route `repair.routes` names for that route, and `route` is that repairing route.
+                         The row leaves the hand queue and is `repairing`, and `call_id` names the call
+                         that will write it again, which is prepared on `route` with `repair_of` set to
+                         the row; the rows that call writes are written by `route` and linked to the row
+                         by their `repair_of` in the state, never in a stored or shipped row. A row whose
+                         repair comes to nothing, or whose repairs were switched off, goes back to the
+                         hand queue with a `row_to_hand` that says why)
     row_accepted         row_id, call_id, by, reason
     hand_resolved        row_id, call_id, decision (accept, discard, replace), row (for replace)
     packet_burned        packet_id, row_ids, deleted (pictures deleted from the shared store)
