@@ -16,7 +16,7 @@ types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 
-## What changed in 0.3.0 (unreleased)
+## What changed in 0.3.0
 
 | Change | What happens now |
 |---|---|
