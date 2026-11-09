@@ -1,3 +1,6 @@
+import hashlib
+from collections import Counter
+
 import pytest
 
 from rps.config import ReviewerConfig, ReviewPolicy
@@ -12,6 +15,7 @@ from rps.review.policy import (
     audit_selected,
     pick_first_reviewer,
     pick_further_reviewer,
+    rotation,
     settle,
 )
 
@@ -234,6 +238,35 @@ def test_first_reviewer_depends_only_on_its_arguments():
     assert [pick_first_reviewer(REVIEWERS, "alpha", n).id for n in (4, 5)] == ["r-beta", "r-gamma"]  # a restart picks the same
 
 
+def test_with_every_weight_one_the_rotation_is_the_reviewers_in_their_order():
+    assert rotation(REVIEWERS) == list(REVIEWERS)
+    assert rotation([]) == []
+
+
+def test_a_weighted_reviewer_takes_its_weight_in_turns_spread_through_the_round():
+    light, heavy = ReviewerConfig("light", "alpha"), ReviewerConfig("heavy", "beta", weight=3)
+    assert [r.id for r in rotation([light, heavy])] == ["heavy", "light", "heavy", "heavy"]
+    assert [pick_first_reviewer([light, heavy], "writer", n).id for n in range(8)] == ["heavy", "light", "heavy", "heavy"] * 2
+
+
+def test_weights_share_out_first_reviews_and_keep_the_writers_family_out():
+    seats = [ReviewerConfig(f"seat-{n}", "anthropic") for n in range(4)]
+    heavy = [ReviewerConfig("batch-a", "anthropic", weight=6), ReviewerConfig("batch-b", "anthropic", weight=6)]
+    reviewers = [ReviewerConfig("kin", "openai"), ReviewerConfig("outsider", "google")] + seats + heavy
+    picks = Counter(pick_first_reviewer(reviewers, "openai", n).id for n in range(17 * 10))  # ten rounds of 17 turns
+    assert "kin" not in picks
+    assert picks["batch-a"] == picks["batch-b"] == 60
+    assert picks["outsider"] == 10 and all(picks[s.id] == 10 for s in seats)
+
+
+def test_a_weighted_reviewer_is_still_avoided_for_a_rewritten_row():
+    light, heavy = ReviewerConfig("light", "alpha"), ReviewerConfig("heavy", "beta", weight=5)
+    assert {pick_first_reviewer([light, heavy], "writer", n, avoid={"heavy"}).id for n in range(10)} == {"light"}
+    # when every eligible reviewer is to be avoided, the weighted rotation over all of them decides
+    everyone = [pick_first_reviewer([light, heavy], "writer", n, avoid={"light", "heavy"}).id for n in range(6)]
+    assert everyone == [r.id for r in rotation([light, heavy])]
+
+
 def test_first_reviewer_is_none_when_every_reviewer_shares_the_writers_family():
     only = [ReviewerConfig("a1", "alpha"), ReviewerConfig("a2", "alpha")]
     assert pick_first_reviewer(only, "alpha", 0) is None
@@ -261,6 +294,21 @@ def test_further_reviewer_choice_is_stable_and_spreads_over_equals():
     picks = {pick_further_reviewer(many, {"other"}, "writer", f"row-{n}").id for n in range(60)}
     assert picks == {"r0", "r1", "r2"}
     assert pick_further_reviewer(many, {"other"}, "writer", "row-5") == pick_further_reviewer(many, {"other"}, "writer", "row-5")
+
+
+def test_with_every_weight_one_the_further_choice_is_the_hash_over_the_list_as_before():
+    many = [ReviewerConfig(f"r{n}", "same") for n in range(3)]
+    for n in range(50):
+        key = f"row-{n}"
+        assert pick_further_reviewer(many, set(), "writer", key) is many[int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % 3]
+
+
+def test_weights_spread_further_reviews_too():
+    reviewers = [ReviewerConfig("light", "same"), ReviewerConfig("heavy", "same", weight=4), ReviewerConfig("used", "other")]
+    picks = Counter(pick_further_reviewer(reviewers, {"other"}, "writer", f"row-{n}:1").id for n in range(1000))
+    assert set(picks) == {"light", "heavy"}
+    assert 720 < picks["heavy"] < 880  # four turns in five
+    assert pick_further_reviewer(reviewers, {"other"}, "writer", "row-5:1") == pick_further_reviewer(reviewers, {"other"}, "writer", "row-5:1")
 
 
 def test_audit_sample_is_reproducible_and_near_the_fraction():

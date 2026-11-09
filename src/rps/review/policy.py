@@ -7,9 +7,10 @@ store, so the rules can be tested on their own.
 The protocol, with the default policy:
 
 1. The first review goes to a reviewer from a family other than the writer's,
-   chosen round-robin across the available reviewers. (The first review of a row that was
-   written again after a reviewer sent it back prefers a reviewer that did not review the row
-   it replaces, when there is one: see `rps.repair`.)
+   chosen round-robin across the available reviewers, each taking as many turns in a round
+   as its `weight` (1 unless the configuration says otherwise). (The first review of a row that
+   was written again after a reviewer sent it back prefers a reviewer that did not review the
+   row it replaces, when there is one: see `rps.repair`.)
 2. A "keep" with no assessor flag accepts the row, unless it comes from a reviewer
    that may not keep alone (`solo_keep` off): that keep never accepts a row by itself,
    so the row is in question, as a flagged row is.
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Collection, Sequence
 
 from ..config import ReviewerConfig, ReviewPolicy
@@ -130,6 +132,22 @@ def settle(
     return Settlement(FURTHER, "in question")
 
 
+def rotation(reviewers: Sequence[ReviewerConfig]) -> list[ReviewerConfig]:
+    """One round of the rotation over `reviewers`: each one appears `weight` times.
+
+    A reviewer of weight w takes the turns at the points (2k + 1) / 2w of the round, k = 0 .. w-1,
+    so its turns are spread through the round rather than bunched; turns at the same point keep the
+    reviewers' order. With every weight 1 the round is the reviewers in their order. The points are
+    exact fractions, so the round depends only on the reviewers and their order.
+    """
+    turns = [
+        (Fraction(2 * k + 1, 2 * reviewer.weight), index, reviewer)
+        for index, reviewer in enumerate(reviewers)
+        for k in range(reviewer.weight)
+    ]
+    return [reviewer for _point, _index, reviewer in sorted(turns, key=lambda turn: (turn[0], turn[1]))]
+
+
 def pick_first_reviewer(
     reviewers: Sequence[ReviewerConfig], writer_family: str, ordinal: int, avoid: Collection[str] = ()
 ) -> ReviewerConfig | None:
@@ -137,9 +155,10 @@ def pick_first_reviewer(
 
     `reviewers` are the available reviewers in a fixed order. `ordinal` counts the
     rows from the same writer that reached review before this one, so consecutive
-    rows go to consecutive reviewers. The answer depends only on its arguments, which
-    keeps the rotation exact across a restart. Returns None when every reviewer is
-    from the writer's family.
+    rows go to consecutive turns of the rotation, in which each reviewer takes as many
+    turns as its weight. The answer depends only on its arguments, which keeps the
+    rotation exact across a restart. Returns None when every reviewer is from the
+    writer's family.
 
     `avoid` names reviewers (by id) that are better left out when another is available: a row that
     was written again after a reviewer sent it back is given, for its first review, to a reviewer
@@ -149,8 +168,8 @@ def pick_first_reviewer(
     if not eligible:
         return None
     fresh = [reviewer for reviewer in eligible if reviewer.id not in avoid]
-    chosen = fresh or eligible
-    return chosen[ordinal % len(chosen)]
+    turns = rotation(fresh or eligible)
+    return turns[ordinal % len(turns)]
 
 
 def _spread(key: str) -> int:
@@ -163,14 +182,16 @@ def pick_further_reviewer(
     """Choose a reviewer from a family not yet used on the row.
 
     Families other than the writer's are preferred; the writer's own family is used
-    only when no other unused family is left. Among equals the choice is spread by a
-    hash of `key`, so the same row always gets the same answer.
+    only when no other unused family is left. Among those the choice is spread by a
+    hash of `key` over the turns of the rotation, so a reviewer of weight w is about
+    w times as likely as one of weight 1, and the same row always gets the same answer.
     """
     unused = [reviewer for reviewer in reviewers if reviewer.family not in used_families]
     if not unused:
         return None
     preferred = [reviewer for reviewer in unused if reviewer.family != writer_family] or unused
-    return preferred[_spread(key) % len(preferred)]
+    turns = rotation(preferred)
+    return turns[_spread(key) % len(turns)]
 
 
 def audit_selected(row_id: str, fraction: float, seed: str) -> bool:

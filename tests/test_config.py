@@ -183,6 +183,24 @@ def test_solo_keep_is_checked_and_other_unknown_reviewer_keys_are_still_refused(
         Config.from_dict(make(review={"reviewers": [{"id": "a", "family": "x", "trusted": True}]}))
 
 
+def test_a_reviewer_weight_is_read_checked_and_left_out_when_it_is_one():
+    config = Config.from_dict(
+        make(review={"reviewers": [{"id": "desk", "family": "anthropic"}, {"id": "api", "family": "anthropic", "weight": 6}]})
+    )
+    assert [r.weight for r in config.review.reviewers] == [1, 6]
+    assert [r.weight for r in config.review.enabled_reviewers()] == [1, 6]
+    assert config.review.reviewers[0].to_dict() == {"id": "desk", "family": "anthropic", "enabled": True, "solo_keep": True}
+    assert config.review.reviewers[1].to_dict()["weight"] == 6
+    assert Config.from_dict(config.to_dict()) == config
+    # a weight of 1 written out reads exactly as a reviewer with no weight
+    plain = Config.from_dict(make(review={"reviewers": [{"id": "desk", "family": "anthropic"}]}))
+    same = Config.from_dict(make(review={"reviewers": [{"id": "desk", "family": "anthropic", "weight": 1}]}))
+    assert plain.digest() == same.digest()
+    for bad in (0, -1, 1.5, 101, True, "2", None):
+        with pytest.raises(ConfigError, match="weight"):
+            Config.from_dict(make(review={"reviewers": [{"id": "a", "family": "x", "weight": bad}]}))
+
+
 def test_a_reviewer_list_with_no_one_who_may_keep_alone_is_noted():
     def notes(reviewers):
         return [note for note in Config.from_dict(make(review={"reviewers": reviewers})).problems() if "solo_keep" in note]

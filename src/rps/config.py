@@ -465,21 +465,29 @@ class ReviewerConfig:
     off, a keep from this reviewer never accepts a row alone: the row is in question and goes on to a
     further reviewer, as a flagged row does, and it takes a keep from a reviewer that may keep alone
     to accept it (see `rps.review.policy.settle`).
+    `weight` is how many turns the reviewer takes in each round of the rotation that hands out rows
+    (a whole number from 1 to 100; 1 by default): among the reviewers that may take a row, one of
+    weight 4 is given about four times as many rows as one of weight 1 (see `rps.review.policy`). A
+    weight of 1 is left out of `to_dict`, so a configuration without weights reads as it always did.
     """
 
     id: str
     family: str
     enabled: bool = True
     solo_keep: bool = True
+    weight: int = 1
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "family": self.family, "enabled": self.enabled, "solo_keep": self.solo_keep}
+        data: dict[str, Any] = {"id": self.id, "family": self.family, "enabled": self.enabled, "solo_keep": self.solo_keep}
+        if self.weight != 1:
+            data["weight"] = self.weight
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], where: str) -> "ReviewerConfig":
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object with 'id' and 'family'")
-        _check_keys(data, {"id", "family", "enabled", "solo_keep"}, where)
+        _check_keys(data, {"id", "family", "enabled", "solo_keep", "weight"}, where)
         for key in ("id", "family"):
             value = data.get(key)
             if not isinstance(value, str) or not NAME_PATTERN.match(value):
@@ -489,6 +497,7 @@ class ReviewerConfig:
             family=data["family"],
             enabled=_flag(data.get("enabled", True), f"{where}.enabled"),
             solo_keep=_flag(data.get("solo_keep", True), f"{where}.solo_keep"),
+            weight=_number(data.get("weight", 1), f"{where}.weight", minimum=1, maximum=100, integer=True),
         )
 
 
