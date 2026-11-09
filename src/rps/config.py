@@ -29,7 +29,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 
 from .ids import canonical_json
 from .keys import looks_like_secret
@@ -679,25 +679,66 @@ class RepairConfig:
 
     `min_rows` is how many candidates a route gathers before its repairs are sent, so that the repairs of a
     batch route go out in batches. When the controller has nothing else to do for a route, a smaller batch is sent.
+
+    `routes` maps a writing route to the route that repairs its rows, for a writer that cannot repair its own: one
+    switched off for poor quality while its rows are still in review, say. A route that is not in the map repairs
+    its own rows. A mapped route's rows are written again by the route the map names, with that route's model,
+    prompt profile and settings, and the call is charged to that route's `repair` cap. Both names are configured
+    routes, a route is never mapped to itself, and a route that rows are mapped to is not itself in the map (no
+    chains: a row is repaired by one route). A map to a route that is switched off or has no `repair` cap is
+    legal, and is noted by `Config.problems`: those rows wait for the owner.
     """
 
     enabled: bool = False
     min_rows: int = DEFAULT_REPAIR_MIN_ROWS
+    routes: Mapping[str, str] = field(default_factory=dict)
+
+    def route_for(self, route_name: str) -> str:
+        """The route that repairs the rows `route_name` wrote: the route the map names, else the route itself."""
+        return self.routes.get(route_name, route_name)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"enabled": self.enabled, "min_rows": self.min_rows}
+        data: dict[str, Any] = {"enabled": self.enabled, "min_rows": self.min_rows}
+        if self.routes:
+            # Left out when empty, so that a configuration with no map reads (and hashes) as it did without the setting.
+            data["routes"] = {name: self.routes[name] for name in sorted(self.routes)}
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "RepairConfig":
         where = "repair"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"enabled", "min_rows"}, where)
+        _check_keys(data, {"enabled", "min_rows", "routes"}, where)
         default = cls()
+        routes_in = data.get("routes", {})
+        if not isinstance(routes_in, Mapping):
+            _fail(f"{where}.routes: expected an object that maps a writing route to the route that repairs its rows")
+        routes: dict[str, str] = {}
+        for name in sorted(routes_in, key=str):
+            if not isinstance(name, str) or not name.strip():
+                _fail(f"{where}.routes: expected route names as keys, got {name!r}")
+            routes[name] = str(_text(routes_in[name], f"{where}.routes.{name}"))
+        for name, target in routes.items():
+            if target == name:
+                _fail(f"{where}.routes.{name}: a route cannot be repaired by itself (leave it out: it repairs its own rows)")
+            if target in routes:
+                _fail(
+                    f"{where}.routes.{name}: route {target!r} is itself in the map, repaired by {routes[target]!r}; "
+                    "a row is repaired by one route, so the map has no chains"
+                )
         return cls(
             enabled=_flag(data.get("enabled", default.enabled), f"{where}.enabled"),
             min_rows=_number(data.get("min_rows", default.min_rows), f"{where}.min_rows", minimum=1, integer=True),
+            routes=routes,
         )
+
+    def check_routes(self, configured: Collection[str]) -> None:
+        """Raise ConfigError unless every route the map names, writing or repairing, is one of `configured`."""
+        for name, target in sorted(self.routes.items()):
+            for route_name, role in ((name, "writing"), (target, "repairing")):
+                if route_name not in configured:
+                    _fail(f"repair.routes.{name}: unknown {role} route {route_name!r}; use one of {sorted(configured)}")
 
 
 _TOP_KEYS = {
@@ -744,8 +785,8 @@ class Config:
     can be added from outside while a run goes on.
 
     `repair` switches on the repair step (see `RepairConfig`): rows the reviewers sent back with a fix
-    verdict are written again, once, by their own writer. It needs `review.policy.fix_to_hand` and, on each
-    route that repairs, a cap for the purpose `repair`.
+    verdict are written again, once, by their own writer, or by the route `repair.routes` names for it. It needs
+    `review.policy.fix_to_hand` and, on each route that repairs, a cap for the purpose `repair`.
     """
 
     data_repo: str | None = None
@@ -829,6 +870,8 @@ class Config:
             for purpose in PURPOSES:
                 if purpose == REPAIR and not self.repair.enabled:
                     continue  # nothing is sent back to its writer unless the repair step is on
+                if purpose == REPAIR and name in self.repair.routes:
+                    continue  # the rows of a mapped route are repaired by the route the map names, which makes the calls
                 if route.cap_for(purpose) <= 0:
                     notes.append(f"route {name}: no cap for purpose '{purpose}' (calls with that purpose are refused)")
             total = sum(route.cap_for(purpose) for purpose in PURPOSES)
@@ -848,6 +891,21 @@ class Config:
                 "repair: the step is on, but review.policy.fix_to_hand is off, so no row waits in the hand queue"
                 " with a fix verdict and nothing is sent back to its writer"
             )
+        if self.repair.enabled:
+            for name, target in sorted(self.repair.routes.items()):
+                repairing = self.routes.get(target)
+                if repairing is None:
+                    continue  # refused when the configuration is read; a Config built by hand may name a route it lacks
+                if not repairing.is_enabled:
+                    notes.append(
+                        f"repair.routes: route {name} is repaired by route {target}, which is switched off,"
+                        f" so the rows of {name} are never sent back and wait for the owner"
+                    )
+                if repairing.cap_for(REPAIR) <= 0:
+                    notes.append(
+                        f"repair.routes: route {name} is repaired by route {target}, which has no cap for purpose"
+                        f" 'repair', so the rows of {name} are never sent back and wait for the owner"
+                    )
         return notes
 
     @classmethod
@@ -883,7 +941,7 @@ class Config:
                 normalize_path(in_store)
             except PathError as error:
                 raise ConfigError(f"tasks_file: {error} (the form is \"{TASKS_STORE_PREFIX}control/tasks.json\")") from None
-        return cls(
+        config = cls(
             data_repo=_text(data.get("data_repo"), "data_repo", allow_none=True),
             bucket=bucket,
             work_dir=_text(data.get("work_dir", default.work_dir), "work_dir"),
@@ -906,6 +964,8 @@ class Config:
             tasks_file=tasks_file,
             rules=None if data.get("rules") is None else RulesConfig.from_dict(data["rules"]),
         )
+        config.repair.check_routes(config.routes)
+        return config
 
     @classmethod
     def load(cls, path: str | Path) -> "Config":
