@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.2.8. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.0.dev0 (unreleased; the last release is 0.2.9). It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,21 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.3.0 (unreleased)
+
+| Change | What happens now |
+|---|---|
+| A row a reviewer sent back can be written again, once | A new `repair` section of the configuration: `repair.enabled` (default `false`) and `repair.min_rows` (default 20, at least 1). Reviewers never edit a row; with `review.policy.fix_to_hand` on, a row with a `fix` verdict waits in the hand queue for the owner. With `repair.enabled` it is sent back instead, once, to the route that wrote it, with the reviewers' notes, so that the writer writes it again. The new row goes through the checker and a fresh first review like any row. With the step off (the default) nothing is sent back, no call is made for it and none of its events is recorded: rows move as they did before (the ledger lists the new purpose with nothing spent on it). See "The repair step" |
+| A new purpose, `repair` | `repair` is a purpose with a cap of its own in a route's `purpose_caps`, beside `test`, `pricing`, `probe`, `rebound` and `production`. Every call of the repair step is charged to it, whatever the purpose of the task the row came from and whatever the call's attempt number: the call is made after the line's first one, so under the old rule (any attempt after the first is a rebound) it would have drawn on `rebound`, and a repair call that is made again after a passing failure is charged to `repair` too. A route with no cap for it, or a cap of nothing, gets no repair calls: its rows stay in the hand queue for the owner. When the step is on, the run notes such a route when it starts, in the words used for any purpose without a cap (`route NAME: no cap for purpose 'repair' (calls with that purpose are refused)`); with the step off nothing is said. A repair call the cap cannot hold yet waits, and one it could never hold is refused, like any call (see "Budgets") |
+| Which rows are sent back | A row in the hand queue for the reason `fix_to_hand` gives ("a fix verdict: the row waits for the owner"), that the owner has not answered (the owner's decisions are read first, in the same pass), that was never sent back before, that is not itself the result of a repair, and that was written by a route that is switched on and has a repair cap. A row in the hand queue for any other reason (three reviewers without a settlement, no reviewer for it) is left to the owner. The step needs `review.policy.fix_to_hand`: without it no row waits with a fix verdict, and a configuration that turns the step on without it is noted when the run starts |
+| Repairs go out in batches | Each route is looked at on its own. When it has at least `repair.min_rows` candidates, or fewer when the controller has nothing else to do for the route (no call of it in flight or waiting to go, no spec line of it due a call, and no row it wrote still to be checked; rows with the reviewers do not count), the controller records `repair_requested` (`row_id`, `call_id`, `route`) for each candidate of the route, in row-id order. The row leaves the hand queue (its state is `repairing`) and the call the event names is prepared in the next pass, like any call, under the route's repair cap. A batch route is sent its repairs together, and the last few rows of a job are not left waiting for a batch that will never fill |
+| What the writer is told | The same spec line, through the same route, with the same picture and choices as the first call, followed by words of their own: an earlier row for this item was sent back by a reviewer; here are the notes; write the row again, fixing exactly those problems and keeping everything else that was right. The call's feedback (recorded in `call_prepared` and handed to the writer) is the notes of every `fix` verdict on the row, one item each, the notes alone and never a reviewer's id or family, then the row as it was written (its JSON without the labels the runner stamps on it, `row_id`, `writer` and `source_label`) as the last item. A fix verdict that came with no note gives its reason codes in the note's place. The words are the same for every prompt profile |
+| The new row | A repair call is a call of the same line with the next attempt number that is free, and `repair_of` (the row) in its `call_prepared` and `call_returned` events. Each row it writes has an id of its own, made from the call like any row's, and is linked to the row it repairs by `repair_of` in the events and the state, never as a column of a stored or shipped row: an accepted new row ships exactly like any accepted row, and the row that was sent back never ships. The checker runs on the new row as usual. Its first review goes to a reviewer outside the writer's family, preferring one that did not review the row it replaces (any reviewer outside the family when no other is available). The row that was sent back is `repaired` as soon as a row the writer wrote for it passes the checker |
+| Once only | A row is sent back once. A row that fails the checker after a repair is never written again, even where `max_attempts` would allow another attempt. When the repair comes to nothing the row that was sent back is in the hand queue again, for the owner, with a `row_to_hand` that says why: "the repair failed the checker" (every row the writer wrote was rejected or set aside by the checker), "the repair gave no row" (the writer set it aside), "the repair call failed (kind)" (a failure no retry mends), or "the repair was not made" (the step, or the route's repair cap, was switched off after the row was sent back and before its call). A repair call that failed for a passing reason, a provider error say, is made again with the same notes and row while the row has had fewer than `max_attempts` repair calls. A row that was written again and is sent back by a reviewer again goes to the hand queue and is never sent back again. The owner answers any of these rows as usual |
+| Restart | The state is rebuilt from the events alone: `repair_requested`, `call_prepared` with `repair_of` and the `row_to_hand` that ends a repair that came to nothing are all it reads, never the configuration. The tests stop a run after every event of a repair (the requests, the calls, the new rows, their reviews, a repair that fails the checker, a row sent back a second time) and check that the resumed run ends in the same place with no row sent back twice and no call made twice |
+| The hand queue and the status | A row in `hand/queue.jsonl` that a repair wrote has `repair_of`, the id of the row it replaces, and a row whose repair came to nothing has `repair`, the ids of the calls and rows of that repair. The progress line shows `N rows sent back to their writers` while repairs are out, and `format_status()` adds a line with the rows being written again and the rows written again. `ledger/summary.json` and `ledger/tasks.jsonl` list the purpose `repair` like any other |
+| Version | `0.3.0.dev0`. The notebook's install line is unchanged |
 
 ## What changed in 0.2.9
 
@@ -169,6 +184,7 @@ The assessor's finding codes that are new or raised in 0.2.7. An error stops the
 | poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
 | assess | The rule set's checker (or a function you give) checks the rows | `row_assessed`, `row_rejected`, `row_set_aside` |
 | review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows. A packet whose reviewer was switched off is taken back, and a row that waited in the hand queue for want of a reviewer is reopened when one is available | `packet_published`, `packet_withdrawn`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_reopened`, `row_accepted` |
+| repair | With `repair.enabled`, a row in the hand queue for a fix verdict is sent back, once, to the route that wrote it, with the reviewers' notes and the row as it was written. The call that writes it again is an ordinary call of the line, charged to the purpose `repair`; the row it writes is checked and reviewed like any row, and the row that was sent back never ships. A repair that comes to nothing puts the row back in the hand queue. See "The repair step" | `repair_requested`, then `call_prepared` (with `repair_of`), `batch_submitted`, `call_returned`, `row_assessed`, and `row_to_hand` for a repair that came to nothing |
 | ship | Accepted rows and the ledger are handed to the dataset repository, which sends them in its next commit; a file counts as shipped when the repository has sent it | `shipped` |
 
 The events are one JSON object per line (`ts`, `actor`, `kind`, `payload`). The controller's
@@ -198,6 +214,7 @@ files alone.
       rules/           the compiled rule pool: writer prompt, row schema, answer format block, review brief, examples
       assessor/        the assessor for rows written under that pool
       review/          packets, verdict format, review policy, reviewer client and its CLI
+      repair.py        the repair step as pure functions: which rows go back to their writer, and what it is told
       controller.py    the loop
       runtime.py       build the stores, writers and controller from a Config
       keys.py          API keys from environment variables only; Colab secret mapping
@@ -311,6 +328,7 @@ is refused. Unknown keys are refused too.
 | `rules` | The writing rules, see "The writing rules are inputs" |
 | `commit` | How writes are batched, see below |
 | `review` | Reviewers (each with an `id`, a `family`, `enabled` and `solo_keep`, see "Review"), packet size, brief version and the review policy. `brief_version` applies only when no writing rules are loaded; with rules, a packet carries their version |
+| `repair` | The repair step: `enabled` (default `false`) and `min_rows` (default 20, a whole number of at least 1: how many candidates a route gathers before its repairs are sent; a smaller batch goes when the controller has nothing else to do for the route). A row a reviewer sent back with a fix verdict is written again, once, by its own writer. It needs `review.policy.fix_to_hand` and, on each route that repairs, a cap for the purpose `repair` in `purpose_caps`. See "The repair step". A reviewer's machine needs a version of the package that knows this section to read a configuration file that has it, since unknown keys are refused |
 | `price_table` | Path to a price table file (default: the dated table in the package) |
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
@@ -559,9 +577,15 @@ one-call route waits out a rate limit instead (see "One-call routes at productio
 failed after the provider billed for it (a cut-off or unusable answer) still has its usage recorded
 and priced.
 
+A call of the repair step (see "The repair step") follows the same table, with two differences. Its attempt
+numbers are its own: a repair call is made again after a passing failure while the row has had fewer than
+`max_attempts` repair calls, and it is charged to the purpose `repair`, never to `rebound`. A row it wrote that
+the checker rejects is not written again, whatever `max_attempts` says: the row that was sent back returns to
+the hand queue instead.
+
 ## Budgets
 
-Every call has a purpose: `test`, `pricing`, `probe`, `rebound` or `production`. A route has one
+Every call has a purpose: `test`, `pricing`, `probe`, `rebound`, `production` or `repair`. A route has one
 dollar cap per purpose plus a total. Before a call is submitted its estimated cost (every input
 token at the highest input-side rate, output up to its limit, a route with price tiers at the
 dearest tier it can be sent in) is checked against both its (route, purpose) cap and the route
@@ -580,8 +604,11 @@ A refusal records the figures of both caps, with the held part of each:
      "route_spent": 0.004, "route_held": 0.0, "route_cap": 5.0}
 
 A retry or re-submission after a failed or rejected call is always `rebound`, whatever the task's
-purpose was, and draws only from the `rebound` cap. A purpose with no cap counts as a $0 cap, so its
-calls are refused. A refused call is left alone for the rest of the run and asked again by the next
+purpose was, and draws only from the `rebound` cap. The one exception is a call of the repair step
+(a row sent back to its writer, see "The repair step"): it is `repair` and draws only from the `repair`
+cap, though it is made after the line's first call, and so is a repair call made again after a passing
+failure. A purpose with no cap counts as a $0 cap, so its calls are refused; a route with no `repair` cap
+is not sent any row to repair. A refused call is left alone for the rest of the run and asked again by the next
 one, so raising a cap takes effect on the next run. The progress line and the status name the cap
 that holds the calls back (`waiting: 7 calls waiting for room under the rebound cap of deepseek-sync
 ($0.50)`, or `calls refused by` for a refusal) and show money paid and money held apart
@@ -699,7 +726,7 @@ The policy settings (`review.policy`):
 | `rejects_to_discard` | 2 | How many rejects discard a row |
 | `max_reviewers` | 3 | After this many reviewers with no settlement the row goes to the hand queue |
 | `first_keep_accepts` | `true` | A single keep from a reviewer that may keep alone accepts a row with no assessor flag. Off, every row needs `keeps_to_accept` keeps |
-| `fix_to_hand` | `false` | With `true`, a row with a `fix` verdict goes to the hand queue as soon as the verdict is read, with the reason "a fix verdict: the row waits for the owner", instead of to a further reviewer. Reviewers never edit a row, so a fix can only be made by the owner; with only two reviewer families on duty the further review ends in the hand queue anyway, and this skips it. The accept and discard rules (`keeps_to_accept`, `rejects_to_discard`) are checked first and still win. A row with no `fix` verdict is not touched |
+| `fix_to_hand` | `false` | With `true`, a row with a `fix` verdict goes to the hand queue as soon as the verdict is read, with the reason "a fix verdict: the row waits for the owner", instead of to a further reviewer. Reviewers never edit a row, so a fix can only be made by the owner (or, with `repair.enabled`, by the row's writer, see "The repair step"); with only two reviewer families on duty the further review ends in the hand queue anyway, and this skips it. The accept and discard rules (`keeps_to_accept`, `rejects_to_discard`) are checked first and still win. A row with no `fix` verdict is not touched |
 | `audit_fraction` | 0.10 | The share of accepted rows that get an audit review |
 | `audit_seed` | `"audit"` | Text hashed with the row id to choose the audit sample, so the sample is the same on every run |
 
@@ -722,7 +749,9 @@ pass of the controller:
 With every reviewer off, rows wait (they are not sent to the hand queue) until a reviewer is on.
 
 **The hand queue.** The controller lists rows waiting for the owner in `hand/queue.jsonl`, with the
-row, the task's spec line, the assessor flags and every verdict. The owner answers by adding a file
+row, the task's spec line, the assessor flags and every verdict. A row that a repair wrote has one more key,
+`repair_of` (the id of the row it replaces), and a row whose repair came to nothing has `repair` (the
+`calls` and `rows` of that repair); see "The repair step". The owner answers by adding a file
 under `control/hand/` in the state store, one decision per line:
 
     {"row_id": "...", "decision": "accept"}
@@ -758,6 +787,93 @@ The bucket copy of a packet's pictures is deleted by the controller once it has 
 verdicts (recorded as `packet_burned`), or with the whole packet when it is withdrawn (recorded as
 `packet_withdrawn`). Reviewers delete their local copies when they push. A reviewer that holds a local copy
 of a packet when it is withdrawn can still push its verdicts; the controller ignores that file.
+
+## The repair step
+
+A reviewer never edits a row, so a row with a `fix` verdict can only be mended by someone else. With
+`review.policy.fix_to_hand` the row waits in the hand queue for the owner. The repair step lets its writer
+mend it instead: the row is sent back, once, to the route that wrote it, with the reviewers' notes, and the
+writer writes it again. The step is off unless the configuration turns it on:
+
+```json
+"review": {"policy": {"fix_to_hand": true}},
+"repair": {"enabled": true, "min_rows": 20},
+"routes": {"luna-sync": {"provider": "openai", "model": "gpt-6-luna", "kind": "api", "budget_usd": 50,
+                         "purpose_caps": {"production": 40, "rebound": 8, "repair": 4}}}
+```
+
+| Setting | Meaning |
+|---|---|
+| `repair.enabled` | `false` unless set. Off, no row is sent back, and a fix verdict ends in the hand queue as it always did |
+| `repair.min_rows` | 20 unless set; at least 1. How many candidates a route gathers before its repairs are sent. Repairs of a batch route go out together, so a batch is worth waiting for; when the controller has nothing else to do for the route, the candidates it has go, however few |
+| `purpose_caps.repair` (a route's) | The most the route may spend on repair calls. A route with none, or a cap of nothing, is never sent a row to repair, and the run says so when it starts (with the step on) |
+| `review.policy.fix_to_hand` | Has to be `true`: the step sends back the rows that wait in the hand queue for a fix verdict, and no row waits there for one otherwise. A configuration that turns the step on without it is noted when the run starts |
+
+**Which rows, and when.** A candidate is a row in the hand queue for the reason `fix_to_hand` gives ("a fix
+verdict: the row waits for the owner") that the owner has not answered, that was never sent back before, that
+is not itself the result of a repair, and that was written by a route that is switched on, is not closed for the
+run and has a repair cap. The owner's decisions are read first, in the same pass, so a row the owner answers is
+never repaired. Each route is looked at on its own: with at least `repair.min_rows` candidates, or with fewer
+when the controller has nothing else to do for the route (no call of it in flight or waiting to go, no spec line
+of it due a call, no row it wrote still to be checked), the controller records `repair_requested` (`row_id`,
+`call_id`, `route`) for every candidate of the route, in row-id order. The row leaves the hand queue file, and the
+call the event names is prepared in the next pass. A run that stops between the events of a batch finds the rest
+of the batch still in the hand queue and sends it with the next batch, or when the route has nothing else to do.
+
+**What the writer is told.** The call is for the same spec line and goes through the same route, so the writer
+gets the same task text, the same picture and the same choices as the first time, then this (a profile's retry
+block is not used: that block is about failed checks):
+
+    An earlier row for this item was sent back by a reviewer. The notes from the review are below. Write the row
+    again: fix exactly the problems the notes name, and keep everything else in the earlier row that was right.
+    Change nothing the notes do not mention, and add no fact the item does not give.
+
+    The notes from the review:
+    - <the notes of one fix verdict>
+    - <the notes of another>
+
+    The earlier row, as it was written:
+    <the row's JSON, without row_id, writer and source_label>
+
+    Answer in the form the task above asks for, with the problems fixed: the complete result, not a patch and
+    not an explanation.
+
+The call's `feedback`, as `call_prepared` records it and the writer's request carries it, is the notes of every
+`fix` verdict on the row, one item each, then the row as written as the last item. The notes are the reviewers'
+words alone: no reviewer's id or family, and nothing from a `keep` or `reject` verdict. A reviewer's note names
+the problem and where it is and never holds corrected text (the reviewers' guide says so); a fix that came with
+no note gives its reason codes in its place. The call is charged to the purpose `repair`, is the next attempt
+number of the line that is free (2 for a line that was written once), and is recorded with `repair_of` set to the
+row. A repair call is not one of the line's own attempts: a line's retries do not count it and cannot take its
+number.
+
+**What comes back.** The rows the writer answers with are new rows, each with an id of its own (made from the
+call, like any row's), linked to the row that was sent back by `repair_of` in the state and the events, and
+nowhere in a stored, packeted or shipped row. They are checked like any row, and a rejected one is not written
+again. A row that passes goes to a first review by a reviewer outside the writer's family, preferring one that
+did not review the row it replaces; an accepted new row ships in the same file as any accepted row of its task.
+A new row that a reviewer sends back with a fix goes to the hand queue and is never sent back again (the file
+lists it with `repair_of`).
+
+| What happens to the repair | The row that was sent back | Recorded as |
+|---|---|---|
+| A row the writer wrote passes the checker | `repaired`. It never ships, and its line stands where the new rows stand | `row_assessed` (passed) |
+| Every row the writer wrote is rejected or set aside by the checker, and none is written again | In the hand queue again: "the repair failed the checker: the row waits for the owner" | `row_rejected` with `retry` false, then `row_to_hand` |
+| The writer answered with no row (a skip) | In the hand queue again: "the repair gave no row, the writer set it aside instead of writing it again: the row waits for the owner" | `row_set_aside`, `row_to_hand` |
+| The call failed in a way no retry mends (a refusal, a block, a request the provider refuses, a picture that cannot be read) | In the hand queue again: "the repair call failed (kind): the row waits for the owner" | `call_failed`, `row_to_hand` |
+| The call failed for a passing reason (a provider error, an expired batch, an answer cut off at the token limit) | The call is made again with the same notes and row, as the next attempt number that is free, while the row has had fewer than `max_attempts` repair calls (a cut-off answer gets the larger token limit). Charged to `repair` like the first | `call_failed`, then `call_prepared` with `retry_of` |
+| The step, or the route's repair cap, is switched off after the row was sent back and before its call was made | In the hand queue again: "the repair was not made, the step or the route's repair cap is switched off: the row waits for the owner" | `row_to_hand` |
+| A repair call the repair cap cannot hold yet | `repairing`: the call waits, as any call does, until calls in flight give back what they hold | nothing is recorded until it goes |
+| A repair call the repair cap could never hold | `repairing`: the call is left alone for the rest of the run and asked again by the next one, so raising the cap takes effect then | `budget_refused` with `purpose` `repair` |
+
+A row that came back to the hand queue after its repair is never sent back again, and the owner answers it as any
+row in the queue. The progress line counts the rows being written again (`N rows sent back to their writers`) and
+`format_status()` adds the line `rows sent back to their writers: N being written again, M written again`.
+
+An item that holds several rows (a series) is asked for as a whole: the repair call carries the item's spec
+line, and the writer may answer with every row of it. Each row of the answer is a new row linked to the row
+that was sent back, and is checked and reviewed like any row; the rows the first answer gave that were not sent
+back stay as they were. A repair that asks for one row of a series only is not built.
 
 ## Dry run
 
@@ -861,6 +977,10 @@ the service took the request as the writer sends it, 1 when it did not and 2 whe
 | between writing a packet's files and announcing it | writes the same packet again (the id comes from its rows) and announces it once |
 | between recording a packet's withdrawal and deleting its files | deletes the files of every withdrawn packet that is still in the state store, once when the run starts (the event comes first, so no row waits for a packet whose files are gone) |
 | after rows were reopened or packets withdrawn | rebuilds the same state from the events alone: neither depends on the configuration of the run that recorded it |
+| between two `repair_requested` events of a batch | the rows already sent back are `repairing` and their calls are prepared in the next pass; the rows not yet sent back are still in the hand queue, and go with the next batch or when the route has nothing else to do. No row is sent back twice |
+| after `repair_requested` and before the repair call was prepared | prepares the call the event named (its id was recorded with the event), once |
+| while a repair call is in flight | polls it. A call on a one-call route that the stop cut off fails for a passing reason, like any call in flight, and is made again as the next repair call (charged to `repair`) while the row has had fewer than `max_attempts` of them. A repair call is never made twice for the same attempt number |
+| between a repair coming to nothing and the row's return to the hand queue | works it out again from the events (every row the writer wrote was rejected, the writer gave no row, or the call failed for good) and records the `row_to_hand`, once |
 | while shipping | rebuilds the shipped files from the accepted rows and hands them over again; `shipped` is recorded only after the ship store has sent the files (for a dataset repository, after the commit has gone out). Files that were waiting for a commit when the run died are simply handed over again |
 | in the middle of an event line | skips the torn last line, reports it, and carries on |
 
@@ -922,6 +1042,11 @@ file or put in the configuration; error text is scrubbed of anything shaped like
   ordinary provider error and retried as a rebound.
 - Routes of kind `claude-code`, `codex` and `gemini-cli` (the configuration accepts them; there is
   no adapter).
+- The repair step writes a whole item again. A row of a series (an item that holds several rows) that a
+  reviewer sent back is repaired by asking the writer for the whole item once more, with the notes for the
+  row; the rows of the first answer that were not sent back stay as they were, and every row of the new answer
+  is checked and reviewed. Asking for one row of a series alone is not built. A row can be sent back once; a
+  second round, or a repair done by a different route than the row's own, is not built either.
 - Gemini batches from a JSONL file (only inline requests are built).
 - The pricing test that settles whether batch discounts stack with cache prices, and the probe
   phase that compares effort and picture-resolution levels (the defaults are for dry runs).
