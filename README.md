@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.0.dev0 (unreleased; the last release is 0.2.9). It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.1.dev0 (unreleased; the last release is 0.3.0). It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,19 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.3.1 (unreleased)
+
+| Change | What happens now |
+|---|---|
+| An automated reviewer, the API seat | `rps.review.api_seat` answers the packets addressed to one reviewer id through the Anthropic Message Batches API, so a Claude model (Haiku 5.5 first, Sonnet 5.5 as a stricter tier) reviews beside the desk seats. It is a reviewer like any other: it is listed in `review.reviewers`, it pushes one verdict file per packet through the reviewer client, and the controller reads that file as it reads any other. The controller is not changed. See "The API review seat" |
+| One request for each row | A row is judged alone, as text only, from its blind review view and its task as `packet.json` holds them. The system prompt is a short role, the judging rules (`src/rps/review/judging.md`, packaged) and the review brief exactly as this package renders it, in one block with a cache mark. The answer is bound to `verdict`, `reasons` (the codes the brief lists) and `notes`. A packet whose brief version is not the one this package renders is skipped and said so, never answered |
+| Failed attempts are retried, and nothing is made up | A refusal, an answer cut off at the token limit, an unusable answer and a result that errored, was canceled or expired are failed attempts; the row goes again in a later batch, up to `max_attempts` times, and then its packet is left unanswered with the reason said. A packet is answered only when every one of its rows has a valid verdict |
+| A budget that is a hard cap | `budget_usd` limits everything the seat spends, across runs. A batch is sent only when its estimate fits under the budget less what was spent and less the estimates of the batches still out; the results settle what was billed. Every batch and its estimate are recorded in the seat's own ledger in the state store before anything waits, so a seat started after a crash collects the batches that were out |
+| Running it | `ApiSeat.step()` (one pass), `ApiSeat.run(stop_event)`, `start_in_thread(config, run_config=...)` (a handle with `status()` and `stop()`) and `python -m rps.review.api_seat --config seat.json [--once]` |
+| Notebook | One optional cell between the tasks cell and the run cell starts a seat from a small dict and prints its status. It does nothing until the dict is filled in; every other cell is as it was |
+| Packaging | The judging rules are package data (`review/*.md`). The seat's files live under `review/<reviewer>/seat/` in the state store, a path the controller never reads |
+| Version | `0.3.1.dev0`. The notebook's install line is unchanged |
 
 ## What changed in 0.3.0
 
@@ -213,7 +226,7 @@ files alone.
       assess.py        the assessment hooks
       rules/           the compiled rule pool: writer prompt, row schema, answer format block, review brief, examples
       assessor/        the assessor for rows written under that pool
-      review/          packets, verdict format, review policy, reviewer client and its CLI
+      review/          packets, verdict format, review policy, reviewer client and its CLI; the API seat (api_seat.py) and its judging rules (judging.md)
       repair.py        the repair step as pure functions: which rows go back to their writer, and what it is told
       controller.py    the loop
       runtime.py       build the stores, writers and controller from a Config
@@ -362,6 +375,7 @@ A run uses two stores. The state store holds what changes often and what must re
 | `events/controller-<run>.<part>.jsonl` | the controller run named in the path | state (bucket) |
 | `packets/<reviewer>/<packet>/packet.json`, `images/` | the controller | state |
 | `review/<reviewer>/<packet>.jsonl` | the reviewer named in the path | state |
+| `review/<reviewer>/seat/ledger.jsonl`, `review/<reviewer>/seat/judged/<packet>.jsonl` | the API seat of that reviewer (see "The API review seat"); the controller never reads them | state |
 | `hand/queue.jsonl` | the controller (rows waiting for the owner) | state |
 | `control/STOP`, `control/hand/*.jsonl`, `control/tasks.json` (when `tasks_file` is `store:control/tasks.json`) | the operator | state |
 | `accepted/<route>/<task>.jsonl` | the controller | ship (dataset repo) |
@@ -781,12 +795,175 @@ Exit codes: 0 done, 1 invalid input, 2 refused (for example pushing a packet tha
 without verdicts), 3 the store or configuration failed.
 
 In Python, the same client runs a packet with a function or a command line per row
-(`ReviewerClient.run_packet`).
+(`ReviewerClient.run_packet`). The API review seat (below) is a reviewer built on it.
 
 The bucket copy of a packet's pictures is deleted by the controller once it has read that packet's
 verdicts (recorded as `packet_burned`), or with the whole packet when it is withdrawn (recorded as
 `packet_withdrawn`). Reviewers delete their local copies when they push. A reviewer that holds a local copy
 of a packet when it is withdrawn can still push its verdicts; the controller ignores that file.
+
+## The API review seat
+
+A desk seat is a person or an agent session that pulls packets, judges the rows and pushes verdict files. The API
+seat (`rps.review.api_seat`) is a reviewer that needs nobody at the desk. It answers the packets addressed to one reviewer
+id by sending each row to a Claude model through the Message Batches API, and it pushes one verdict file per packet through
+the reviewer client, so the file has the form of a desk seat's. The controller is not changed and is not told: the seat is a
+reviewer in `review.reviewers` like the others, and its verdict files are read like any other. Give it the family
+`anthropic`, so that a row a Claude model wrote is never handed to it for a first review. Haiku 5.5 is the first tier and
+Sonnet 5.5 a stricter one: give each tier its own reviewer id, settings and budget. Run one seat for a reviewer id at a
+time (its files have one writer, as every file does).
+
+**Settings.** The seat's configuration is a dict, or a JSON file for the command line. Unknown keys are refused, and so
+is a value that looks like a key.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reviewer_id` | required | The reviewer the seat answers for. It must be an enabled reviewer of the run's configuration, or the controller addresses no packet to it |
+| `model` | required | `claude-haiku-5-5` or `claude-sonnet-5-5`. Any other model needs its prices under `prices` and is refused without them |
+| `budget_usd` | required | A hard cap on everything this seat spends, across runs |
+| `effort` | `high` | `low`, `medium`, `high`, `xhigh` or `max`, sent as `output_config.effort` |
+| `max_tokens` | 16000 | The token limit of each request. The model thinks before it answers, so the limit covers both |
+| `packets_per_batch` | 50 | The most packets one batch holds |
+| `poll_seconds` | 60 | How long the seat waits between passes |
+| `max_attempts` | 3 | How many times a row may fail before its packet is left unanswered |
+| `extra_instructions` | none | Text added to the end of the system prompt |
+| `prices` | the two models above | `{"<model>": {"input": 1.0, "output": 5.0}}`: list prices in dollars per million tokens, for a model with no default price (or to replace a default) |
+| `work_dir` | `seat_local`, or `seat/` in the run's work folder | The local folder of the reviewer client. Its copy of a packet is deleted when the packet is answered |
+| `run_config` | none | The run's configuration file, which the command line reads the state store from |
+
+**What is asked.** Each row is a request of its own, never beside another row:
+
+| Part | What it holds |
+|---|---|
+| `system` | One text block with a one-hour cache mark: a short role, the judging rules (`src/rps/review/judging.md`), the review brief exactly as this package renders it (`rps.rules.review_brief()`) and `extra_instructions` |
+| `messages` | One user message of one text block: the row's blind review view and its task as `packet.json` holds them, and a line saying what to return. No picture is sent: a desk seat judges text only, and a calibration compares like with like |
+| `output_config` | `format`: an object with `verdict` (keep, fix or reject), `reasons` (limited to the codes the brief's table "What to read for" lists) and `notes`; the seat adds the row id itself. `effort`: the configured level |
+| `custom_id` | Made with the package's `call_id` and `custom_id` helpers from the packet, the row's place in it and the try; letters, digits, `_` and `-`, at most 64 characters |
+| not sent | `temperature`, `top_p`, `top_k`, a prefill and a forced `tool_choice` (these models refuse them), and `thinking`, which is left unset so that both models think adaptively (Sonnet 5.5 refuses `thinking: disabled`) |
+
+A packet whose `brief_version` is not the version of the brief this package renders (`rps.rules.rules_version()`, the
+file `src/rps/rules/VERSION`) is skipped and said so, once, and never answered, as the desk seats leave it. The controller
+puts the version of the loaded writing rules in its packets, so load the rule pool (`"rules": {"package": "rps.rules"}`)
+when a seat is to answer them; without rules a packet carries `review.brief_version` (`"1"` unless set), which the seat
+skips.
+
+**What comes back.** Results arrive in any order and are matched by `custom_id`.
+
+| Result | What happens |
+|---|---|
+| a valid verdict (`end_turn`, an answer that passes the package's own verdict checks) | The verdict is kept in the store until every row of its packet has one |
+| `refusal` (the `stop_details` category is recorded), `max_tokens`, any other stop reason | A failed attempt. The answer was billed |
+| an answer that is not JSON, has other fields, or fails the verdict checks (a fix or reject with no reason, notes over 2000 characters) | A failed attempt. The answer was billed |
+| `errored`, `canceled`, `expired` | A failed attempt. Nothing was billed |
+| a failed attempt | The row goes again in a later batch, as the next attempt. After `max_attempts` failed attempts its packet is left unanswered: the reason is said and recorded (`gave_up`), and nothing more is sent for that packet. A verdict is never made up |
+| every row of a packet has a valid verdict | The verdict file is written through the reviewer client (download, one verdict for each row, check, push), so its checks and its burn of local pictures apply |
+
+A packet left unanswered stays out with its reviewer, so its rows wait. Raise `max_attempts` and start a seat again to
+take it up, or switch the reviewer off and the controller takes the packet back and gives its rows to another reviewer.
+
+**Money.** The Batches API bills half of the list prices. A cache read bills a tenth of the list input price and a
+one-hour cache write twice it; both cache prices are taken at list, without the batch discount, which can only
+overstate a cost (the price table of the package does the same):
+
+    batch input price     = 0.5 x list input price
+    batch output price    = 0.5 x list output price
+    cache read price      = 0.1 x list input price
+    cache write price     = 2 x list input price
+    cost of a request     = (input tokens x batch input price + cache write tokens x cache write price
+                             + cache read tokens x cache read price
+                             + (output + thinking tokens) x batch output price) / 1,000,000
+    estimate of a request = (estimated input tokens x the dearer of the batch input price and the cache write price
+                             + max_tokens x batch output price) / 1,000,000
+
+The estimated input tokens are one token for every three characters of the system text, the answer format and the user
+message. Haiku 5.5 (list $0.10 in, $0.50 out) bills $0.05 and $0.25 per million tokens in a batch, with cache writes at
+$0.20 and reads at $0.01; Sonnet 5.5 (list $2.00 and $10.00) bills $1.00 and $5.00, with $4.00 and $0.20. Before a batch is
+sent the seat adds up its estimate and sends it only if
+
+    estimate of the batch <= budget_usd - spent so far - estimates of the batches still out
+
+A batch that does not fit is cut to the whole packets, in order, that do; when the first packet does not fit nothing is
+sent, and the seat says so once. A request whose estimated input passes 100,000 tokens is never sent: its packet is skipped
+and said so, since the provider bills such a prompt at rates the seat does not model. The results settle what was billed, and the estimate is released. The
+budget is kept per state store and reviewer id.
+
+**What it keeps in the store.** Under `review/<reviewer>/seat/`, a path of the reviewer's own that the controller never
+reads and that cannot be taken for a verdict file (those lie directly under `review/<reviewer>/`):
+
+| File | What it holds |
+|---|---|
+| `seat/ledger.jsonl` | One line for each plan (the batch's requests and its estimate), sending (the provider's batch id), settlement (what was billed, the verdicts by kind, the failed attempts with their reasons), packet answered and packet left unanswered. It is appended, never rewritten, and a torn last line is skipped |
+| `seat/judged/<packet>.jsonl` | The valid verdicts of a packet whose rows are not all judged yet. It is deleted when the packet is answered |
+
+**If the seat stops.**
+
+| If it stops here | Then the next seat |
+|---|---|
+| after a batch was planned and before it was sent, or after a send whose reply was lost | looks among the provider's recent batches for one of that size made after the plan (the way the Anthropic writer finds a batch), takes it up if it finds one, and drops the plan after two minutes when it finds none. A batch taken up that holds none of its requests is dropped when it ends, and its rows go again |
+| after the batch's id was recorded | polls the batch and collects it (the provider keeps results for 29 days). The estimate is held against the budget meanwhile |
+| after the verdicts were kept and before the batch was marked settled | collects the batch again: a verdict already kept is not written twice, and the spend is counted once |
+| after some rows of a packet were judged | sends only the rows that are not judged yet |
+| after the verdict file was pushed | sees the file, and deletes the verdicts it kept for the packet |
+| after the controller took a packet back | drops the verdicts it kept for it and writes no file |
+
+A pass that fails (a dropped connection, a store that did not answer) is said and tried again at the next poll; a seat
+that fails ten passes in a row stops. A key or a request the provider refuses stops it at once, with the reason.
+
+**Running it.** The key is read from `ANTHROPIC_API_KEY`. In a notebook, beside the controller:
+
+```python
+from rps.review.api_seat import start_in_thread
+
+seat = start_in_thread(
+    {"reviewer_id": "reviewer-1", "model": "claude-haiku-5-5", "effort": "high", "budget_usd": 5.0},
+    run_config=config,  # the run's Config: the seat opens a view of the same state store of its own
+)
+print(seat.format_status())  # again whenever you like; seat.status() is the same as plain data
+seat.stop()                  # batches already sent are collected the next time a seat starts
+```
+
+`reviewer_id` must be one of the reviewers of `config`. The notebook has a cell for this (`SEAT`, between the tasks cell and the
+run cell). From a shell, with `run_config` in the seat's file naming the run's configuration file:
+
+    python -m rps.review.api_seat --config seat.json            # until stopped (Ctrl+C)
+    python -m rps.review.api_seat --config seat.json --once     # one pass: collect, write, send
+
+Exit codes: 0 done, 2 the provider refused the key or a request, 3 the configuration, the store or the key failed.
+`ApiSeat.step()` is one pass, `ApiSeat.run(stop_event)` steps every `poll_seconds` until stopped, and `status()` returns
+the packets answered, the rows judged, the keep, fix and reject counts, the spend and what is held, what is in flight, the
+failed attempts by kind, the packets left unanswered and the packets skipped.
+
+**Calibrating it before it settles production rows.** Judge its verdicts against answers that are known first.
+
+| Step | What to do |
+|---|---|
+| 1 | Make a state store of its own for the calibration (another bucket folder, such as `owner/rps-state/calibration`, or a local folder), never the production one. Its ledger and budget are separate from production's |
+| 2 | Publish packets addressed to the seat's reviewer id whose rows have known answers: rows judged by hand, or rows with a fault put in on purpose. `rps.review.packets.build_packet` and `publish_packet` make a packet from stored rows (each with its writer label) and their spec lines; give it the version `rps.rules.rules_version()`. Publish the same rows to a desk seat's reviewer id to compare |
+| 3 | Run the seat against that store (`--once` until nothing is out and nothing waits) |
+| 4 | Score its verdict files against the known answers (below). Read the keeps that should have been fixes or rejects first: a keep from a reviewer that may keep alone accepts a row with no assessor flag |
+| 5 | Settle production only when the false keeps are rare enough. Until then list the seat with `"solo_keep": false` in `review.reviewers`: its keep never accepts a row alone, so a second reviewer decides |
+
+```python
+from collections import Counter
+
+from rps.config import Config
+from rps.review.packets import parse_verdict_lines
+from rps.runtime import build_state_store
+
+known = {"<row id>": "keep", "<another row id>": "reject"}  # the right answer for each row
+store = build_state_store(Config.load("calibration_run.json"))
+given = {}
+for path in store.list("review/reviewer-1/"):
+    if path.count("/") == 2 and path.endswith(".jsonl"):  # the verdict files, not the seat's own folder
+        verdicts, _problems = parse_verdict_lines(store.read_text(path))
+        given.update({verdict["row_id"]: verdict["verdict"] for verdict in verdicts})
+table = Counter((right, given.get(row_id, "none")) for row_id, right in known.items())
+for (right, said), number in sorted(table.items()):
+    print(f"right answer {right:7} seat said {said:7} {number}")
+```
+
+The cost of a row is `spend_usd / rows_judged` in `status()`. Run Haiku and Sonnet on the same packets (one reviewer id
+each) to see what the stricter tier buys.
 
 ## The repair step
 
@@ -1029,7 +1206,8 @@ and check that the resumed run ends in the same place with no repeated call or r
 
 Keys are read from environment variables only: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` and `HF_TOKEN`. They are never printed, logged, written to a
-file or put in the configuration; error text is scrubbed of anything shaped like a key.
+file or put in the configuration; error text is scrubbed of anything shaped like a key. The API review seat
+reads `ANTHROPIC_API_KEY` the same way.
 
 ## Left for later
 
@@ -1059,6 +1237,10 @@ file or put in the configuration; error text is scrubbed of anything shaped like
 - Two lost Anthropic batches of the same size are matched to their groups in the order the groups
   were sent; if that guess is wrong the check at collection sends the calls again.
 - The prices of a prompt over a long-prompt threshold are not modeled: such a call is refused.
+- The API review seat judges text only. It sends no picture even for a packet that carries one (the reviewer client still
+  copies the packet's pictures to the seat's local folder and burns them when it pushes). Its cache prices are taken at
+  list, without the batch discount, until a billed batch settles whether the two stack; its ledger is appended and never
+  compacted; and it does not score itself: calibrating it against known answers is done by hand (see "The API review seat").
 - Whether the Gemini batch service takes the `openapi` form of the row schema is not known: the probe of
   0.2.5 named the schema as the refused part and the rejected name, and this form leaves that name out, but
   it has not been run against the service. `python -m rps.geminiprobe --route flash-batch --batch --only
