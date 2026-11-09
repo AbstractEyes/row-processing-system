@@ -24,11 +24,15 @@ from rps.store.bucket import BucketStore
 
 from adapter_helpers import ApiError
 from fakes import Clock as StoreClock, FakeBucketApi
+from harness import World, task_spec
+from helpers import make_config
+from review_helpers import by_line
 from seat_helpers import (
     MODEL,
     PER_REQUEST,
     REVIEWER,
     FakeAnthropic,
+    asked_row,
     attempt_of,
     canceled,
     errored,
@@ -811,6 +815,49 @@ def test_an_interrupt_ends_the_command_line_cleanly_and_says_where_things_stand(
     assert api_seat.main(["--config", str(seat_file)], out, err) == api_seat.EXIT_OK
     assert "interrupted; batches already sent are collected the next time the seat starts" in out.getvalue()
     assert f"reviewer {REVIEWER} (" in out.getvalue() and err.getvalue() == ""
+
+
+# ---------------------------------------------------------------------------- beside the controller
+
+
+def test_the_controller_reads_the_seats_verdict_files_like_any_other_and_needs_no_change(tmp_path):
+    reviewers = [{"id": REVIEWER, "family": "anthropic"}, {"id": "rev-b", "family": "beta"}]
+    config = make_config(
+        review={
+            "packet_size": 3,
+            "brief_version": rules.rules_version(),  # no writing rules are loaded here, so the packets carry this
+            "reviewers": reviewers,
+            "provider_families": {"fake": "writer-family"},
+            "policy": {"audit_fraction": 0.0},
+        }
+    )
+    world = World(tmp_path, config=config)
+    controller = world.controller()
+    controller.add_task(task_spec())
+    api = FakeAnthropic()
+    api.batches.auto_end = True
+    api.batches.answer = lambda request: (
+        verdict_text("reject", ["invented"], "thought 1 invents a color")
+        if asked_row(request)["task"]["line_id"] == "005"
+        else verdict_text("keep")
+    )
+    seat = api_seat.ApiSeat(seat_config(), world.state_store, client=api, work_dir=tmp_path / "seat", printer=lambda line: None, fsync=False)
+    for _round in range(30):
+        controller.step()
+        seat.step()  # sends what the controller published
+        seat.step()  # collects it and pushes the verdict files
+        world.run_reviewers(by_line({"005": "reject"}), only="rev-b")  # the desk seat, for the row sent on to a further reviewer
+        if controller.is_idle() and not controller.state.open_packets():
+            break
+    else:
+        raise AssertionError("the run did not settle")
+    received = [event.payload for event in world.events_of("verdict_received") if event.payload["reviewer_id"] == REVIEWER]
+    assert received and {payload["family"] for payload in received} == {"anthropic"}
+    assert {payload["verdict"] for payload in received} == {"keep", "reject"}
+    assert [payload["reasons"] for payload in received if payload["verdict"] == "reject"] == [["invented"]]
+    shipped = {row["row_id"].split("_")[1] for row in world.shipped_rows()}
+    assert shipped == {"001", "002", "003", "004", "006"}  # two rejects discarded the row of line 005, the seat's and the desk's
+    assert seat.status()["packets_answered"] == 1 and seat.status()["rows_judged"] == 3 and seat.status()["halted"] is None  # lines 001, 003 and 005
 
 
 def test_open_seat_needs_a_store_from_somewhere(api):
