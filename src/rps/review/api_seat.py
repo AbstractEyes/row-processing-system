@@ -139,7 +139,7 @@ class SeatError(Exception):
 
 
 class SeatHalted(SeatError):
-    """Something that stops the seat for good: the provider turned the key or the request away, or there is no key."""
+    """The provider turned the key or a request away: the seat stops for good, with the reason."""
 
 
 # ---------------------------------------------------------------------------- configuration
@@ -655,10 +655,10 @@ class StepResult:
 
 
 def make_client() -> Any:
-    """The Anthropic client, made from ANTHROPIC_API_KEY (SeatHalted when it is not set)."""
+    """The Anthropic client, made from ANTHROPIC_API_KEY (SeatError when it is not set)."""
     key = api_key(API_KEY_ENV)
     if key is None:
-        raise SeatHalted(f"{API_KEY_ENV} is not set")
+        raise SeatError(f"{API_KEY_ENV} is not set")
     import anthropic  # imported here: the SDK is slow to load
 
     return anthropic.Anthropic(api_key=key)

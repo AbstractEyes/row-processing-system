@@ -17,7 +17,7 @@ from rps.config import ConfigError
 from rps.layout import controller_actor
 from rps.providers.common import estimate_text_tokens
 from rps.review import api_seat
-from rps.review.api_seat import LONG_PROMPT_TOKENS, RECOVER_WAIT, SeatHalted, user_text
+from rps.review.api_seat import LONG_PROMPT_TOKENS, RECOVER_WAIT, SeatError, SeatHalted, user_text
 from rps.review.client import ReviewerClient
 from rps.store import ActorStore, LocalStore
 from rps.store.bucket import BucketStore
@@ -703,8 +703,9 @@ def test_start_in_thread_runs_the_seat_beside_the_caller_and_stop_ends_it(remote
 
 
 def test_without_a_key_the_seat_will_not_start(remote, tmp_path):
-    with pytest.raises(SeatHalted, match="ANTHROPIC_API_KEY is not set"):
+    with pytest.raises(SeatError, match="ANTHROPIC_API_KEY is not set") as raised:
         api_seat.ApiSeat(seat_config(), remote, work_dir=tmp_path, fsync=False)
+    assert not isinstance(raised.value, SeatHalted)  # not the provider turning a key away: a thing to set up
 
 
 def test_the_client_is_made_from_the_environment_key_and_the_key_is_never_shown(remote, tmp_path, monkeypatch):
@@ -791,6 +792,13 @@ def test_the_command_line_reports_a_configuration_it_cannot_use(tmp_path, monkey
         err = io.StringIO()
         assert api_seat.main(["--config", str(bad), "--once"], io.StringIO(), err) == api_seat.EXIT_FAILED
         assert message in err.getvalue()
+
+
+def test_the_command_line_says_so_when_there_is_no_key_and_does_not_call_it_a_refusal(tmp_path):
+    seat_file, _state = write_files(tmp_path)
+    out, err = io.StringIO(), io.StringIO()
+    assert api_seat.main(["--config", str(seat_file), "--once"], out, err) == api_seat.EXIT_FAILED  # the test environment has no key
+    assert "error: ANTHROPIC_API_KEY is not set" in err.getvalue() and out.getvalue() == ""
 
 
 def test_the_command_line_exits_with_the_refused_code_when_the_provider_turns_the_key_away(tmp_path, monkeypatch, api):
