@@ -45,9 +45,20 @@ Event kinds and their payloads:
                          items [{row_id, image, round, audit, rules_version, rules_profile}] (the
                          rules each row was written with, from its writer label; packet.json itself
                          stays blind to them)
+    packet_withdrawn     packet_id, reviewer_id, row_ids (a packet addressed to a reviewer who is now
+                         switched off, or no longer in the configuration, and who has pushed no verdict
+                         file: its files are deleted from the state store and each of its rows
+                         waits for a review again, to go to a reviewer that is on; a verdict file that
+                         turns up for it later is ignored)
     verdict_received     packet_id, row_id, reviewer_id, family, verdict, reasons, notes
     row_escalated        row_id, call_id, reason (in_question or audit_reject), round, families_used
     row_to_hand          row_id, call_id, reason, verdicts (the owner's hand queue)
+    row_reopened         row_id, call_id, reason (a row that went to the hand queue only for want of a
+                         reviewer waits for a review again, when the review policy as it stands now
+                         still asks for one and the current configuration has a reviewer for it: a
+                         first review when the row never had one, else a further one; a row the owner
+                         has resolved, a row the current policy settles, and a row sent to the hand
+                         queue for any other reason are never reopened)
     row_accepted         row_id, call_id, by, reason
     hand_resolved        row_id, call_id, decision (accept, discard, replace), row (for replace)
     packet_burned        packet_id, row_ids, deleted (pictures deleted from the shared store)
@@ -82,9 +93,11 @@ EVENT_KINDS: tuple[str, ...] = (
     "row_rejected",
     "row_set_aside",
     "packet_published",
+    "packet_withdrawn",
     "verdict_received",
     "row_escalated",
     "row_to_hand",
+    "row_reopened",
     "row_accepted",
     "hand_resolved",
     "packet_burned",

@@ -10,9 +10,12 @@ interrupted and run again repeats only the unfinished part.
                call (line_screened) and no call is made for it
     poll       submitted batches are polled; finished ones are collected into rows
     assess     each written row goes through the assess function
-    review     verdicts are read, rows are settled by the review policy, rows that
-               need a reviewer are published in packets, the owner's hand decisions
-               are read, and the pictures of answered rows are burned
+    review     verdicts are read, packets addressed to a reviewer who is switched off
+               are taken back, rows are settled by the review policy, the owner's
+               hand decisions are read, rows that went to the hand queue only for want
+               of a reviewer are reopened when one is now available and the policy
+               still asks for their review, rows that need a reviewer are published in
+               packets, and the pictures of answered rows are burned
     ship       accepted rows and the ledger go to the ship store
 
 `run` repeats passes until there is nothing left to do, a stop file appears, the time
@@ -39,7 +42,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import __version__, ids, layout
 from .assess import AssessCallFn, AssessContext, AssessFn, Assessment, default_assess
-from .config import PURPOSES, Config, ConfigError, RouteConfig
+from .config import PURPOSES, Config, ConfigError, ReviewerConfig, RouteConfig
 from .events import EventLog, Event, replay, utc_now
 from .failures import (
     KIND_BAD_REQUEST,
@@ -83,13 +86,18 @@ from .review.policy import (
     DISCARD,
     FURTHER,
     HAND,
+    NEED_FIRST,
+    NO_FIRST_REVIEWER,
+    NO_FURTHER_REVIEWER,
+    REOPEN_REASONS,
+    Settlement,
     audit_selected,
     pick_first_reviewer,
     pick_further_reviewer,
     settle,
 )
 from .routing import ImageRoutingError, allowed_image, check_image_allowed
-from .state import LineState, RowState, State, TaskState
+from .state import LineState, PacketState, RowState, State, TaskState
 from .store.base import ActorStore, NotFound, OwnershipError, RateLimitedError, Store, StoreError
 from .store.local import LocalStore
 from .store.remote import describe_error
@@ -427,6 +435,8 @@ class Controller:
         self._ledger_probed = False
         self._staged_shipments: dict[tuple[str, str], tuple[str, tuple[str, ...]]] = {}
         self._hand_written: str | None = None
+        # Whether this run has looked, once, for files that a withdrawn packet left in the state store.
+        self._withdrawn_swept = False
 
     # ------------------------------------------------------------------ setup
 
@@ -1898,17 +1908,25 @@ class Controller:
 
     def _stage_review(self) -> None:
         self._ingest_verdicts()
+        self._withdraw_packets()
         self._decide_rows()
         self._ingest_hand_decisions()
+        self._reopen_stuck_rows()  # after the owner's decisions: a row the owner resolved is never reopened
         self._assign_and_publish()
         self._burn_images()
         self._write_hand_queue()
 
     def _ingest_verdicts(self) -> None:
         open_packets = self.state.open_packets()
-        if not open_packets:
+        withdrawn = self.state.withdrawn_packets()
+        if not open_packets and not withdrawn:
             return
         existing = set(self.state_store.list(layout.review_prefix()))
+        for packet in withdrawn:
+            path = layout.verdicts_path(packet.reviewer_id, packet.packet_id)
+            if path in existing:
+                # The reviewer answered a packet that was taken back: its rows were sent to other reviewers.
+                self._note_problem(f"{path}: the packet was withdrawn before this file was pushed, so its verdicts are ignored")
         for packet in open_packets:
             path = layout.verdicts_path(packet.reviewer_id, packet.packet_id)
             if path not in existing:
@@ -1944,11 +1962,101 @@ class Controller:
                     },
                 )
 
+    # -- packets of a reviewer who is switched off
+
+    def _withdraw_packets(self) -> None:
+        """Take back the packets of a reviewer who is switched off, or no longer configured, and has not answered.
+
+        A packet is addressed to one reviewer. When the configuration now has that reviewer `enabled: false`,
+        or does not name it, and no verdict file has been pushed for the packet, nobody is going to answer it:
+        `packet_withdrawn` is recorded, its files are deleted from the state store (the controller owns
+        `packets/`, so the pictures go too) and its rows wait for a review again, to be given to a reviewer
+        that is on. A reviewer whose verdict file exists is never withdrawn, even when the file does not
+        cover every row: that file was read above and its reviewer is waited for. A file that turns up for a
+        withdrawn packet afterwards is ignored (see `_ingest_verdicts`).
+        """
+        self._sweep_withdrawn_files()
+        review = self.config.review
+        orphaned = [packet for packet in self.state.open_packets() if not review.is_active(packet.reviewer_id)]
+        if not orphaned:
+            return
+        pushed: set[str] = set()
+        for reviewer_id in sorted({packet.reviewer_id for packet in orphaned}):
+            pushed.update(self.state_store.list(layout.review_prefix(reviewer_id)))
+        taken: dict[str, list[int]] = {}  # reviewer id -> [packets, rows] withdrawn in this pass
+        gone: list[PacketState] = []
+        for packet in orphaned:
+            if layout.verdicts_path(packet.reviewer_id, packet.packet_id) in pushed:
+                continue
+            row_ids = self._rows_waiting_on(packet)
+            # The event first, then the files: a run that stops in between finds the leftovers (see below).
+            self._emit("packet_withdrawn", {"packet_id": packet.packet_id, "reviewer_id": packet.reviewer_id, "row_ids": row_ids})
+            gone.append(packet)
+            counts = taken.setdefault(packet.reviewer_id, [0, 0])
+            counts[0] += 1
+            counts[1] += len(row_ids)
+        self._delete_packet_files(gone)
+        for reviewer_id, (packets, rows) in taken.items():
+            why = "switched off" if review.reviewer(reviewer_id) is not None else "no longer in the configuration"
+            self._print(
+                f"[rps] withdrew {packets} packet(s) with {rows} row(s) addressed to reviewer {reviewer_id}, "
+                f"which is {why} and sent no verdicts; the rows go to the other reviewers"
+            )
+
+    def _rows_waiting_on(self, packet: PacketState) -> list[str]:
+        """The rows of a packet that are still waiting for its reviewer's verdict, sorted."""
+        waiting = []
+        for item in packet.items:
+            row = self.state.rows.get(item["row_id"])
+            if row is not None and any(a.open and a.packet_id == packet.packet_id for a in row.assignments):
+                waiting.append(item["row_id"])
+        return sorted(waiting)
+
+    def _delete_packet_files(self, packets: Sequence[PacketState]) -> None:
+        """Delete the packets' files (`packet.json` and the pictures) from the state store.
+
+        One listing for each reviewer the packets were addressed to, not one for each packet.
+        """
+        folders: dict[str, list[str]] = {}
+        for packet in packets:
+            folders.setdefault(packet.reviewer_id, []).append(f"{layout.packet_dir(packet.reviewer_id, packet.packet_id)}/")
+        for reviewer_id, prefixes in folders.items():
+            wanted = tuple(prefixes)
+            for path in self.state_store.list(layout.packets_prefix(reviewer_id)):
+                if path.startswith(wanted):
+                    self.state_store.delete(path)
+
+    def _sweep_withdrawn_files(self) -> None:
+        """Once a run, delete whatever a withdrawn packet still has in the state store.
+
+        A packet is withdrawn by recording the event and then deleting its files, so a run that stopped
+        between the two left files that nothing will read, among them the pictures of rows.
+        """
+        if self._withdrawn_swept:
+            return
+        self._withdrawn_swept = True
+        self._delete_packet_files(self.state.withdrawn_packets())
+
     def _writer_family(self, row: RowState) -> str:
         return self.config.review.family_of(row.record["writer"]["provider"])
 
+    def _settlement(self, row: RowState) -> Settlement:
+        """What the review policy, as the configuration has it now, makes of a row's verdicts so far.
+
+        A row an audit reviewer rejected counts every verdict it has; any other row counts the verdicts
+        of its own reviews, not its audit. A keep from a reviewer that may not keep alone (`solo_keep`
+        off) never accepts a row by itself.
+        """
+        counted = row.verdicts if row.reopened else row.main_verdicts()
+        return settle(
+            self.config.review.policy,
+            flagged=row.flagged,
+            verdicts=[v["verdict"] for v in counted],
+            reopened=row.reopened,
+            solo=[self.config.review.may_keep_alone(v["reviewer_id"]) for v in counted],
+        )
+
     def _decide_rows(self) -> None:
-        policy = self.config.review.policy
         reviewers = self.config.review.enabled_reviewers()
         for row in self.state.rows_with_audit_reject():
             self._emit(
@@ -1962,8 +2070,7 @@ class Controller:
                 },
             )
         for row in self.state.rows_awaiting_decision():
-            verdicts = [v["verdict"] for v in (row.verdicts if row.reopened else row.main_verdicts())]
-            outcome = settle(policy, flagged=row.flagged, verdicts=verdicts, reopened=row.reopened)
+            outcome = self._settlement(row)
             history = [f"{v['reviewer_id']}: {v['verdict']}" for v in row.verdicts]
             if outcome.outcome == ACCEPT:
                 self._emit("row_accepted", {"row_id": row.row_id, "call_id": row.call_id, "by": "reviewers", "reason": outcome.reason})
@@ -1988,7 +2095,7 @@ class Controller:
                 if candidate is None:
                     self._emit(
                         "row_to_hand",
-                        {"row_id": row.row_id, "call_id": row.call_id, "reason": "no reviewer from an unused family is available", "verdicts": history},
+                        {"row_id": row.row_id, "call_id": row.call_id, "reason": NO_FURTHER_REVIEWER, "verdicts": history},
                     )
                 else:
                     self._emit(
@@ -2048,6 +2155,49 @@ class Controller:
                         continue
                 self._emit("hand_resolved", payload)
                 del waiting[row.row_id]
+
+    def _reopen_stuck_rows(self) -> None:
+        """Look again, on each pass, at the rows that went to the hand queue only for want of a reviewer.
+
+        A row sent there because no reviewer from another family than the writer's (for a first review), or
+        none from a family not yet used on it (for a further one), was available is not a row the reviewers
+        failed to settle. It is reopened when both of these hold now: the review policy, as the configuration
+        has it today, still asks for a review of the row (settling its verdicts again gives `need_first` or
+        `further`), and the configuration has a reviewer that can take that review (one was enabled or added).
+        `row_reopened` is then recorded and the row waits for a review again, so the usual assignment picks
+        it up. A row the policy settles today is never reopened, whoever is available: one it would accept or
+        discard, or one it hands to the owner (a row with a "fix" verdict when `fix_to_hand` is on, or one that
+        has had `max_reviewers` reviewers) stays in the queue for the owner. Rows the owner has resolved are
+        no longer in the queue and are never reopened (the owner's decisions were read first), and a row sent
+        there for any other reason, three reviewers without a settlement for one, stays until the owner answers.
+        """
+        reviewers = self.config.review.enabled_reviewers()
+        if not reviewers:
+            return
+        reopened = 0
+        for row in self.state.hand_queue():
+            reason = REOPEN_REASONS.get((row.hand or {}).get("reason", ""))
+            if reason is None or self._settlement(row).outcome not in (NEED_FIRST, FURTHER):
+                continue
+            if not self._has_reviewer_for(row, reviewers):
+                continue
+            self._emit("row_reopened", {"row_id": row.row_id, "call_id": row.call_id, "reason": reason})
+            reopened += 1
+        if reopened:
+            self._print(f"[rps] reopened {reopened} row(s) that waited in the hand queue for a reviewer that can take them")
+
+    def _has_reviewer_for(self, row: RowState, reviewers: Sequence[ReviewerConfig]) -> bool:
+        """True when one of `reviewers` could take the row's next review.
+
+        The review a reopened row waits for is the first when it never had one and a further one otherwise,
+        and the choice is the one `_plan_assignments` makes for it, so a row reopened here is never sent
+        straight back to the hand queue.
+        """
+        family = self._writer_family(row)
+        if any(not a.audit for a in row.assignments):
+            key = f"{row.row_id}:{len(row.assignments)}"
+            return pick_further_reviewer(reviewers, row.families_used(), family, key) is not None
+        return pick_first_reviewer(reviewers, family, row.ordinal or 0) is not None
 
     def _write_hand_queue(self) -> None:
         queue = sorted(self.state.hand_queue(), key=lambda row: row.row_id)
@@ -2141,14 +2291,14 @@ class Controller:
         for row in self.state.rows_awaiting_first_review():
             reviewer = pick_first_reviewer(reviewers, self._writer_family(row), row.ordinal or 0)
             if reviewer is None:
-                to_hand.append((row, "no reviewer from another family than the writer is available"))
+                to_hand.append((row, NO_FIRST_REVIEWER))
                 continue
             plan.setdefault(reviewer.id, []).append((row, 1, False))
         for row in self.state.rows_in_question():
             key = f"{row.row_id}:{len(row.assignments)}"
             reviewer = pick_further_reviewer(reviewers, row.families_used(), self._writer_family(row), key)
             if reviewer is None:
-                to_hand.append((row, "no reviewer from an unused family is available"))
+                to_hand.append((row, NO_FURTHER_REVIEWER))
                 continue
             plan.setdefault(reviewer.id, []).append((row, len([a for a in row.assignments if not a.audit]) + 1, False))
         selected = lambda row_id: audit_selected(row_id, policy.audit_fraction, policy.audit_seed)  # noqa: E731
@@ -2191,7 +2341,7 @@ class Controller:
             entries.append(
                 (row.record, {"line_id": line.line_id, "item_id": line.item_id, "spec": line.spec}, image, ext)
             )
-        packet_id = ids.packet_id([f"{reviewer_id}:{row.row_id}:{round_}:{int(audit)}" for row, round_, audit in chunk])
+        packet_id = ids.packet_id([self._assignment_key(reviewer_id, row, round_, audit) for row, round_, audit in chunk])
         brief_version = self._brief_version()
         packet = build_packet(
             packet_id=packet_id,
@@ -2221,6 +2371,18 @@ class Controller:
                 "items": items,
             },
         )
+
+    @staticmethod
+    def _assignment_key(reviewer_id: str, row: RowState, round_: int, audit: bool) -> str:
+        """What identifies one row in a packet's id: the reviewer, the row, the round and whether it is an audit.
+
+        A row that was taken back from a withdrawn packet adds how many times that happened, so that when
+        it goes to the same reviewer again (one that was switched on again, say) its packet never has the
+        id of the withdrawn one, whose files and event are still on record. A row never withdrawn keeps the
+        key it has always had, so a crash between writing a packet and announcing it still finds the same id.
+        """
+        key = f"{reviewer_id}:{row.row_id}:{round_}:{int(audit)}"
+        return f"{key}:w{row.withdrawals}" if row.withdrawals else key
 
     def _brief_version(self) -> str:
         """The brief version a packet carries.

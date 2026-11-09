@@ -11,8 +11,16 @@ Row life cycle (statuses):
     written -> passed -> in_review -> accepted
                  |           |    \\-> in_question -> in_review ...
                  |           |    \\-> hand -> accepted / rejected / replaced
+                 |           |            \\-> passed or in_question again (row_reopened, see below)
                  |           \\-> rejected (discarded by reviewers)
                  \\-> rejected (assessor failure, may be retried) / set_aside
+
+Two events return a row to waiting for a review. `row_reopened` takes a row out of the hand queue
+(one sent there only for want of a reviewer): it becomes `passed` when it never had a review and
+`in_question` when it did. `packet_withdrawn` takes back a packet its reviewer never answered: each
+row of it is as it was before the packet was published to it, `passed` for a first review and
+`in_question` for a further one, and the withdrawn reviewer no longer counts among those that
+reviewed the row.
 """
 
 from __future__ import annotations
@@ -122,6 +130,9 @@ class RowState:
     hand: dict[str, Any] | None = None
     replaced_by: str | None = None
     accepted_by: str | None = None
+    # How many packets this row was taken back from (see the `packet_withdrawn` event). It goes into the
+    # id of the row's next packets, so a packet sent after a withdrawal never has the withdrawn one's id.
+    withdrawals: int = 0
     # How many rows from the same writer provider passed assessment before this one.
     # Consecutive rows get consecutive first reviewers, and the number comes from the
     # event history alone, so a restart picks the same reviewer for the same row.
@@ -166,6 +177,7 @@ class PacketState:
     created: str
     items: list[dict[str, Any]] = field(default_factory=list)
     burned: set[str] = field(default_factory=set)
+    withdrawn: bool = False  # taken back before its reviewer answered; its verdicts are never read
 
 
 @dataclass(frozen=True)
@@ -505,6 +517,32 @@ class State:
             if not item.get("audit") and row.status in ("passed", "in_question"):
                 row.status = "in_review"
 
+    def _on_packet_withdrawn(self, event: Event) -> None:
+        """A packet its reviewer never answered was taken back.
+
+        Each row of the packet that was still waiting on it is put back as it was before the packet
+        was published to it: the assignment is dropped (the reviewer, and so its family, no longer
+        counts among those that reviewed the row), a row in review for the first time is `passed`
+        again and one in review for a further reviewer is `in_question` again, and an audit that was
+        out with the reviewer is simply due again. A packet is withdrawn once; an assignment that was
+        answered stays, with its verdict.
+        """
+        packet = self.packets.get(event.payload["packet_id"])
+        if packet is None or packet.withdrawn:
+            return
+        packet.withdrawn = True
+        for item in packet.items:
+            row = self.rows.get(item["row_id"])
+            if row is None:
+                continue
+            kept = [a for a in row.assignments if not (a.open and a.packet_id == packet.packet_id)]
+            if len(kept) == len(row.assignments):
+                continue
+            row.assignments = kept
+            row.withdrawals += 1
+            if row.status == "in_review" and not row.open_assignments(audit=False):
+                row.status = "in_question" if any(not a.audit for a in kept) else "passed"
+
     def _on_verdict_received(self, event: Event) -> None:
         p = event.payload
         row = self.rows.get(p["row_id"])
@@ -549,6 +587,20 @@ class State:
             return
         row.status = "hand"
         row.hand = {"reason": str(p.get("reason", "")), "ts": event.ts}
+
+    def _on_row_reopened(self, event: Event) -> None:
+        """A row in the hand queue (and not resolved by the owner) is waiting for a review again.
+
+        It is `passed` when it never had a review, so the first review picks it up, and `in_question`
+        when it did, so a further reviewer does. Nothing else about the row changes: its verdicts,
+        flags and assignments stay. (`RowState.reopened` is another thing: an accepted row an audit
+        reviewer rejected.)
+        """
+        row = self.rows.get(event.payload["row_id"])
+        if row is None or row.status != "hand":
+            return
+        row.status = "in_question" if any(not a.audit for a in row.assignments) else "passed"
+        row.hand = None
 
     def _on_row_accepted(self, event: Event) -> None:
         p = event.payload
@@ -621,9 +673,11 @@ class State:
         "row_rejected": _on_row_rejected,
         "row_set_aside": _on_row_set_aside,
         "packet_published": _on_packet_published,
+        "packet_withdrawn": _on_packet_withdrawn,
         "verdict_received": _on_verdict_received,
         "row_escalated": _on_row_escalated,
         "row_to_hand": _on_row_to_hand,
+        "row_reopened": _on_row_reopened,
         "row_accepted": _on_row_accepted,
         "hand_resolved": _on_hand_resolved,
         "packet_burned": _on_packet_burned,
@@ -852,6 +906,10 @@ class State:
         """Packets with at least one verdict still outstanding."""
         open_ids = {a.packet_id for row in self.rows.values() for a in row.assignments if a.open}
         return [self.packets[pid] for pid in self.packets if pid in open_ids]
+
+    def withdrawn_packets(self) -> list[PacketState]:
+        """Packets taken back before their reviewer answered (their rows were sent on)."""
+        return [packet for packet in self.packets.values() if packet.withdrawn]
 
     def images_to_burn(self) -> list[tuple[PacketState, list[str]]]:
         """Packets whose rows have been answered but whose pictures are still in the store."""

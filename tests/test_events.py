@@ -46,6 +46,25 @@ def test_required_kinds_exist():
     assert required <= set(EVENT_KINDS)
 
 
+def test_the_review_events_for_withdrawn_packets_and_reopened_rows_exist_and_are_described(local_store):
+    import rps.events as events_module
+    from rps.state import State
+
+    assert {"packet_withdrawn", "row_reopened"} <= set(EVENT_KINDS)
+    assert len(EVENT_KINDS) == len(set(EVENT_KINDS))
+    for kind in ("packet_withdrawn", "row_reopened"):
+        described = [line for line in events_module.__doc__.splitlines() if line.strip().startswith(kind)]
+        assert len(described) == 1, kind
+    assert "packet_id, reviewer_id, row_ids" in events_module.__doc__
+    assert "row_id, call_id, reason" in events_module.__doc__
+    # the log takes them and the state knows them: no unknown kind is counted on replay
+    log = make_log(local_store)
+    log.append("packet_withdrawn", {"packet_id": "p0123456789ab", "reviewer_id": "desk", "row_ids": []})
+    log.append("row_reopened", {"row_id": "r1", "call_id": "c1", "reason": "x"})
+    state = State.from_events(replay(local_store).events)
+    assert state.unknown_kinds == {} and state.bad_events == []
+
+
 def test_unknown_kind_and_bad_payload_are_rejected(local_store):
     log = make_log(local_store)
     with pytest.raises(EventError):

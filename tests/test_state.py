@@ -248,6 +248,173 @@ def test_files_to_ship_notices_new_and_withdrawn_rows():
     assert state.rows_to_ship() == []
 
 
+# ------------------------------------------------------------------ rows reopened and packets withdrawn
+
+NO_REVIEWER = "no reviewer from an unused family is available"
+
+
+def passed_row(b: Builder):
+    """One assessed row that waits for its first review: (row id, call id)."""
+    task = b.task(lines={"001": "a"})
+    call = b.prepare(task, "001")
+    b.submit([call])
+    (row,) = b.returned(call)
+    b.assessed(row, call)
+    return row, call
+
+
+def publish(b: Builder, row: str, packet: str, reviewer: str = "rev-a", family: str = "alpha", *, round_: int = 1, audit: bool = False) -> None:
+    b.add(
+        "packet_published",
+        {"packet_id": packet, "reviewer_id": reviewer, "family": family, "brief_version": "1",
+         "items": [{"row_id": row, "round": round_, "audit": audit, "image": None}]},
+    )
+
+
+def verdict(b: Builder, row: str, packet: str, word: str, reviewer: str = "rev-a", family: str = "alpha") -> None:
+    reasons = [] if word == "keep" else ["needs_work"]
+    b.add(
+        "verdict_received",
+        {"packet_id": packet, "row_id": row, "reviewer_id": reviewer, "family": family, "verdict": word, "reasons": reasons, "notes": ""},
+    )
+
+
+def reviewed_once_then_in_question(b: Builder):
+    """A row whose first reviewer rejected it and that waits for a further reviewer."""
+    row, call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    verdict(b, row, "p0123456789ab", "reject")
+    b.add("row_escalated", {"row_id": row, "call_id": call, "reason": "in_question", "round": 2, "families_used": ["alpha"]})
+    return row, call
+
+
+def same_state_when_every_event_comes_twice(events):
+    once = State.from_events(events)
+    doubled = State()
+    for event in events:
+        doubled.apply(event)
+        doubled.apply(event)
+    assert doubled.snapshot() == once.snapshot()
+    return once
+
+
+def test_a_reopened_row_that_never_had_a_review_waits_for_its_first_one():
+    b = Builder()
+    row, call = passed_row(b)
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": "no reviewer from another family than the writer is available", "verdicts": []})
+    stuck = State.from_events(b.events)
+    assert stuck.rows[row].status == "hand" and [r.row_id for r in stuck.hand_queue()] == [row]
+    b.add("row_reopened", {"row_id": row, "call_id": call, "reason": "a reviewer from another family than the writer is now available"})
+    state = same_state_when_every_event_comes_twice(b.events)
+    assert state.rows[row].status == "passed" and state.rows[row].hand is None
+    assert state.hand_queue() == []
+    assert [r.row_id for r in state.rows_awaiting_first_review()] == [row]
+    assert state.rows[row].ordinal == 0  # it keeps its place in the first-review rotation
+
+
+def test_a_reopened_row_that_had_a_review_waits_for_a_further_one_and_keeps_its_verdicts():
+    b = Builder()
+    row, call = reviewed_once_then_in_question(b)
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": NO_REVIEWER, "verdicts": ["rev-a: reject"]})
+    assert State.from_events(b.events).rows[row].status == "hand"
+    b.add("row_reopened", {"row_id": row, "call_id": call, "reason": "a reviewer from an unused family is now available"})
+    state = same_state_when_every_event_comes_twice(b.events)
+    reopened = state.rows[row]
+    assert reopened.status == "in_question" and reopened.hand is None
+    assert [r.row_id for r in state.rows_in_question()] == [row] and state.rows_awaiting_first_review() == []
+    assert [v["verdict"] for v in reopened.verdicts] == ["reject"] and reopened.families_used() == {"alpha"}
+
+
+def test_a_row_that_is_not_in_the_hand_queue_is_not_reopened():
+    b = Builder()
+    row, call = passed_row(b)
+    b.add("row_reopened", {"row_id": row, "call_id": call, "reason": "x"})  # never sent to the owner
+    assert State.from_events(b.events).rows[row].status == "passed"
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": NO_REVIEWER, "verdicts": []})
+    b.add("hand_resolved", {"row_id": row, "call_id": call, "decision": "accept"})
+    b.add("row_reopened", {"row_id": row, "call_id": call, "reason": "x"})  # the owner has answered
+    state = State.from_events(b.events)
+    assert state.rows[row].status == "accepted" and state.rows[row].accepted_by == "hand"
+    assert State.from_events(b.events + [b.events[-1]]).snapshot() == state.snapshot()
+
+
+def test_a_row_can_go_to_the_hand_queue_again_after_it_was_reopened():
+    b = Builder()
+    row, call = passed_row(b)
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": NO_REVIEWER, "verdicts": []})
+    b.add("row_reopened", {"row_id": row, "call_id": call, "reason": "x"})
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": "3 reviewers without a settlement", "verdicts": []})
+    state = State.from_events(b.events)
+    assert state.rows[row].status == "hand" and state.rows[row].hand["reason"] == "3 reviewers without a settlement"
+
+
+def test_a_withdrawn_first_review_puts_the_row_back_as_it_was_before_the_packet():
+    b = Builder()
+    row, _call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    published = State.from_events(b.events)
+    assert published.rows[row].status == "in_review" and [p.packet_id for p in published.open_packets()] == ["p0123456789ab"]
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ab", "reviewer_id": "rev-a", "row_ids": [row]})
+    state = same_state_when_every_event_comes_twice(b.events)
+    assert state.rows[row].status == "passed" and state.rows[row].assignments == []
+    assert state.rows[row].withdrawals == 1 and state.rows[row].families_used() == set()  # no review took place
+    assert state.packets["p0123456789ab"].withdrawn and [p.packet_id for p in state.withdrawn_packets()] == ["p0123456789ab"]
+    assert state.open_packets() == [] and state.images_to_burn() == []
+    assert [r.row_id for r in state.rows_awaiting_first_review()] == [row]
+
+
+def test_a_withdrawn_further_review_leaves_the_earlier_review_in_place():
+    b = Builder()
+    row, call = reviewed_once_then_in_question(b)
+    publish(b, row, "p0123456789ac", "rev-b", "beta", round_=2)
+    assert State.from_events(b.events).rows[row].status == "in_review"
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ac", "reviewer_id": "rev-b", "row_ids": [row]})
+    state = same_state_when_every_event_comes_twice(b.events)
+    waiting = state.rows[row]
+    assert waiting.status == "in_question" and [a.packet_id for a in waiting.assignments] == ["p0123456789ab"]
+    assert waiting.families_used() == {"alpha"}  # the family of the withdrawn reviewer is unused again
+    assert [r.row_id for r in state.rows_in_question()] == [row]
+    assert [v["verdict"] for v in waiting.verdicts] == ["reject"]
+
+
+def test_a_withdrawn_audit_leaves_an_accepted_row_accepted_and_due_for_an_audit_again():
+    b = Builder()
+    row, call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    verdict(b, row, "p0123456789ab", "keep")
+    b.add("row_accepted", {"row_id": row, "call_id": call, "by": "reviewers", "reason": "keep with no assessor flag"})
+    publish(b, row, "p0123456789ac", "rev-b", "beta", round_=2, audit=True)
+    assert State.from_events(b.events).rows_needing_audit(lambda _id: True) == []
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ac", "reviewer_id": "rev-b", "row_ids": [row]})
+    state = same_state_when_every_event_comes_twice(b.events)
+    assert state.rows[row].status == "accepted"
+    assert [a.packet_id for a in state.rows[row].assignments] == ["p0123456789ab"]
+    assert [r.row_id for r in state.rows_needing_audit(lambda _id: True)] == [row]
+
+
+def test_nothing_a_withdrawn_reviewer_sends_afterwards_changes_the_state():
+    b = Builder()
+    row, _call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ab", "reviewer_id": "rev-a", "row_ids": [row]})
+    before = State.from_events(b.events).snapshot()
+    verdict(b, row, "p0123456789ab", "keep")
+    assert State.from_events(b.events).snapshot() == before
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ff", "reviewer_id": "rev-a", "row_ids": [row]})  # no such packet
+    assert State.from_events(b.events).snapshot() == before
+
+
+def test_a_packet_the_row_is_withdrawn_from_twice_counts_both_times():
+    b = Builder()
+    row, _call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ab", "reviewer_id": "rev-a", "row_ids": [row]})
+    publish(b, row, "p0123456789ac")
+    b.add("packet_withdrawn", {"packet_id": "p0123456789ac", "reviewer_id": "rev-a", "row_ids": [row]})
+    state = State.from_events(b.events)
+    assert state.rows[row].withdrawals == 2 and state.rows[row].status == "passed"
+
+
 def test_snapshot_is_plain_json():
     snapshot = State.from_events(lifecycle().events).snapshot()
     assert json.loads(json.dumps(snapshot)) == snapshot

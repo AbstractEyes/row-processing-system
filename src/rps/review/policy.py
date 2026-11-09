@@ -8,14 +8,24 @@ The protocol, with the default policy:
 
 1. The first review goes to a reviewer from a family other than the writer's,
    chosen round-robin across the available reviewers.
-2. A "keep" with no assessor flag accepts the row.
+2. A "keep" with no assessor flag accepts the row, unless it comes from a reviewer
+   that may not keep alone (`solo_keep` off): that keep never accepts a row by itself,
+   so the row is in question, as a flagged row is.
 3. A "fix" or "reject", or an assessor flag, puts the row in question: it goes to
-   a further reviewer from a family not yet used on it.
-4. Two "keep" verdicts accept an in-question row; two "reject" verdicts discard it.
+   a further reviewer from a family not yet used on it. With `fix_to_hand` on, a "fix"
+   sends the row to the owner's hand queue at once instead (rule 4 is checked first).
+4. Two "keep" verdicts accept an in-question row, as long as one of them comes from a
+   reviewer that may keep alone; two "reject" verdicts discard it.
 5. After three reviewers without a settlement the row goes to the owner's hand queue.
 6. A share of accepted rows (the audit sample) gets one more review from another
    family. The audit changes nothing unless it rejects the row, which puts the row
    back in question.
+
+A row also goes to the hand queue when no reviewer can take it: no reviewer from another
+family than the writer's for a first review, or none from a family not yet used for a further
+one. Those two reasons are named below, because a row sent for them is looked at again: it is
+reopened when the policy as it stands now still asks for that review of the row and the
+configuration has a reviewer that can take it (see `rps.controller`).
 """
 
 from __future__ import annotations
@@ -32,6 +42,17 @@ DISCARD = "discard"
 FURTHER = "further"
 HAND = "hand"
 
+# The reasons a row is sent to the hand queue for want of a reviewer, and what a row that is
+# looked at again for one of them is told when a reviewer can take it.
+NO_FIRST_REVIEWER = "no reviewer from another family than the writer is available"
+NO_FURTHER_REVIEWER = "no reviewer from an unused family is available"
+REOPEN_REASONS: dict[str, str] = {
+    NO_FIRST_REVIEWER: "a reviewer from another family than the writer is now available",
+    NO_FURTHER_REVIEWER: "a reviewer from an unused family is now available",
+}
+# Why a row with a "fix" verdict goes to the hand queue when the policy's `fix_to_hand` is on.
+FIX_TO_HAND_REASON = "a fix verdict: the row waits for the owner"
+
 
 @dataclass(frozen=True)
 class Settlement:
@@ -41,33 +62,69 @@ class Settlement:
     accept      the row is accepted
     discard     the row is discarded
     further     the row is in question and needs another reviewer
-    hand        reviewers could not settle it; it goes to the owner
+    hand        the row goes to the owner: reviewers could not settle it, or it has a
+                "fix" verdict and the policy's `fix_to_hand` is on
     """
 
     outcome: str
     reason: str
 
 
-def settle(policy: ReviewPolicy, *, flagged: bool, verdicts: Sequence[str], reopened: bool = False) -> Settlement:
+def settle(
+    policy: ReviewPolicy,
+    *,
+    flagged: bool,
+    verdicts: Sequence[str],
+    reopened: bool = False,
+    solo: Sequence[bool] | None = None,
+) -> Settlement:
     """Apply the policy to a row's verdicts, in the order they arrived.
 
     `flagged` is True when the assessor flagged the row. `reopened` is True for a
     row an audit reviewer rejected after it was accepted; its first-keep shortcut no
-    longer applies.
+    longer applies. `solo`, when given, says for each verdict, in the same order, whether
+    its reviewer may keep alone (the reviewer's `solo_keep`). A keep from a reviewer that
+    may not never accepts a row without a keep from one that may: a row whose keeps all
+    come from such reviewers stays in question, however many they are, and goes on to a
+    further reviewer. Left out, every reviewer may keep alone.
+
+    The order of the rules is the order of the checks: enough keeps accept the row, enough
+    rejects discard it, a single keep with no flag accepts it, and only then does the
+    policy's `fix_to_hand` (any "fix" verdict hands the row to the owner at once) and its
+    `max_reviewers` (the row is handed to the owner after that many reviewers) apply. So
+    a row that two keeps or two rejects settle is settled whatever else it was told.
     """
     total = len(verdicts)
-    keeps = sum(1 for verdict in verdicts if verdict == "keep")
-    rejects = sum(1 for verdict in verdicts if verdict == "reject")
+    if solo is not None and len(solo) != total:
+        raise ValueError(f"solo has {len(solo)} entries for {total} verdicts")
+    keeps = rejects = fixes = keeps_alone = 0
+    for index, verdict in enumerate(verdicts):
+        if verdict == "keep":
+            keeps += 1
+            if solo is None or solo[index]:
+                keeps_alone += 1
+        elif verdict == "reject":
+            rejects += 1
+        elif verdict == "fix":
+            fixes += 1
     if total == 0:
         return Settlement(NEED_FIRST, "no verdict yet")
-    if keeps >= policy.keeps_to_accept:
+    if keeps >= policy.keeps_to_accept and keeps_alone > 0:
         return Settlement(ACCEPT, f"{keeps} keep verdicts")
     if rejects >= policy.rejects_to_discard:
         return Settlement(DISCARD, f"{rejects} reject verdicts")
-    if policy.first_keep_accepts and not flagged and not reopened and total == 1 and verdicts[0] == "keep":
+    if policy.first_keep_accepts and not flagged and not reopened and total == 1 and verdicts[0] == "keep" and keeps_alone > 0:
         return Settlement(ACCEPT, "keep with no assessor flag")
+    if policy.fix_to_hand and fixes > 0:
+        return Settlement(HAND, FIX_TO_HAND_REASON)
+    only_unsure_keeps = keeps > 0 and keeps_alone == 0  # keeps, and every one from a reviewer that may not keep alone
     if total >= policy.max_reviewers:
-        return Settlement(HAND, f"{total} reviewers without a settlement")
+        reason = f"{total} reviewers without a settlement"
+        if only_unsure_keeps and keeps >= policy.keeps_to_accept:
+            reason += " (every keep came from a reviewer that may not keep alone)"
+        return Settlement(HAND, reason)
+    if only_unsure_keeps:
+        return Settlement(FURTHER, "in question (every keep so far came from a reviewer that may not keep alone)")
     return Settlement(FURTHER, "in question")
 
 

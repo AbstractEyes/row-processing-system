@@ -16,6 +16,16 @@ types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
 
+## What changed in 0.2.9 (unreleased)
+
+| Change | What happens now |
+|---|---|
+| A reviewer's keep can be made to need a second opinion | `review.reviewers[].solo_keep` (default `true`). With `false`, a keep from that reviewer never accepts a row on its own: when the only keeps on a row come from such reviewers, the row is in question and goes on to a further reviewer, as a flagged keep does. Acceptance by keeps then needs at least one keep from a reviewer that may keep alone, so two keeps from reviewers that may not do not accept a row: a third reviewer is asked, and without one (or after three reviewers) the row goes to the hand queue, with the reason saying that every keep came from a reviewer that may not keep alone. A keep from a reviewer that may keep alone counts toward the two keeps of an in-question row as before; rejects, the audit and the other settings are unchanged. The trust is read from the configuration when the verdicts are settled, and a reviewer the configuration no longer names keeps the default. A configuration in which no enabled reviewer may keep alone is noted when the run starts, since no keep could then accept a row. Without the setting nothing changes |
+| A fix verdict can go straight to the owner | `review.policy.fix_to_hand` (default `false`). With `true`, a row that has a `fix` verdict goes to the hand queue as soon as the verdict is read, with the reason "a fix verdict: the row waits for the owner", instead of to a further reviewer. Reviewers never edit a row, so a row that needs a fix can only be mended by the owner, and with only two reviewer families on duty a row with a fix verdict ends in the hand queue anyway, after one more review that cannot change that; the setting skips that review. The accept and discard rules come first and still win: a row that `keeps_to_accept` keeps accept, or `rejects_to_discard` rejects discard, is settled that way whatever fix it was also given. A row with no `fix` verdict is not touched by the setting. Without the setting nothing changes |
+| Rows stuck for want of a reviewer are reopened | A row goes to the hand queue for want of a reviewer when none from another family than the writer's was available for a first review, or none from a family not yet used on the row for a further one. On each pass the controller now looks at those rows again. A row is reopened when both of these hold with the configuration as it is now: the review policy, applied again to the row's verdicts, still asks for a review of it (a first review, or a further one), and the configuration has a reviewer that can take that review (one was enabled or added). The controller then records `row_reopened` (`row_id`, `call_id`, `reason`) and the row waits for a review again, a first review if it never had one and a further review if it did, so the usual assignment picks it up and the row leaves the hand queue file. A row the current policy settles is never reopened, whoever is available: one it would now accept or discard, or hand to the owner (a row with a `fix` verdict when `fix_to_hand` is true, or a row that has had `max_reviewers` reviewers), stays in the queue for the owner. A row the owner has already resolved is never reopened (the owner's decisions are read before the rows are looked at), and a row sent to the hand queue for any other reason, for example three reviewers without a settlement, stays until the owner answers. The state is rebuilt from the events alone, so a restart gives the same result |
+| The packets of a reviewer who was switched off are withdrawn | A packet addressed to a reviewer who is now `enabled: false`, or no longer in the configuration, and for whom no verdict file has been pushed, will not be answered. The controller records `packet_withdrawn` (`packet_id`, `reviewer_id`, `row_ids`), deletes the packet's files (`packet.json` and the pictures) from the state store, and each row of the packet waits for a review again, to go to a reviewer that is on. The reviewer that was switched off does not count among the reviewers, or the families, that reviewed the row. A reviewer whose verdict file exists is never withdrawn, even when the file answers only some of the rows. A verdict file that turns up later for a withdrawn packet is ignored and noted once in the run's problems. A run that stopped after recording a withdrawal and before deleting the files deletes them when the next run starts. An audit that was out with a switched-off reviewer is withdrawn the same way and is due again |
+| A packet sent after a withdrawal has an id of its own | A packet's id comes from its reviewer, its rows and their rounds. A row that was taken back from a packet adds how many times that happened to its part of the id, so when a reviewer is switched on again and the same rows go to it, the new packet never has the id of the withdrawn one. A row that was never withdrawn keeps the id it has always had |
+
 ## What changed in 0.2.8
 
 | Change | What happens now |
@@ -158,7 +168,7 @@ The assessor's finding codes that are new or raised in 0.2.7. An error stops the
 | submit | Calls go to the provider as a batch or one by one; the provider's batch id is made durable before anything waits on it | `batch_submitted` |
 | poll, collect | Finished batches (or finished calls) are read; the rules turn each answer into rows; every row is stamped with its writer label and source label | `call_returned`, `call_failed` |
 | assess | The rule set's checker (or a function you give) checks the rows | `row_assessed`, `row_rejected`, `row_set_aside` |
-| review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows | `packet_published`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_accepted` |
+| review | Rows are handed to reviewers in blind packets; verdicts come back and settle the rows. A packet whose reviewer was switched off is taken back, and a row that waited in the hand queue for want of a reviewer is reopened when one is available | `packet_published`, `packet_withdrawn`, `verdict_received`, `row_escalated`, `row_to_hand`, `row_reopened`, `row_accepted` |
 | ship | Accepted rows and the ledger are handed to the dataset repository, which sends them in its next commit; a file counts as shipped when the repository has sent it | `shipped` |
 
 The events are one JSON object per line (`ts`, `actor`, `kind`, `payload`). The controller's
@@ -300,7 +310,7 @@ is refused. Unknown keys are refused too.
 | `sources` | Per source: `image_size`, `license`, `dataset`, `images_dir`, `image_class`. A spec line with no license (its own or its source's) is refused |
 | `rules` | The writing rules, see "The writing rules are inputs" |
 | `commit` | How writes are batched, see below |
-| `review` | Reviewers, families, packet size, brief version and the review policy. `brief_version` applies only when no writing rules are loaded; with rules, a packet carries their version |
+| `review` | Reviewers (each with an `id`, a `family`, `enabled` and `solo_keep`, see "Review"), packet size, brief version and the review policy. `brief_version` applies only when no writing rules are loaded; with rules, a packet carries their version |
 | `price_table` | Path to a price table file (default: the dated table in the package) |
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
@@ -647,22 +657,69 @@ mapping in its own events and matches verdicts back by row id.
 `fix` and `reject` need at least one reason code. Notes should name the problem and where it is
 (which field, which thought) and are refused over 2000 characters.
 
-**Policy** (the `review.policy` settings, defaults shown):
+**Reviewer settings** (`review.reviewers`, a list with one object for each reviewer):
+
+| Key | Meaning |
+|---|---|
+| `id` | The reviewer's name, used in the paths of its packets and verdict files (`packets/<id>/`, `review/<id>/`): letters, digits, `.`, `_` and `-`. Each id is used once |
+| `family` | The model family the reviewer belongs to (`anthropic`, `openai`, `google`, `deepseek` and so on). The policy asks reviewers of different families for a row, and the family decides which pictures a packet carries (see "Which pictures go where") |
+| `enabled` | `true` (the default) or `false`. A reviewer that is off is given no packet. A packet already addressed to it that it has not answered is withdrawn, and its rows go to reviewers that are on (see "Switching a reviewer off or on") |
+| `solo_keep` | `true` (the default) or `false`. With `false`, a keep from this reviewer never accepts a row on its own: when the only keeps on a row come from such reviewers, the row is in question and goes on to a further reviewer, as a flagged keep does. At least one keep from a reviewer that may keep alone is needed to accept it (see the policy below) |
+
+Any other key is refused, and the reviewer commands read the same configuration file, so a reviewer's
+machine needs a version of the package that knows `solo_keep` to read a file that sets it. A configuration
+whose enabled reviewers all have `solo_keep` false is noted when the run starts: no keep could accept a
+row, so a row would be discarded by two rejects or end in the hand queue.
+
+**Policy** (the protocol with the default settings; the `review.policy` keys follow it):
 
 1. The first review goes to a reviewer from a family other than the row's writer family, taken in
    turn from all available reviewers.
-2. A `keep` with no assessor flag accepts the row.
+2. A `keep` with no assessor flag accepts the row, unless it comes from a reviewer that may not keep
+   alone (`solo_keep` false): that keep puts the row in question, as a flag does.
 3. A `fix` or `reject`, or an assessor flag, puts the row in question. It goes to a further reviewer
-   from a family not yet used on it.
-4. Two keeps accept a row (`keeps_to_accept`); two rejects discard it (`rejects_to_discard`).
+   from a family not yet used on it. With `fix_to_hand` true, a `fix` sends the row to the hand queue at
+   once instead (after the checks of item 4: a row that two keeps accept or two rejects discard is
+   settled that way).
+4. Two keeps accept a row (`keeps_to_accept`), when at least one of them comes from a reviewer that may
+   keep alone; two rejects discard it (`rejects_to_discard`). A reject counts whoever gives it.
 5. After three reviewers with no settlement (`max_reviewers`) the row goes to the hand queue
    (`row_escalated`, then `row_to_hand`). The same happens when no reviewer from an unused family is
-   left.
+   left, and when no reviewer from another family than the writer's is there for a first review; those
+   two rows are looked at again (see "Switching a reviewer off or on").
 6. A random sample of accepted rows (`audit_fraction`, default 10%, chosen by a hash of the row id so
    it is reproducible) goes to one more reviewer of another family. The audit is recorded and changes
    nothing unless it rejects, which puts the row back in question.
 
+The policy settings (`review.policy`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `keeps_to_accept` | 2 | How many keeps accept a row that is in question, at least one of them from a reviewer that may keep alone |
+| `rejects_to_discard` | 2 | How many rejects discard a row |
+| `max_reviewers` | 3 | After this many reviewers with no settlement the row goes to the hand queue |
+| `first_keep_accepts` | `true` | A single keep from a reviewer that may keep alone accepts a row with no assessor flag. Off, every row needs `keeps_to_accept` keeps |
+| `fix_to_hand` | `false` | With `true`, a row with a `fix` verdict goes to the hand queue as soon as the verdict is read, with the reason "a fix verdict: the row waits for the owner", instead of to a further reviewer. Reviewers never edit a row, so a fix can only be made by the owner; with only two reviewer families on duty the further review ends in the hand queue anyway, and this skips it. The accept and discard rules (`keeps_to_accept`, `rejects_to_discard`) are checked first and still win. A row with no `fix` verdict is not touched |
+| `audit_fraction` | 0.10 | The share of accepted rows that get an audit review |
+| `audit_seed` | `"audit"` | Text hashed with the row id to choose the audit sample, so the sample is the same on every run |
+
 Every verdict is kept with the reviewer's id and family.
+
+**Switching a reviewer off or on.** The reviewers a run uses are the ones its configuration lists with
+`enabled` true, so a reviewer is switched off by `"enabled": false` (or by leaving it out of the list)
+in the configuration the next run starts with, and on again the same way. Two things follow, on each
+pass of the controller:
+
+| When | What the controller does |
+|---|---|
+| A packet is addressed to a reviewer who is off or no longer listed, and no verdict file has been pushed for it | It records `packet_withdrawn` (`packet_id`, `reviewer_id`, `row_ids`), deletes the packet's files from the state store, and puts each row of the packet back to waiting for its review: a row in its first review is awaiting a first review again, a row in a further review is in question again, and an audit is due again. The reviewer that was off is not counted among those that reviewed the row, so its family is free for the row. The rows are then given to reviewers that are on, in packets with ids of their own |
+| A verdict file exists for the packet (even one that answers only some of its rows) | The packet is not withdrawn. The verdicts are read as usual and the controller waits for the rest |
+| A verdict file turns up for a packet that was withdrawn | It is ignored: the rows were sent on. The run notes it once in its problems. The file stays where the reviewer put it, since the controller does not write under `review/` |
+| A row is in the hand queue because no reviewer from another family than the writer's (a first review), or none from an unused family (a further review), was available, the review policy as it stands now still asks for a review of it, and the configuration has a reviewer that can take that review | It records `row_reopened` (`row_id`, `call_id`, `reason`). The row is awaiting a first review if it never had one, and in question for a further review if it did, so the usual assignment gives it to a reviewer, and it leaves the hand queue file |
+| A row is in the hand queue for want of a reviewer, but the policy as it stands now settles it (it would accept or discard it, or hand it to the owner: a `fix` verdict with `fix_to_hand` true, or `max_reviewers` reviewers already) | It stays in the queue for the owner, whoever is available. A row beside it that the policy still asks a review for is reopened |
+| A row is in the hand queue for another reason (three reviewers without a settlement), or the owner has answered it (`hand_resolved`) | It stays where it is. The owner's decisions are read before rows are looked at again |
+
+With every reviewer off, rows wait (they are not sent to the hand queue) until a reviewer is on.
 
 **The hand queue.** The controller lists rows waiting for the owner in `hand/queue.jsonl`, with the
 row, the task's spec line, the assessor flags and every verdict. The owner answers by adding a file
@@ -673,7 +730,11 @@ under `control/hand/` in the state store, one decision per line:
     {"row_id": "...", "decision": "replace", "row": {"thoughts": ["written by hand"]}}
 
 A `replace` row is stamped with the human writer label and the row's source label. Decisions for
-rows not in the queue are ignored; a decision that cannot be used is reported once.
+rows not in the queue are ignored; a decision that cannot be used is reported once. A row that is
+in the queue only because no reviewer was available for it leaves the queue by itself, as a reopened
+row, when a reviewer that can take it is switched on and the review policy still asks for a review
+of it (see "Switching a reviewer off or on"); the decisions in `control/hand/` are read before that,
+so an answer the owner has given wins.
 
 **The reviewer client.** For an agent session or a person:
 
@@ -694,7 +755,9 @@ In Python, the same client runs a packet with a function or a command line per r
 (`ReviewerClient.run_packet`).
 
 The bucket copy of a packet's pictures is deleted by the controller once it has read that packet's
-verdicts (recorded as `packet_burned`). Reviewers delete their local copies when they push.
+verdicts (recorded as `packet_burned`), or with the whole packet when it is withdrawn (recorded as
+`packet_withdrawn`). Reviewers delete their local copies when they push. A reviewer that holds a local copy
+of a packet when it is withdrawn can still push its verdicts; the controller ignores that file.
 
 ## Dry run
 
@@ -796,6 +859,8 @@ the service took the request as the writer sends it, 1 when it did not and 2 whe
 | after the tasks file changed (or is gone) | reads the file again on the next pass; tasks already recorded are ignored, a missing file in the state store means no tasks |
 | between recording results and cleaning up | the results are durable first; a clean-up that did not happen (OpenAI's files) is left to the files' expiry |
 | between writing a packet's files and announcing it | writes the same packet again (the id comes from its rows) and announces it once |
+| between recording a packet's withdrawal and deleting its files | deletes the files of every withdrawn packet that is still in the state store, once when the run starts (the event comes first, so no row waits for a packet whose files are gone) |
+| after rows were reopened or packets withdrawn | rebuilds the same state from the events alone: neither depends on the configuration of the run that recorded it |
 | while shipping | rebuilds the shipped files from the accepted rows and hands them over again; `shipped` is recorded only after the ship store has sent the files (for a dataset repository, after the commit has gone out). Files that were waiting for a commit when the run died are simply handed over again |
 | in the middle of an event line | skips the torn last line, reports it, and carries on |
 

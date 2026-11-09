@@ -454,25 +454,39 @@ class CommitConfig:
 
 @dataclass(frozen=True)
 class ReviewerConfig:
-    """One reviewer: an id (used in paths) and the model family it belongs to."""
+    """One reviewer: an id (used in paths) and the model family it belongs to.
+
+    `enabled` switches the reviewer on or off: a reviewer that is off is given no new packet, and a
+    packet already addressed to it that it has not answered is withdrawn (see `rps.controller`).
+    `solo_keep` says whether this reviewer's "keep" may accept a row without a second opinion. With it
+    off, a keep from this reviewer never accepts a row alone: the row is in question and goes on to a
+    further reviewer, as a flagged row does, and it takes a keep from a reviewer that may keep alone
+    to accept it (see `rps.review.policy.settle`).
+    """
 
     id: str
     family: str
     enabled: bool = True
+    solo_keep: bool = True
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "family": self.family, "enabled": self.enabled}
+        return {"id": self.id, "family": self.family, "enabled": self.enabled, "solo_keep": self.solo_keep}
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], where: str) -> "ReviewerConfig":
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object with 'id' and 'family'")
-        _check_keys(data, {"id", "family", "enabled"}, where)
+        _check_keys(data, {"id", "family", "enabled", "solo_keep"}, where)
         for key in ("id", "family"):
             value = data.get(key)
             if not isinstance(value, str) or not NAME_PATTERN.match(value):
                 _fail(f"{where}.{key}: expected letters, digits, '.', '_' or '-', got {value!r}")
-        return cls(id=data["id"], family=data["family"], enabled=_flag(data.get("enabled", True), f"{where}.enabled"))
+        return cls(
+            id=data["id"],
+            family=data["family"],
+            enabled=_flag(data.get("enabled", True), f"{where}.enabled"),
+            solo_keep=_flag(data.get("solo_keep", True), f"{where}.solo_keep"),
+        )
 
 
 @dataclass(frozen=True)
@@ -481,12 +495,20 @@ class ReviewPolicy:
 
     A first review goes to a reviewer from a family other than the writer's. A row
     with a "keep" verdict and no assessor flag is accepted at once (when
-    `first_keep_accepts` is on). A row with a "fix" or "reject" verdict, or an
-    assessor flag, is in question and goes to a further reviewer from a family not
-    yet used on it. `keeps_to_accept` keeps accept it and `rejects_to_discard`
-    rejects discard it. After `max_reviewers` reviewers with no settlement it goes
-    to the owner's hand queue. `audit_fraction` of accepted rows get one more review
-    from another family; the audit changes nothing unless it rejects the row.
+    `first_keep_accepts` is on, and the keep comes from a reviewer that may keep
+    alone, see `ReviewerConfig.solo_keep`). A row with a "fix" or "reject" verdict,
+    or an assessor flag, is in question and goes to a further reviewer from a family
+    not yet used on it. `keeps_to_accept` keeps accept it (at least one of them from
+    a reviewer that may keep alone) and `rejects_to_discard` rejects discard it.
+    After `max_reviewers` reviewers with no settlement it goes to the owner's hand
+    queue. `audit_fraction` of accepted rows get one more review from another
+    family; the audit changes nothing unless it rejects the row.
+
+    With `fix_to_hand` on, a "fix" verdict sends the row to the owner's hand queue at
+    once, instead of to a further reviewer. A row is never edited by a reviewer, so a
+    row that needs a fix can only be mended by the owner, and with few reviewer
+    families another review would only repeat the question. The accept and discard
+    rules (`keeps_to_accept`, `rejects_to_discard`) are checked first and still win.
     """
 
     keeps_to_accept: int = 2
@@ -495,6 +517,7 @@ class ReviewPolicy:
     first_keep_accepts: bool = True
     audit_fraction: float = 0.10
     audit_seed: str = "audit"
+    fix_to_hand: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -504,6 +527,7 @@ class ReviewPolicy:
             "first_keep_accepts": self.first_keep_accepts,
             "audit_fraction": self.audit_fraction,
             "audit_seed": self.audit_seed,
+            "fix_to_hand": self.fix_to_hand,
         }
 
     @classmethod
@@ -513,7 +537,10 @@ class ReviewPolicy:
             _fail(f"{where}: expected an object")
         _check_keys(
             data,
-            {"keeps_to_accept", "rejects_to_discard", "max_reviewers", "first_keep_accepts", "audit_fraction", "audit_seed"},
+            {
+                "keeps_to_accept", "rejects_to_discard", "max_reviewers", "first_keep_accepts", "audit_fraction",
+                "audit_seed", "fix_to_hand",
+            },
             where,
         )
         default = cls()
@@ -535,6 +562,7 @@ class ReviewPolicy:
                 _number(data.get("audit_fraction", default.audit_fraction), f"{where}.audit_fraction", minimum=0, maximum=1)
             ),
             audit_seed=str(_text(str(data.get("audit_seed", default.audit_seed)), f"{where}.audit_seed")),
+            fix_to_hand=_flag(data.get("fix_to_hand", default.fix_to_hand), f"{where}.fix_to_hand"),
         )
         if policy.max_reviewers < min(policy.keeps_to_accept, policy.rejects_to_discard):
             _fail(f"{where}.max_reviewers: too small to ever settle a row")
@@ -575,6 +603,20 @@ class ReviewConfig:
             if reviewer.id == reviewer_id:
                 return reviewer
         return None
+
+    def is_active(self, reviewer_id: str) -> bool:
+        """True when the reviewer is configured and switched on (one that is off, or gone, is given no packets)."""
+        reviewer = self.reviewer(reviewer_id)
+        return reviewer is not None and reviewer.enabled
+
+    def may_keep_alone(self, reviewer_id: str) -> bool:
+        """Whether a keep from this reviewer may accept a row without a second opinion (its `solo_keep`).
+
+        A reviewer the configuration no longer names keeps the default: its verdict was given when it
+        was on the list, and taking the list away says nothing about how far it was trusted.
+        """
+        reviewer = self.reviewer(reviewer_id)
+        return True if reviewer is None else reviewer.solo_keep
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -745,6 +787,12 @@ class Config:
                     f"route {name}: purpose caps add up to ${total:.2f}, above the route total ${route.budget_usd:.2f}"
                     " (the route total still applies)"
                 )
+        on = self.review.enabled_reviewers()
+        if on and not any(reviewer.solo_keep for reviewer in on):
+            notes.append(
+                "review: no enabled reviewer may keep alone (solo_keep), so no keep can accept a row;"
+                " a row is discarded by two rejects or goes to the hand queue"
+            )
         return notes
 
     @classmethod

@@ -139,6 +139,73 @@ def test_reviewers_carry_families_and_can_be_disabled():
     assert Config.from_dict(config.to_dict()) == config
 
 
+def test_a_fix_goes_to_a_further_reviewer_unless_the_policy_sends_it_to_the_owner():
+    assert Config.from_dict(make()).review.policy.fix_to_hand is False
+    config = Config.from_dict(make(review={"policy": {"fix_to_hand": True, "max_reviewers": 4}}))
+    assert config.review.policy.fix_to_hand is True and config.review.policy.max_reviewers == 4
+    assert config.review.policy.to_dict()["fix_to_hand"] is True
+    assert Config.from_dict(config.to_dict()) == config
+    assert Config.from_dict(config.to_dict()).digest() == config.digest()
+    assert Config.from_dict(make()).digest() != config.digest()
+    for bad in ("yes", 1, 0, None, [True]):
+        with pytest.raises(ConfigError, match="fix_to_hand"):
+            Config.from_dict(make(review={"policy": {"fix_to_hand": bad}}))
+    with pytest.raises(ConfigError, match="unknown key"):
+        Config.from_dict(make(review={"policy": {"fix_it": True}}))
+
+
+def test_a_reviewer_may_keep_alone_unless_the_configuration_says_otherwise():
+    config = Config.from_dict(
+        make(
+            review={
+                "reviewers": [
+                    {"id": "desk", "family": "anthropic"},
+                    {"id": "newcomer", "family": "google", "solo_keep": False},
+                    {"id": "codex", "family": "openai", "solo_keep": True},
+                ]
+            }
+        )
+    )
+    assert [r.solo_keep for r in config.review.reviewers] == [True, False, True]
+    assert config.review.may_keep_alone("desk") and config.review.may_keep_alone("codex")
+    assert not config.review.may_keep_alone("newcomer")
+    assert config.review.may_keep_alone("not-in-the-configuration")  # the default; its verdict was given when it was listed
+    assert config.review.reviewers[1].to_dict() == {"id": "newcomer", "family": "google", "enabled": True, "solo_keep": False}
+    assert Config.from_dict(config.to_dict()) == config
+    assert Config.from_dict(config.to_dict()).digest() == config.digest()
+
+
+def test_solo_keep_is_checked_and_other_unknown_reviewer_keys_are_still_refused():
+    for bad in ("no", 0, 1, None, [True]):
+        with pytest.raises(ConfigError, match="solo_keep"):
+            Config.from_dict(make(review={"reviewers": [{"id": "a", "family": "x", "solo_keep": bad}]}))
+    with pytest.raises(ConfigError, match="unknown key"):
+        Config.from_dict(make(review={"reviewers": [{"id": "a", "family": "x", "trusted": True}]}))
+
+
+def test_a_reviewer_list_with_no_one_who_may_keep_alone_is_noted():
+    def notes(reviewers):
+        return [note for note in Config.from_dict(make(review={"reviewers": reviewers})).problems() if "solo_keep" in note]
+
+    two = [{"id": "a", "family": "x"}, {"id": "b", "family": "y"}]
+    assert notes(two) == []
+    assert notes([dict(two[0], solo_keep=False), two[1]]) == []
+    assert len(notes([dict(item, solo_keep=False) for item in two])) == 1
+    # a reviewer that is switched off does not count either way
+    assert notes([dict(two[0], solo_keep=False), dict(two[1], enabled=False)]) != []
+    assert notes([dict(two[0], solo_keep=False, enabled=False), two[1]]) == []
+    assert notes([]) == []
+
+
+def test_a_reviewer_is_active_only_when_it_is_listed_and_switched_on():
+    config = Config.from_dict(
+        make(review={"reviewers": [{"id": "on", "family": "x"}, {"id": "off", "family": "y", "enabled": False}]})
+    )
+    assert config.review.is_active("on")
+    assert not config.review.is_active("off")
+    assert not config.review.is_active("gone")
+
+
 def test_stop_file_resolves_under_the_work_dir():
     config = Config.from_dict(make(work_dir="work"))
     assert config.stop_file_path().name == "STOP"
