@@ -813,6 +813,15 @@ def test_the_rows_of_the_mapped_route_and_the_rows_of_the_repairing_route_count_
     assert controller.state.counts()["rows"]["repaired"] == 2 and controller.state.spend(B, "repair").calls == 2
 
 
+def test_a_one_call_repairing_route_is_given_the_repair_calls_as_it_is_given_any_call_as_many_as_it_has_free_workers(tmp_path):
+    api = route_b(kind="api", workers=1)
+    world, controller = through_the_map(tmp_path, second=switched_off(b=api), config_options={"b": api})
+    handles = [(e.payload["route"], len(e.payload["call_ids"])) for e in world.events_of("batch_submitted")]
+    assert handles == [(A, 4), (B, 1), (B, 1)]  # route A sent its four calls as a batch, route B takes one repair call at a time
+    assert [e.payload["route"] for e in world.events_of("repair_requested")] == [B, B]
+    assert controller.state.counts()["rows"] == {"repaired": 2, "accepted": 4} and controller.state.spend(B, "repair").calls == 2
+
+
 # ------------------------------------------------------------------ the route a row was sent to is the route it is written by
 
 
