@@ -17,7 +17,7 @@
   },
   "class": {
    "type": "string",
-   "description": "Allowed values: \"\", \"person\", \"contradiction\", \"ungrounded\", \"other\". Must be \"\" when skip is false."
+   "description": "Allowed values: \"\", \"person\", \"contradiction\", \"ungrounded\", \"picture_conflict\", \"other\". Must be \"\" when skip is false."
   },
   "rows": {
    "type": "array",

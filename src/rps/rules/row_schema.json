@@ -21,6 +21,7 @@
     "person",
     "contradiction",
     "ungrounded",
+    "picture_conflict",
     "other"
    ]
   },

@@ -80,7 +80,9 @@ def call_text(call: CallSpec) -> str:
     """The user text of a call: the controller's rendering, or the same rendering made here."""
     if call.task_text is not None:
         return call.task_text
-    return render_task_text(call.spec, call.feedback, rules=call.rules, repair=call.repair_of is not None)
+    return render_task_text(
+        call.spec, call.feedback, rules=call.rules, repair=call.repair_of is not None, picture=call.image is not None
+    )
 
 
 def picture_for(call: CallSpec, provider: str) -> tuple[bytes, str] | None:
@@ -91,7 +93,7 @@ def picture_for(call: CallSpec, provider: str) -> tuple[bytes, str] | None:
     """
     if call.image is None:
         return None
-    check_image_allowed(call.image_class, provider)
+    check_image_allowed(call.image_class, provider, call.image_policy)
     return call.image, call.image_ext or "jpg"
 
 

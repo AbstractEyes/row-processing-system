@@ -13,8 +13,9 @@ EVALUATE SKIP FIRST BEFORE WRITING ANY ROW (decline the item instead of writing 
 - class "person": no person is in the records but the hint implies one (a figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, a person's job). A tree with a painted face is not a person.
 - class "contradiction": the hint contradicts a record (a year in the hint outside the period record counts as a contradiction).
 - class "ungrounded": the hint never names the main thing the records describe (verify every seed record's main subject/thing against the hint before writing).
+- class "picture_conflict": the attached picture plainly shows a given record to be wrong; name the record in the reason.
 - class "other": anything else that stops you; say what.
-When declining: set "skip": true, put the "reason" in one sentence, set "class" to one of the four classes above, and set "rows": []. Never adjust a record to make an item work.
+When declining: set "skip": true, put the "reason" in one sentence, set "class" to one of the classes above, and set "rows": []. Never adjust a record to make an item work.
 When keeping: set "skip": false, "reason": "", "class": "", and write "rows".
 </step_1_skip_gate>
 
@@ -30,8 +31,19 @@ VOICE:
 - Museum works: a gallery looker (what the object is, how it was made, what it shows); never guess an artist or a sitter; a design object (coin, vessel) is the thing itself and its subjects are decoration.
 - Generated or written-prompt sources: write as about any picture; never mention a prompt, model or generation.
 - Vary openings and critics; no stock sentences.
-<!-- PICTURE_RULES_SLOT: Reserved for future real-picture image attachment rules; today no picture is sent. -->
 </step_2_genre_and_voice>
+
+<step_3_picture_attached>
+WHEN THE PICTURE IS ATTACHED
+- The picture is the item itself. The records and the hint were read from the source's notes on it; where they are silent, the picture decides.
+- Keep every given record exactly as given. If the picture plainly shows a given record to be wrong (the named thing is not there, the count is plainly another), do not write the row: skip with class "picture_conflict" and name the record in the reason.
+- You may add records for what the picture shows plainly, with values from the lists and inside the depth's totals: a setting, the light, the weather, the time of day, a thing's color, state or position, a pose. This is the permission the hint gives, now for the picture too.
+- Thoughts and wordings may state what the picture shows plainly (a color, a material, the light, a pose, a placement, the setting) even when no record and no hint gives it. State nothing the picture does not show; when in doubt, leave it out.
+- The light is among the things you read from the picture: when the picture shows its light plainly, the row records it ("shot light", a value from the list) and a thought reads it.
+- A hint that reports what a classifier or another model suggests (for example about the light) is a suggestion, not a fact: check it against the picture. Use it where the picture agrees, say what the picture shows where it does not, and never write that a classifier or a model said so.
+- "mood from" may name a record you added from the picture.
+- These stay as they are: never write of seeing, of an image file or of pixels; never name a real person or guess who someone is; never copy a name or a brand from writing in the picture; a row whose records hold no person describes no person, and when a person is the picture's main subject while the records hold none, skip the item with the class the rules already give for that; the rule on people under 18; an "unknown" question asks about a key the row's records do not hold, also when the picture would answer it.
+</step_3_picture_attached>
 
 <depth_matrix>
 FOLLOW THIS DEPTH & RANK MATRIX FOR EVERY ROW:
@@ -74,7 +86,7 @@ RECORDS & RELATIONS:
      a) `mood` (`mood feeling`, `mood from`),
      b) `intent` (`intent purpose`, `intent for`),
      c) `story` (`story moment`, plus one of `story before`, `story after`, `story cause`), and
-     d) for a real picture, facts its hint states plainly.
+     d) for a real picture, facts its hint states plainly, and, when the picture is attached, facts the picture shows plainly.
    - A drawn item (no hint) gets no other new facts.
    - Simple rows add nothing.
    - Medium always adds the records `"mood feeling"` and `"mood from"`.

@@ -14,7 +14,10 @@ the seat exists: it is a reviewer in the configuration, like the others.
                is a short role, the judging rules (`judging.md`), the review brief exactly as the package
                renders it and the configured extra instructions, sent as one block with a cache mark. The
                user text is the row's blind review view and its task as packet.json holds them, and one
-               line saying what to return. Text only: no picture is sent, as a desk seat judges text only
+               line saying what to return. A row whose packet entry holds a picture (the packet builder
+               leaves it out for a family the routing table refuses, and says so with `image_withheld`) is
+               sent with the picture as an image block before the text, read from the packet's folder; a
+               row without one is sent as text only, exactly as before
     answer     the answer is bound to {verdict, reasons, notes} by `output_config.format` (the reasons to
                the codes the brief lists), and the seat adds the row id itself. `temperature`, `top_p`,
                `top_k`, a prefill, a forced `tool_choice` and `thinking` are never sent; the effort goes
@@ -87,13 +90,14 @@ from ..providers.anthropic_api import (
     BATCH_MAX_BYTES,
     BATCH_MAX_REQUESTS,
     EFFORTS,
+    IMAGE_TOKENS,
     RECOVER_MAX_LISTED,
     RECOVER_PAGE,
     RECOVER_SKEW,
     batch_size,
     usage_of,
 )
-from ..providers.common import api_key, classify_exception, estimate_text_tokens, http_status, lookup
+from ..providers.common import api_key, base64_text, classify_exception, estimate_text_tokens, http_status, lookup, mime_type
 from ..providers.schemas import ANTHROPIC, SchemaError, check_schema
 from ..runtime import build_state_store
 from ..store.base import ActorStore, NotFound, Store, StoreError
@@ -115,6 +119,8 @@ CACHE_WRITE_FACTOR = 2.0  # a one-hour cache write bills this multiple of the li
 CACHE_TTL = "1h"
 # A prompt past this many (estimated) tokens is billed at rates this seat does not model, so it is never sent.
 LONG_PROMPT_TOKENS = 100_000
+# What one picture counts as in the estimate and in the budget check: the adapter's figure for a picture.
+PICTURE_TOKENS = IMAGE_TOKENS
 
 # A batch that was planned and has no recorded id is looked for for this long before it is dropped.
 RECOVER_WAIT = timedelta(minutes=2)
@@ -1052,10 +1058,33 @@ class ApiSeat:
 
     # ------------------------------------------------------------ send
 
+    def _picture_block(self, packet_id: str, entry: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The image block for a row whose packet entry holds a picture, or None for a text-only row.
+
+        The picture is read from the packet's folder in the store. A picture the entry names that cannot be
+        read is an error, never a silent fall back to the text: the row would be judged without what it is
+        judged against.
+        """
+        name = entry.get("image")
+        if not name:
+            return None
+        path = f"{layout.packet_dir(self.reviewer_id, packet_id)}/{name}"
+        ext = str(name).rsplit(".", 1)[-1]
+        try:
+            data = self._store.read_bytes(path)
+            media = mime_type(ext)
+        except (NotFound, ValueError) as error:
+            raise SeatError(f"packet {packet_id}: the picture {name!r} cannot be read ({error})") from None
+        return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64_text(data)}}
+
     def _request(self, packet_id: str, ordinal: int, entry: Mapping[str, Any], attempt: int) -> Built | None:
-        """The request for one row, or None when it cannot be priced (a prompt past the long-prompt limit)."""
+        """The request for one row, or None when it cannot be priced (a prompt past the long-prompt limit).
+
+        A picture is counted as `PICTURE_TOKENS` input tokens, a generous fixed figure for each picture.
+        """
         text = user_text(entry)
-        tokens = self._base_tokens + estimate_text_tokens(text)
+        picture = self._picture_block(packet_id, entry)
+        tokens = self._base_tokens + estimate_text_tokens(text) + (PICTURE_TOKENS if picture is not None else 0)
         if tokens > LONG_PROMPT_TOKENS:
             return None
         custom_id = request_custom_id(packet_id, ordinal, attempt)
@@ -1065,7 +1094,7 @@ class ApiSeat:
                 "model": self.config.model,
                 "max_tokens": self.config.max_tokens,
                 "system": [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL}}],
-                "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}],
+                "messages": [{"role": "user", "content": [*([picture] if picture is not None else []), {"type": "text", "text": text}]}],
                 "output_config": {"format": {"type": "json_schema", "schema": self._schema}, "effort": self.config.effort},
             },
         }
@@ -1099,7 +1128,11 @@ class ApiSeat:
                 self._give_up(packet_id, exhausted[0])
                 continue
             self.ledger.gave_up.pop(packet_id, None)
-            built = [self._request(packet_id, place, entry, self.ledger.failed_attempts(packet_id, entry["row_id"]) + 1) for place, entry in todo]
+            try:
+                built = [self._request(packet_id, place, entry, self.ledger.failed_attempts(packet_id, entry["row_id"]) + 1) for place, entry in todo]
+            except SeatError as error:
+                self._skip(packet_id, str(error))
+                continue
             if any(item is None for item in built):
                 self._skip(packet_id, f"a row is longer than {LONG_PROMPT_TOKENS:,} tokens, which the seat does not price")
                 continue

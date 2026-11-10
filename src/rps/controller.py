@@ -103,7 +103,7 @@ from .review.policy import (
     pick_further_reviewer,
     settle,
 )
-from .routing import ImageRoutingError, allowed_image, check_image_allowed
+from .routing import ImageRoutingError
 from .state import LineState, PacketState, RowState, State, TaskState
 from .store.base import ActorStore, NotFound, OwnershipError, RateLimitedError, Store, StoreError
 from .store.local import LocalStore
@@ -160,6 +160,7 @@ def format_progress(
     spent_usd: float | None = None,
     held_usd: float | None = None,
     waiting: Mapping[str, int] | None = None,
+    closed: int = 0,
 ) -> str:
     """One progress line: job size, done, time spent and time left.
 
@@ -169,6 +170,8 @@ def format_progress(
     """
     percent = 100.0 * lines_done / lines_total if lines_total else 0.0
     parts = [f"job {lines_total} lines", f"done {lines_done} ({percent:.0f}%)", f"rows {rows}"]
+    if closed:
+        parts.append(f"closed {closed} lines (no new calls)")
     if elapsed is not None:
         parts.append(f"time spent {format_duration(elapsed)}")
         parts.append(f"time left {format_duration(budget - elapsed)}" if budget is not None else "time left no limit")
@@ -393,6 +396,7 @@ class Controller:
         self.screen: ScreenFn | None = screen if screen is not None else (self.rules.screen if self.rules is not None else None)
         self.image_loader: ImageLoader = image_loader or self._default_image_loader
         self._clock = clock
+        self.closed_tasks: frozenset[str] = frozenset(config.closed_tasks)
         self.planner: Planner | None = planner or self._tasks_planner(state_store, tasks_check_seconds)
         # Set by a writer whose calls finish on threads of its own, each time one finishes.
         self._wake = threading.Event()
@@ -768,7 +772,7 @@ class Controller:
                 # task before anything is prepared or paid for.
                 image_class = line.image_class or source.image_class
                 try:
-                    check_image_allowed(image_class, route.provider)
+                    self.config.check_image_allowed(image_class, route.provider)
                 except ImageRoutingError as error:
                     raise ConfigError(f"task {spec.source}/{spec.batch}, line {line.line_id}: {error}") from None
                 entry["image_class"] = image_class
@@ -866,7 +870,7 @@ class Controller:
         image = ext = None
         size = None
         if line.image:
-            check_image_allowed(line.image_class, route.provider)
+            self.config.check_image_allowed(line.image_class, route.provider)
             image, ext, size = self.image_loader(self.config.source(task.source), line)
         if not max_output_tokens:
             max_output_tokens = route.max_output_tokens
@@ -891,8 +895,9 @@ class Controller:
             image=image,
             image_ext=ext,
             image_class=line.image_class if line.image else None,
+            image_policy=self.config.image_table() if self.config.image_policy else None,
             task_text=render_task_text(
-                line.spec, feedback, ordinal=line.ordinal, rules=rules, repair=repair_of is not None
+                line.spec, feedback, ordinal=line.ordinal, rules=rules, repair=repair_of is not None, picture=image is not None
             ),
             rules=rules,
             repair_of=repair_of,
@@ -986,10 +991,40 @@ class Controller:
         row was sent back to for a call of the repair step."""
         grouped: dict[str, list[tuple[TaskState, LineState, Any]]] = {}
         for item in self.state.lines_needing_calls(self.config.max_attempts):
-            if self._repair_switched_off(item[0], item[2]):
+            if self._repair_switched_off(item[0], item[2]) or self._is_closed(item[0], item[2]):
                 continue
             grouped.setdefault(self._call_route(item[0], item[2]), []).append(item)
         return grouped
+
+    def set_closed_tasks(self, task_ids: Iterable[str]) -> None:
+        """Replace the list of closed tasks (what `closed_tasks` in the configuration sets at the start). Nothing is
+        recorded as an event: a task left out of the list is open again and its lines are prepared on the next pass."""
+        self.closed_tasks = frozenset(task_ids)
+
+    def _is_closed(self, task: TaskState, status: Any) -> bool:
+        """True for a call of a closed task that is not one of the repair step: no first-write call and no retry
+        is prepared for it. Calls already sent are collected, and rows already written go on as always."""
+        return task.task_id in self.closed_tasks and status.repair_of is None
+
+    def _check_closed(self) -> None:
+        """Report once each closed task id that names no known task; such an id is otherwise ignored."""
+        for task_id in sorted(self.closed_tasks - set(self.state.tasks)):
+            text = f"closed_tasks: {task_id!r} names no known task"
+            if text not in self._reported:
+                self._warn(text)
+            self._note_problem(text)
+
+    def _closed_lines(self) -> int:
+        """How many lines of closed tasks are waiting for a call that will not be made."""
+        count = 0
+        for task_id in self.closed_tasks:
+            task = self.state.tasks.get(task_id)
+            if task is None:
+                continue
+            for line in task.lines.values():
+                if self.state.line_status(task_id, line.line_id, self.config.max_attempts).outcome in ("new", "retry"):
+                    count += 1
+        return count
 
     def _stage_submit(self, *, api_only: bool = False) -> None:
         """Prepare the calls that are due, record the ones the caps can hold, and submit them.
@@ -1000,6 +1035,7 @@ class Controller:
         """
         if self._stop_reason:
             return
+        self._check_closed()
         if not api_only:
             self._held_back = {}
         due_by_route: dict[str, list[tuple[TaskState, LineState, Any]]] | None = None
@@ -2471,6 +2507,8 @@ class Controller:
         due = []
         for item in self.state.lines_needing_calls(self.config.max_attempts):
             task, line, line_status = item
+            if self._is_closed(task, line_status):
+                continue
             if ids.call_id(task.task_id, line.line_id, line_status.next_attempt) in self._parked:
                 continue
             if self._repair_switched_off(task, line_status):
@@ -2555,7 +2593,7 @@ class Controller:
             task = self.state.tasks[row.task_id]
             line = task.lines[row.line]
             image = ext = None
-            if line.image and not allowed_image(line.image_class, family):
+            if line.image and not self.config.allowed_image(line.image_class, family):
                 # The routing table governs reviewers too: this family reviews the row from its text.
                 withheld.append(row.row_id)
             elif line.image:
@@ -2855,6 +2893,7 @@ class Controller:
             spent_usd=sum(spend.actual for spend in spends),
             held_usd=sum(spend.reserved for spend in spends),
             waiting=self._waiting(),
+            closed=self._closed_lines(),
         )
 
     def status(self) -> dict[str, Any]:
@@ -2865,7 +2904,7 @@ class Controller:
             routes[name] = {"state": state, "reason": reason}
         return {
             "run": self.instance,
-            "progress": self.state.job_progress(self.config.max_attempts),
+            "progress": {**self.state.job_progress(self.config.max_attempts), **({"lines_closed": self._closed_lines()} if self.closed_tasks else {})},
             "counts": self.state.counts(),
             "spend": self.ledger.status_rows(self.state),
             "routes": routes,

@@ -5,6 +5,7 @@ Everything runs against a local store and a fake batch client: no network, no ke
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import typing
@@ -20,6 +21,7 @@ from rps.config import ConfigError
 from rps.ledger import Usage
 from rps.providers.schemas import ANTHROPIC, check_schema
 from rps.review import api_seat
+from rps.review.api_seat import PICTURE_TOKENS
 from rps.review.api_seat import (
     ASK_LINE,
     DEFAULT_PRICES,
@@ -271,13 +273,40 @@ def test_a_request_never_names_the_writer_or_its_model(remote, tmp_path):
         assert row["source"]["model"] == ""  # the row's own model name is blanked in the view
 
 
-def test_a_request_is_text_only_even_when_the_packet_has_pictures(remote, tmp_path):
+def test_a_request_for_a_row_with_a_picture_holds_the_image_block_before_the_text(remote, tmp_path):
     packet, requests, _seat = sent_requests(remote, tmp_path, pictures=True)
     assert packet.rows[0].image_name  # the packet does carry pictures
-    for request in requests:
+    for number, request in enumerate(requests):
         (message,) = request["params"]["messages"]
-        assert [block["type"] for block in message["content"]] == ["text"]
-        assert "image" not in json.dumps(request["params"]["messages"]).replace('"image": null', "")
+        assert [block["type"] for block in message["content"]] == ["image", "text"]
+        source = message["content"][0]["source"]
+        assert source["type"] == "base64" and source["media_type"] == "image/jpeg"
+        assert base64.b64decode(source["data"]) == b"picture-%d" % number
+        assert message["content"][1]["text"].endswith(ASK_LINE)
+        TypeAdapter(Request).validate_python(request)
+
+
+def test_a_request_without_a_picture_is_text_only_and_the_picture_is_counted_in_the_estimate(remote, tmp_path):
+    api = FakeAnthropic()
+    seat, _ = make_seat(remote, tmp_path, api)
+    entry = {"row_id": "r1", "row": {"id": "x"}, "task": {"spec": "a cat"}, "image": None, "image_withheld": True}
+    plain = seat._request("pk", 1, entry, 1)
+    assert [block["type"] for block in plain.payload["params"]["messages"][0]["content"]] == ["text"]
+    packet = publish(remote, rows=1, pictures=True)
+    with_picture = dict(entry, image=f"images/{packet.rows[0].row_id}.jpg")
+    built = seat._request(packet.packet_id, 1, with_picture, 1)
+    assert built.usd - plain.usd == pytest.approx(PICTURE_TOKENS * seat._rates.input_ceiling / 1_000_000, rel=1e-6, abs=1e-7)
+    assert built.size > plain.size
+
+
+def test_a_packet_whose_picture_cannot_be_read_is_left_alone_and_said_so(remote, tmp_path):
+    api = FakeAnthropic()
+    packet = publish(remote, rows=2, pictures=True)
+    remote.delete(f"{layout.packet_dir(REVIEWER, packet.packet_id)}/images/{packet.rows[0].row_id}.jpg")
+    seat, printed = make_seat(remote, tmp_path, api)
+    seat.step()
+    assert api.batches.sent == []
+    assert any("cannot be read" in line for line in printed)
 
 
 def test_the_effort_the_model_the_token_limit_and_the_extra_instructions_come_from_the_configuration(remote, tmp_path):

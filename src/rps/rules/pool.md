@@ -156,6 +156,20 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 92 | The tags carry a person tag whenever a person is recorded and keep each recorded color with its thing. | ASSESSOR | tag_person, tag_solo, tag_color_missing, tag_color_detached |
 | 93 | A record that cannot be what it says (a misspelled word, a thing its hint never mentions) is skipped, class other, never written around. | ASSESSOR | screen_item (sets a seeded item aside before writing: a record name one edit from a hint word) |
 
+## L. Rows written with the picture attached
+
+A picture row is one whose writer was sent the picture (the writer label holds the picture's size). Everything else about a row is checked as for a text row.
+
+| # | Rule | Tag | Code |
+|---|---|---|---|
+| 94 | With the picture attached, the picture is the item itself: where the records and the hint are silent, the picture decides. The writer keeps every given record; when the picture plainly shows one to be wrong, the item is skipped with class picture_conflict and the reason names the record. | WRITER | |
+| 95 | The writer may add records for what the picture shows plainly (a setting, the light, the weather, the time of day, a thing's color, state or position, a pose), with values from the lists and inside the depth's totals; "mood from" may name such a record. | ASSESSOR | rule_3, rule_6, spec_kept; added_record (flag on a picture row) |
+| 96 | Thoughts and wordings may state what the picture shows plainly even when no record and no hint gives it; on a picture row the checks for a detail no record gives only flag it, with the note to look for it in the picture. | ASSESSOR | unrecorded_pose, unrecorded_detail, unrecorded_shot, unrecorded_light, unrecorded_thing, unrecorded_size, unrecorded_material, unrecorded_color, unrecorded_garment, state_conflict, relation_placement, added_record (flags on a picture row) |
+| 97 | A hint that reports what a classifier or another model suggests (for example about the light) is a suggestion, not a fact: the writer checks it against the picture, uses it where the picture agrees, says what the picture shows where it does not, and never writes that a model said so. When the picture shows its light plainly, the row records it (shot light) and a thought reads it. | WRITER | |
+| 98 | A detail the picture does not show, or shows differently, is invented or contradicts the picture. A reviewer judges every claim of a picture row against the picture first; a record the writer added must be true of the picture. | READER | invented, contradicts_picture |
+| 99 | A reviewer compares the row's light (its shot light record and any thought or wording about light, shadow, contrast or direction) with the picture: a row that follows a classifier's hint against the picture is wrong, one that departs from it because the picture shows otherwise is right; light the picture does not show is invented, light against the picture contradicts_picture. | READER | invented, contradicts_picture |
+| 100 | A reviewer whose packet withholds the picture judges the row from its text, as a text row, and never faults it for something only the picture could show. | READER | |
+
 ## Open
 
-Version 1 covers text items. Rows written with the picture attached (photo sources sent to routes that accept images) need their own grounding rules in a later pool version.
+Version 2 covers rows written with the picture attached (photo sources sent to routes that accept images) beside text items. Rules for rows written from several pictures are not yet written.

@@ -29,4 +29,4 @@ Rules for the fields:
 - A question's "needs" is one of the three words record, chain, unknown.
 
 To decline an item, answer with exactly:
-{"skip": true, "reason": "<one sentence>", "class": "<person or contradiction or ungrounded or other>", "rows": []}
+{"skip": true, "reason": "<one sentence>", "class": "<person or contradiction or ungrounded or picture_conflict or other>", "rows": []}

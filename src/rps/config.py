@@ -34,7 +34,7 @@ from typing import Any, Collection, Mapping
 from .ids import canonical_json
 from .keys import looks_like_secret
 from .layout import NAME_PATTERN, PathError, normalize_path, parse_bucket
-from .routing import SOURCE_CLASSES
+from .routing import SOURCE_CLASSES, allowed_image, check_image_allowed, check_overrides, image_table
 
 # A retry or re-submission after a failed or rejected call always counts as this purpose.
 REBOUND = "rebound"
@@ -770,6 +770,8 @@ _TOP_KEYS = {
     "wait_for_review",
     "tasks_file",
     "rules",
+    "routing",
+    "closed_tasks",
 }
 
 
@@ -792,6 +794,12 @@ class Config:
     example "store:control/tasks.json", which is under the bucket's folder when there is one).
     The controller reads it again on every pass, and a missing file means no tasks, so tasks
     can be added from outside while a run goes on.
+
+    `routing` holds `image_policy`, a project's overrides of single cells of the picture table
+    ({class: {provider column: true or false}}, see `rps.routing`); the package's table is the default, and
+    an owner who opens a cell answers for it. Every question about it goes through `allowed_image`,
+    `check_image_allowed` and `image_table` here. `closed_tasks` lists task ids the controller prepares no
+    new call for (see `Controller`); it is read again each time the configuration is loaded.
 
     `repair` switches on the repair step (see `RepairConfig`): rows the reviewers sent back with a fix
     verdict are written again, once, by their own writer, or by the route `repair.routes` names for it. It needs
@@ -817,6 +825,18 @@ class Config:
     wait_for_review: bool = False
     tasks_file: str | None = None
     rules: RulesConfig | None = None
+    image_policy: Mapping[str, Mapping[str, bool]] = field(default_factory=dict)  # the project's overrides only
+    closed_tasks: tuple[str, ...] = ()
+
+    def image_table(self) -> Mapping[str, Mapping[str, bool]]:
+        """The picture table as this project sees it (the package's table with the overrides laid over it)."""
+        return image_table(self.image_policy)
+
+    def allowed_image(self, source_class: str, route: str) -> bool:
+        return allowed_image(source_class, route, self.image_table())
+
+    def check_image_allowed(self, source_class: str | None, route: str) -> None:
+        check_image_allowed(source_class, route, self.image_table())
 
     def route(self, name: str) -> RouteConfig:
         try:
@@ -842,7 +862,7 @@ class Config:
         return tasks_store_path(self.tasks_file)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "data_repo": self.data_repo,
             "bucket": self.bucket,
             "work_dir": self.work_dir,
@@ -863,6 +883,12 @@ class Config:
             "tasks_file": self.tasks_file,
             "rules": None if self.rules is None else self.rules.to_dict(),
         }
+        # Only when set, so that a configuration without them keeps the digest it always had.
+        if self.image_policy:
+            data["routing"] = {"image_policy": {name: dict(row) for name, row in sorted(self.image_policy.items())}}
+        if self.closed_tasks:
+            data["closed_tasks"] = list(self.closed_tasks)
+        return data
 
     def digest(self) -> str:
         """Short stable hash of the configuration, recorded when a run starts."""
@@ -950,6 +976,17 @@ class Config:
                 normalize_path(in_store)
             except PathError as error:
                 raise ConfigError(f"tasks_file: {error} (the form is \"{TASKS_STORE_PREFIX}control/tasks.json\")") from None
+        routing_in = data.get("routing", {})
+        if not isinstance(routing_in, Mapping):
+            _fail("routing: expected an object")
+        _check_keys(routing_in, {"image_policy"}, "routing")
+        try:
+            image_policy = check_overrides(routing_in.get("image_policy", {}))
+        except ValueError as error:
+            raise ConfigError(str(error)) from None
+        closed_in = data.get("closed_tasks", [])
+        if not isinstance(closed_in, (list, tuple)) or not all(isinstance(t, str) and t.strip() for t in closed_in):
+            _fail("closed_tasks: expected a list of task ids")
         config = cls(
             data_repo=_text(data.get("data_repo"), "data_repo", allow_none=True),
             bucket=bucket,
@@ -972,6 +1009,8 @@ class Config:
             wait_for_review=_flag(data.get("wait_for_review", default.wait_for_review), "wait_for_review"),
             tasks_file=tasks_file,
             rules=None if data.get("rules") is None else RulesConfig.from_dict(data["rules"]),
+            image_policy=image_policy,
+            closed_tasks=tuple(dict.fromkeys(closed_in)),
         )
         config.repair.check_routes(config.routes)
         return config

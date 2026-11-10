@@ -10,6 +10,7 @@ Decline instead of changing a supplied record when:
 - person: no person is recorded but the hint implies one: figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, or a person's job. A tree with a painted face is not a person. Adding person records cannot repair this mismatch.
 - contradiction: the hint contradicts a record; a year outside the recorded period counts.
 - ungrounded: the hint never names the main thing the records describe.
+- picture_conflict: the attached picture plainly shows a supplied record to be wrong; name the record in the reason.
 - other: anything else that stops you; state the obstacle.
 Use other for a genuine obstacle, not an uninteresting subject.
 
@@ -19,7 +20,7 @@ Keys are two-word system attribute keys, and only the systems in S12's lists exi
 Keep supplied relations only in relations, unchanged and ordered. No record key starts with rel or relation. Relation ends are things, never directions or frame regions. Follow the relation assignment; if none are supplied, write none and ask no relation question.
 rel1 references only the first relation, only as an assigned question key rel1 a, rel1 rel or rel1 b; it is never the value of mood from.
 
-Only add mood (feeling, from), intent (purpose, for), story (moment and one of before, after, cause), and, for real pictures, facts plainly stated in the hint. Drawn items get no other new facts.
+Only add mood (feeling, from), intent (purpose, for), story (moment and one of before, after, cause), and, for real pictures, facts plainly stated in the hint and, when the picture is attached, facts the picture shows plainly. Drawn items get no other new facts.
 - simple adds nothing; a derived simple row selects existing picture facts.
 - medium must include mood feeling and mood from.
 - deep must include those, intent purpose, intent for, story moment and one of story before, story after or story cause.
@@ -27,6 +28,16 @@ Add required records if absent; preserve them if supplied. Respect assigned unkn
 
 Every lower row's record and relation survives unchanged at every higher depth, including mood from and other mood, intent or story records. Preserve relation order and each depth's supplied record order; nested subsets need not be prefixes. Each depth occurs once. The checker refuses the series (rule_7) when a lower rank holds a record the next rank lacks, or when two rows share a depth.
 For real series, build the grounded deep picture, then cut nested medium and simple subsets. Retain medium's mood and evidence in deep. Reserve unknown keys before additions so nesting cannot carry a forbidden record upward. Reach record minima only with permitted facts and exact, supported closed values.
+
+S3A. WHEN THE PICTURE IS ATTACHED
+The picture is the item itself. The records and the hint were read from the source's notes on it; where they are silent, the picture decides.
+Keep every given record exactly as given. If the picture plainly shows a given record to be wrong (the named thing is not there, the count is plainly another), do not write the row: skip with class "picture_conflict" and name the record in the reason.
+You may add records for what the picture shows plainly, with values from the lists and inside the depth's totals: a setting, the light, the weather, the time of day, a thing's color, state or position, a pose. This is the permission the hint gives, now for the picture too.
+Thoughts and wordings may state what the picture shows plainly (a color, a material, the light, a pose, a placement, the setting) even when no record and no hint gives it. State nothing the picture does not show; when in doubt, leave it out.
+The light is among the things you read from the picture: when the picture shows its light plainly, the row records it ("shot light", a value from the list) and a thought reads it.
+A hint that reports what a classifier or another model suggests (for example about the light) is a suggestion, not a fact: check it against the picture. Use it where the picture agrees, say what the picture shows where it does not, and never write that a classifier or a model said so.
+"mood from" may name a record you added from the picture.
+These stay as they are: never write of seeing, of an image file or of pixels; never name a real person or guess who someone is; never copy a name or a brand from writing in the picture; a row whose records hold no person describes no person, and when a person is the picture's main subject while the records hold none, skip the item with the class the rules already give for that; the rule on people under 18; an "unknown" question asks about a key the row's records do not hold, also when the picture would answer it.
 
 S4. DEPTH LIMITS
 Count records plus relations together; each relation counts as one.

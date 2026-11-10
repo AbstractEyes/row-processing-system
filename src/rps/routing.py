@@ -24,6 +24,9 @@ Review packets follow the same table, by the reviewer's model family: a packet c
 a row's picture only when `allowed_image(class, family)` is true, so a reviewer from a
 family the table refuses (or one it does not know, such as the owner's own reviews)
 reviews that row from its text.
+
+A project may override single cells of the table in its configuration (`routing.image_policy`, see
+`rps.config`); the table above is the package's default, and the owner answers for an override.
 """
 
 from __future__ import annotations
@@ -97,30 +100,71 @@ def route_column(route: str) -> str | None:
     return None
 
 
-def allowed_image(source_class: str, route: str) -> bool:
+def image_table(overrides: Mapping[str, Mapping[str, bool]] | None = None) -> Mapping[str, Mapping[str, bool]]:
+    """The table as one project sees it: the package's table with the project's overrides laid over it.
+
+    `overrides` is {class: {column: bool}} as `check_overrides` accepts it; without any, the answer is the
+    package's own table. The package's table itself never changes.
+    """
+    if not overrides:
+        return IMAGE_POLICY
+    return {name: {**row, **overrides.get(name, {})} for name, row in IMAGE_POLICY.items()}
+
+
+def check_overrides(data: object, where: str = "routing.image_policy") -> dict[str, dict[str, bool]]:
+    """Check a project's overrides ({class: {column: true or false}}); raise ValueError, saying what is wrong.
+
+    A class must be one of SOURCE_CLASSES and a column one of ROUTE_COLUMNS; a value must be true or false.
+    The class `synthetic` has no picture, so it can never be opened.
+    """
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{where}: expected an object of source classes")
+    out: dict[str, dict[str, bool]] = {}
+    for name, columns in data.items():
+        if name not in SOURCE_CLASSES:
+            raise ValueError(f"{where}.{name}: not a source class; use one of {list(SOURCE_CLASSES)}")
+        if not isinstance(columns, Mapping):
+            raise ValueError(f"{where}.{name}: expected an object of provider columns")
+        row: dict[str, bool] = {}
+        for column, value in columns.items():
+            if column not in ROUTE_COLUMNS:
+                raise ValueError(f"{where}.{name}.{column}: not a provider column; use one of {list(ROUTE_COLUMNS)}")
+            if not isinstance(value, bool):
+                raise ValueError(f"{where}.{name}.{column}: expected true or false, got {value!r}")
+            if name == SYNTHETIC and value:
+                raise ValueError(f"{where}.{name}.{column}: synthetic specs have no picture, so the class can never be opened")
+            row[column] = value
+        out[name] = row
+    return out
+
+
+def allowed_image(source_class: str, route: str, policy: Mapping[str, Mapping[str, bool]] | None = None) -> bool:
     """True when a picture of this source class may be sent to this route.
 
-    A class missing from the table and a route that is not recognized are both refused.
+    A class missing from the table and a route that is not recognized are both refused. `policy` is the
+    table to ask (a project's view, see `image_table`); the package's table when left out.
     """
-    row = IMAGE_POLICY.get(source_class) if isinstance(source_class, str) else None
+    table = IMAGE_POLICY if policy is None else policy
+    row = table.get(source_class) if isinstance(source_class, str) else None
     column = route_column(route)
     if row is None or column is None:
         return False
     return row[column]
 
 
-def check_image_allowed(source_class: str | None, route: str) -> None:
+def check_image_allowed(source_class: str | None, route: str, policy: Mapping[str, Mapping[str, bool]] | None = None) -> None:
     """Raise ImageRoutingError, saying why, unless `allowed_image` is true."""
+    table = IMAGE_POLICY if policy is None else policy
     if not source_class:
         raise ImageRoutingError(
             f"a picture needs a source class ({', '.join(SOURCE_CLASSES)}); none is set for the source or the spec line"
         )
-    if source_class not in IMAGE_POLICY:
+    if source_class not in table:
         raise ImageRoutingError(f"source class {source_class!r} is not in the routing table ({', '.join(SOURCE_CLASSES)})")
     column = route_column(route)
     if column is None:
         raise ImageRoutingError(f"route {route!r} is not in the routing table, so no picture may go to it")
-    if not IMAGE_POLICY[source_class][column]:
+    if not table[source_class][column]:
         if source_class == SYNTHETIC:
             raise ImageRoutingError("synthetic specs have no picture to send")
         raise ImageRoutingError(f"pictures of class {source_class!r} may not be sent to {column} routes")

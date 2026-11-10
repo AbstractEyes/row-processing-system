@@ -165,3 +165,18 @@ class Builder:
             "row_assessed",
             {"row_id": row_id, "call_id": call_id, "passed": passed, "flags": flags or [], "errors": errors or []},
         )
+
+
+from rps.providers import FakeWriter as _FakeWriter  # noqa: E402
+
+
+class RecordingWriter(_FakeWriter):
+    """A fake writer that keeps every call it is asked to prepare."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.calls = []
+
+    def prepare(self, calls):
+        self.calls.extend(calls)
+        return super().prepare(calls)

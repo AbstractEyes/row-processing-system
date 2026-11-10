@@ -17,7 +17,7 @@ from typing import Any, Mapping, Sequence
 from ..assess import AssessContext, Assessment
 from . import checks, invention_checks, reading_checks, review_checks, validator
 from .seed_checks import screen_item
-from .problems import ERROR, Problem, errors, flags
+from .problems import ERROR, FLAG, Problem, errors, flags
 from .report import Report, balance_problems, row_stats
 from .similarity import SimilarityIndex
 
@@ -33,8 +33,31 @@ def _item(spec: Any) -> Mapping[str, Any] | None:
 ERROR_WHEN_RAISED = frozenset({"unrecorded_pose", "state_conflict", "unrecorded_detail", "unrecorded_shot", "mood_cause_differs", "caption_hint_list", "relation_side", "position_as_place", "unknown_stated", "pasted_value"})
 
 
+# Findings that say "the text holds a detail no record and no hint gives". A writer that was shown the picture may state
+# what the picture shows, so on a picture row each of these is a flag that points at the picture, never an error.
+PICTURE_DETAIL_CODES = frozenset({
+    "unrecorded_pose", "unrecorded_detail", "unrecorded_shot", "unrecorded_light", "unrecorded_thing", "unrecorded_size",
+    "unrecorded_material", "unrecorded_color", "unrecorded_garment", "state_conflict", "added_record", "relation_placement",
+})
+PICTURE_NOTE = "; look for it in the picture"
+
+
+def is_picture_row(row: Mapping[str, Any]) -> bool:
+    """True for a row whose writer call carried the picture: its writer label holds the picture's size."""
+    writer = row.get("writer")
+    size = writer.get("image_size") if isinstance(writer, Mapping) else None
+    return isinstance(size, int) and not isinstance(size, bool) and size > 0
+
+
+def _for_picture(found: list[Problem]) -> list[Problem]:
+    return [Problem(p.code, p.row_id, p.message + PICTURE_NOTE, FLAG) if p.code in PICTURE_DETAIL_CODES else p for p in found]
+
+
 def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:
-    """Every finding about one row: the validator, the item checks, the row checks."""
+    """Every finding about one row: the validator, the item checks, the row checks.
+
+    On a picture row (see `is_picture_row`) the checks for a detail no record gives only flag it.
+    """
     found = [
         *validator.validate_row(row),
         *validator.check_against_item(row, item),
@@ -44,7 +67,10 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
         *[p for check in invention_checks.INVENTION_CHECKS for p in check(row, item)],
         *[p for check in reading_checks.READING_CHECKS for p in check(row, item)],
     ]
-    return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED else p for p in found]
+    picture = is_picture_row(row)
+    if picture:
+        found = _for_picture(found)
+    return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED and not (picture and p.code in PICTURE_DETAIL_CODES) else p for p in found]
 
 
 def check_series(rows: Sequence[Mapping[str, Any]], item: Mapping[str, Any] | None = None) -> list[Problem]:

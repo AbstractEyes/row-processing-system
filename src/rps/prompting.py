@@ -537,8 +537,27 @@ def assignment_data(choices: Any) -> dict[str, Any] | None:
     return dict(choices) if isinstance(choices, Mapping) else None
 
 
+PICTURE_LINE = "The picture is attached."
+# A prompt profile words the line in its own style; a profile not listed here uses the default wording.
+PROFILE_PICTURE_LINES: Mapping[str, str] = {
+    "openai": "PICTURE\nThe picture is attached.",
+    "gemini": "<picture>The picture is attached.</picture>",
+}
+
+
+def picture_line(rules: WriterRules | None) -> str:
+    """The line that tells the writer the picture is attached, in the words of the rules' prompt profile."""
+    return PROFILE_PICTURE_LINES.get(rules.profile, PICTURE_LINE) if rules is not None else PICTURE_LINE
+
+
 def render_task_text(
-    spec: Any, feedback: Sequence[str] = (), *, ordinal: int = 0, rules: WriterRules | None = None, repair: bool = False
+    spec: Any,
+    feedback: Sequence[str] = (),
+    *,
+    ordinal: int = 0,
+    rules: WriterRules | None = None,
+    repair: bool = False,
+    picture: bool = False,
 ) -> str:
     """The user text of one call: the task text for the spec line, then any check messages.
 
@@ -549,12 +568,17 @@ def render_task_text(
     For a call of the repair step (`repair` true) the feedback is not check messages but the reviewers'
     notes and the row that was sent back: the task text is followed by `repair_text` instead, whatever the
     prompt profile.
+
+    With `picture` true (the call carries the picture) the task text ends with one line saying so; a call
+    without a picture is rendered exactly as before.
     """
     if rules is not None and rules.task_text is not None:
         choices = assignment_for(spec, ordinal, rules)
         text = rules.task_text(spec, ordinal) if choices is None else rules.task_text(spec, ordinal, choices)
     else:
         text = spec_text(spec)
+    if picture:
+        text = text + ("\n" if text.endswith("\n") else "\n\n") + picture_line(rules)
     if repair:
         block = repair_text(feedback)
         return text + ("\n" if text.endswith("\n") else "\n\n") + block if block else text

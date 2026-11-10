@@ -113,6 +113,8 @@ class CallSpec:
     # Set on a call of the repair step: the id of the row the call asks the writer to write again. Its
     # `feedback` is then the reviewers' notes and the row as it was written, and its `purpose` is `repair`.
     repair_of: str | None = None
+    # The routing table the project asked when it allowed the picture (None: the package's table).
+    image_policy: Mapping[str, Mapping[str, bool]] | None = field(default=None, repr=False, compare=False)
 
     @property
     def custom_id(self) -> str:

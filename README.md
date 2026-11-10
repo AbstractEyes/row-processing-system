@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.4. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.4.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,19 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.4.0
+
+| Change | What happens now |
+|---|---|
+| Rows written with the picture attached | A call that carries the picture ends its task text with the line "The picture is attached." (a prompt profile words it in its own style); a call without a picture is exactly what it was. Every writing prompt (default and each profile) gains a block "WHEN THE PICTURE IS ATTACHED": the picture decides where the records and the hint are silent, a given record the picture plainly shows to be wrong skips the item with the new class `picture_conflict`, the writer may add records for what the picture shows plainly (the light among them, as `shot light`) and state it in thoughts and wordings, and a hint that reports what a classifier or another model suggests is a suggestion to check against the picture |
+| The checker on a picture row | A picture row is a row whose writer label holds a picture size (`writer.image_size`). For it the checks for "a detail no record or hint gives" (`unrecorded_pose`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_light`, `unrecorded_thing`, `unrecorded_size`, `unrecorded_material`, `unrecorded_color`, `unrecorded_garment`, `state_conflict`, `relation_placement`, `added_record`) only flag, with the note "; look for it in the picture". Kept records, format, vocabulary, counts, questions, moods, names, hint copying, people and repeats are checked as for a text row, and a text row is checked exactly as before |
+| The reviewers' brief and the pool | The review brief gains "Rows with a picture" (judge every claim against the picture first; check the light) and the rule pool gains section L (rules 94-100) and closes with "Version 2" |
+| The API review seat sends the picture | A packet entry that holds a picture is sent as an image block before the row's text; each picture counts as `PICTURE_TOKENS` (1600) input tokens in the estimate and the budget check. A row without a picture is sent exactly as before |
+| Fetching pictures | `rps.pictures.FetchingImageLoader(config, state_store)` fetches a missing picture from the links in `control/pictures/*.jsonl` (see "Pictures"); the notebook's run cell uses it |
+| A project's picture table | `routing.image_policy` in the configuration opens or closes single cells of the picture table for one project. The package's table is unchanged and is the default |
+| Closing a task | `closed_tasks` lists task ids the controller prepares no new call for; calls already sent are collected and written rows go on as always |
+| Version | `0.4.0`; the notebook installs @v0.4.0 at release; the rule files and their versions are recompiled |
 
 ## What changed in 0.3.4
 
@@ -374,6 +387,8 @@ is refused. Unknown keys are refused too.
 | `time_budget_seconds`, `poll_seconds`, `max_attempts` | Run limits (an attempt past the first is a rebound) |
 | `stop_file`, `remote_stop_path` | Where a stop request is looked for |
 | `wait_for_review` | Keep a run going, polling for verdicts, while any packet is out with a reviewer (default: a run ends when the controller has nothing left to do itself) |
+| `routing` | `{"image_policy": {class: {column: true or false}}}`: a project's overrides of single cells of the picture table, see "Pictures" |
+| `closed_tasks` | A list of task ids. The controller prepares no new first-write call and no retry call for any line of a closed task; calls already sent are collected, and rows already written go on through review, rewriting and shipping. A closed task's unwritten lines are not work to do (a run can become idle with them), and the progress line and the status count them apart as closed. An id that names no known task is reported once as a problem and ignored. Nothing is recorded as an event; take the id out of the list to reopen the task |
 | `tasks_file` | The tasks file the planner reads on every pass: a local path, or `store:<path>` for a file in the state store (for example `store:control/tasks.json`, under the bucket's folder when there is one). A missing file in the state store means no tasks. See "The tasks file" |
 
 A route has these keys:
@@ -553,6 +568,14 @@ Review packets follow the same table, by the reviewer's model family (`review.re
 `anthropic`, `openai`, `google`, `deepseek`). A row whose picture the reviewer's family may not see
 goes into the packet without it and with `image_withheld: true`, and the reviewer judges it from its
 text; a family the table does not know gets no pictures at all.
+
+## Pictures
+
+A task line may name a picture (`image`, a path under its source's `images_dir`, or under `<work_dir>/images` when the source names no folder) and a class of the picture's origin (`image_class`; a source's `image_class` is the default). A source sets how large a picture the writer sees (`image_size`, the longest side in pixels). A call carries the picture only where the routing table above allows its class for the route; a packet carries it to a reviewer whose family the table allows (and the API review seat sends it as an image block), and the packet's copy is deleted after the verdict. No picture is stored in any repository.
+
+A project may override a cell of the table in its configuration: `"routing": {"image_policy": {"ffhq": {"deepseek": false}}}`. The keys are a class from the table and a column (`claude`, `openai`, `gemini`, `deepseek`), the values true or false, and anything else is a configuration error; `synthetic` can never be opened. The table in the package is the default and does not change; an owner who opens a cell answers for it, and the override takes effect for the writers, the packets and the review seat at once.
+
+Seeds hold page links and a runtime such as Colab holds no picture files, so pictures are fetched. A manifest lives in the state store under `control/pictures/`: any number of `*.jsonl` files, one object a line, `{"image": "coco/000000223816.jpg", "urls": ["https://...", "https://..."]}`. `image` is the path exactly as a task line gives it, `urls` are tried in order, and a later line for the same image wins. A link is an http or https address, or `store:<path>` for the bytes of a picture an owner staged privately in the state store. `rps.pictures.FetchingImageLoader(config, state_store)` is an `image_loader` for the controller: a picture already on the disk is loaded as the default loader loads it; a missing one is looked up in the manifest (read on first use, and again at most once a minute when an image is not found), fetched from the first link that answers (a 404 or 403 goes on to the next link, a timeout or a 5xx is tried again up to three times with a growing wait, nothing over 30,000,000 bytes is taken), written to a temporary file and renamed, and loaded. Every failure is an `ImageError` that names the image and what happened, which the controller turns into a failed call.
 
 ## The writing rules are inputs
 

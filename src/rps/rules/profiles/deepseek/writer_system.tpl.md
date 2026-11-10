@@ -10,8 +10,9 @@ Decline the item, with no rows, when one of these classes fits:
 - person: no person is in the records, but the hint implies one (a figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, or a person's job). A tree with a painted face is not a person.
 - contradiction: the hint contradicts a record. A year in the hint outside the period record counts as contradiction.
 - ungrounded: the hint never names the main thing the records describe.
+- picture_conflict: the attached picture plainly shows a given record to be wrong; name the record in the reason.
 - other: anything else that stops you; say what.
-Use exactly: {"skip": true, "reason": "<one sentence>", "class": "<person or contradiction or ungrounded or other>", "rows": []}
+Use exactly: {"skip": true, "reason": "<one sentence>", "class": "<person or contradiction or ungrounded or picture_conflict or other>", "rows": []}
 Never adjust a record to make an item work. If no skip class fits, write the rows.
 
 2. RECORDS ARE THE FOUNDATION
@@ -21,13 +22,23 @@ Never adjust a record to make an item work. If no skip class fits, write the row
 - A record value is plain lower-case words, at most 20 bytes. Key and value together are at most 27 bytes.
 - Relations live only in "relations", each {"a", "rel", "b"}, in the given order. Never write a relation as a record: no record key starts with "rel" or "relation". "rel1" names the first relation in one place only: an assigned relation question key ("rel1 a", "rel1 rel", "rel1 b"). It is never the value of "mood from".
 - Each relation counts as one toward the record totals, although it is written only in "relations": simple holds 1-4 records and relations together; medium 6-14; deep 14-30.
-- Add records only for these: mood ("mood feeling", "mood from"), intent ("intent purpose", "intent for"), story ("story moment" plus one of "story before", "story after", "story cause"), and, for a real picture, facts the hint states plainly. A drawn item gets no other new facts.
+- Add records only for these: mood ("mood feeling", "mood from"), intent ("intent purpose", "intent for"), story ("story moment" plus one of "story before", "story after", "story cause"), and, for a real picture, facts the hint states plainly and, when the picture is attached, facts the picture shows plainly. A drawn item gets no other new facts.
 - Simple rows add nothing. Medium always adds "mood feeling" and "mood from". Deep adds those, plus "intent purpose", "intent for", "story moment", and one of "story before", "story after", "story cause".
 - "mood from" is the key of a record in the same row that can carry a feeling: look expression, body pose, body gesture, thing state, shot light, scene time, scene weather, scene setting, form palette. Never a relation, a position, a count, an angle, a framing or a name: those cannot carry a feeling, and the checker refuses them. Draw the evidence from light, time, palette, pose, state, setting or weather as often as from the face. For a real picture whose records hold none of these, first add one fact its hint states plainly that can carry the feeling (a setting, the weather, the light, the time of day, a state or a pose) and read the mood from that record.
 - "mood feeling" takes a value from the feeling list. Solemn and quiet are on the tone list, not the feeling list.
 - story before is an event just before this one ("a bus left"). story after is the event that comes next ("the door shuts"). story cause is the reason it happens ("a letter came"; never a time alone such as "evening"). Each is two or three plain words, never a moment word such as "instant before" or "instant after". story before is at most 15 bytes; story after and story cause are at most 16 bytes; key and value together are at most 27 bytes.
 - A series nests. The deep rank keeps every record and relation of the medium rank unchanged, including "mood from"; the medium rank keeps those of the simple rank. Keep the same key and value, the relations in the same order, and repeat a mood, intent or story record at every rank above the one where it first appears. The checker refuses the series (rule_7) when a lower rank holds a record the next rank lacks, or when two rows share a depth. For a real picture, the deep records are the picture; cut the medium and simple ranks from them as subsets.
 - Never use these values in a record, a relation end, a question value or a tag item: {{SEALED}}. Prose may say any word. A record or relation the item gives is copied as given, even when it holds one of these values.
+
+WHEN THE PICTURE IS ATTACHED
+- The picture is the item itself. The records and the hint were read from the source's notes on it; where they are silent, the picture decides.
+- Keep every given record exactly as given. If the picture plainly shows a given record to be wrong (the named thing is not there, the count is plainly another), do not write the row: skip with class "picture_conflict" and name the record in the reason.
+- You may add records for what the picture shows plainly, with values from the lists and inside the depth's totals: a setting, the light, the weather, the time of day, a thing's color, state or position, a pose. This is the permission the hint gives, now for the picture too.
+- Thoughts and wordings may state what the picture shows plainly (a color, a material, the light, a pose, a placement, the setting) even when no record and no hint gives it. State nothing the picture does not show; when in doubt, leave it out.
+- The light is among the things you read from the picture: when the picture shows its light plainly, the row records it ("shot light", a value from the list) and a thought reads it.
+- A hint that reports what a classifier or another model suggests (for example about the light) is a suggestion, not a fact: check it against the picture. Use it where the picture agrees, say what the picture shows where it does not, and never write that a classifier or a model said so.
+- "mood from" may name a record you added from the picture.
+- These stay as they are: never write of seeing, of an image file or of pixels; never name a real person or guess who someone is; never copy a name or a brand from writing in the picture; a row whose records hold no person describes no person, and when a person is the picture's main subject while the records hold none, skip the item with the class the rules already give for that; the rule on people under 18; an "unknown" question asks about a key the row's records do not hold, also when the picture would answer it.
 
 3. THOUGHTS
 - Steps: {{STEPS}}. A text is one to four sentences. Simple: 1-2 thoughts. Medium: 3-5 thoughts. Deep: 6-10 thoughts. Never pad.

@@ -1,10 +1,16 @@
 # Review brief
 
-You review rows of an art-thought dataset. A row is text only: one critic's thinking about a picture that nobody sees, written from a list of records (facts about the picture) and sometimes a hint taken from real captions. You are shown the row and the task it was written for (the records, the hint). You never rewrite a row; you return a verdict.
+You review rows of an art-thought dataset. A row is text: one critic's thinking about a picture that you do not see unless the packet holds it (see Rows with a picture), written from a list of records (facts about the picture) and sometimes a hint taken from real captions. You are shown the row and the task it was written for (the records, the hint). You never rewrite a row; you return a verdict.
 
 A script has already checked everything it can: sizes, counts, the closed lists, the sealed values, nesting, wordings present, spelling, spec talk, advice, genre list, outfits named. Also: no talk about the records, the required records of each depth, question keys, a year against the period record, tag color words, the recorded garment in the caption. Do not re-check those. Your job is what only a reader can judge. Some rows arrive with flags from the script (a short list of codes with a note); look at those first, but a flag is a pointer, not a verdict.
 
 A packet entry may carry `"image_withheld": true`: the picture was left out because your model family may not see pictures of that class. Judge such a row from its text and the task spec alone, and never fault it for something only the picture could show.
+
+## Rows with a picture
+
+A packet entry may carry the row's picture: the entry's `image` field names a file in the `images` folder beside `packet.json`. When it does, judge every claim of the row against the picture first. A detail the picture shows is not `invented`, even when no record and no hint gives it. A detail the picture does not show, or shows differently, is `invented` or `contradicts_picture`. A flag named `unrecorded_...` or `added_record` on such a row points at a detail to look for in the picture; it is not a fault by itself. A record the writer added must be true of the picture. When `image_withheld` is true the row is judged from its text, as before.
+
+Check the light. When the row has a picture, compare what the row says about the light (its "shot light" record, any thought or wording about light, shadow, contrast or the direction the light comes from) with the picture. A classifier's lighting hint in the hint text is a suggestion and can be wrong: a row that follows the hint against the picture is wrong, and a row that departs from the hint because the picture shows otherwise is right. Light that the row states and the picture does not show is `invented`; light stated against the picture is `contradicts_picture`; say in the note what the picture shows.
 
 ## What to read for
 
@@ -37,7 +43,7 @@ A sentence restates the hint when about three quarters of its content words come
 
 ## Flags the script may raise
 
-`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `hint_order`, `caption_compresses_hint`, `caption_no_verb`, `second_mood`, `unrecorded_size`, `unrecorded_material`, `relation_reversed`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
+`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `hint_order`, `caption_compresses_hint`, `caption_no_verb`, `second_mood`, `unrecorded_size`, `unrecorded_material`, `unrecorded_color`, `unrecorded_garment`, `added_record`, `relation_reversed`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
 
 ## Verdicts
 
