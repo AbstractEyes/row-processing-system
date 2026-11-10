@@ -146,6 +146,9 @@ class RowState:
     reopened: bool = False
     escalations: int = 0
     hand: dict[str, Any] | None = None
+    # Each time the owner sent the row back to be reviewed again (the `review` hand decision), in order:
+    # {"decision", "ts", "set_aside" (the reviewer ids whose verdicts were set aside)}. `hand` is cleared then.
+    hand_reviews: list[dict[str, Any]] = field(default_factory=list)
     replaced_by: str | None = None
     accepted_by: str | None = None
     # How many packets this row was taken back from (see the `packet_withdrawn` event). It goes into the
@@ -174,6 +177,16 @@ class RowState:
 
     def main_verdicts(self) -> list[dict[str, Any]]:
         return [v for v in self.verdicts if not v.get("audit")]
+
+    def live_verdicts(self, *, audit: bool | None = False) -> list[dict[str, Any]]:
+        """The verdicts that count when the row is settled: those the owner has not set aside.
+
+        A verdict the owner set aside (see the `review` hand decision) stays in `verdicts` with
+        `"set_aside": True`, so the record is whole, but the review policy reads the row as if it had
+        not been given. `audit` is False for the row's own reviews (the default), True for audit verdicts
+        only and None for both.
+        """
+        return [v for v in self.verdicts if not v.get("set_aside") and (audit is None or bool(v.get("audit")) == audit)]
 
     def families_used(self) -> set[str]:
         """Families of every reviewer the row has been sent to (open or finished)."""
@@ -694,6 +707,9 @@ class State:
         if row is None or row.status != "hand":
             return
         decision = p["decision"]
+        if decision == "review":
+            self._set_aside_and_reopen(row, p, event.ts)
+            return
         row.hand = {**(row.hand or {}), "decision": decision, "resolved_ts": event.ts}
         if decision == "accept":
             row.status = "accepted"
@@ -723,6 +739,26 @@ class State:
                     call.row_ids.append(new_id)
         else:
             raise ValueError(f"unknown hand decision: {decision!r}")
+
+    @staticmethod
+    def _set_aside_and_reopen(row: RowState, payload: dict[str, Any], ts: str) -> None:
+        """The owner's `review` decision: set the named reviewers' verdicts aside and wait for a review again.
+
+        Every verdict of the row's own reviews (not an audit) from a reviewer in `set_aside` is marked
+        `"set_aside": True`. It stays in the row's record but no longer counts when the row is settled. The
+        reviewers' assignments stay, so each such reviewer and its family still count as used on the row and
+        the next review goes to someone else. The row then waits as `_on_row_reopened` leaves it: in question
+        when it has an assignment of its own reviews, awaiting a first review otherwise. A repair record on
+        the row is left as it is.
+        """
+        names = payload.get("set_aside")
+        names = {str(name) for name in names} if isinstance(names, (list, tuple)) else set()
+        for verdict in row.verdicts:
+            if not verdict.get("audit") and verdict["reviewer_id"] in names:
+                verdict["set_aside"] = True
+        row.hand_reviews.append({"decision": "review", "ts": ts, "set_aside": sorted(names)})
+        row.status = "in_question" if any(not a.audit for a in row.assignments) else "passed"
+        row.hand = None
 
     def _on_packet_burned(self, event: Event) -> None:
         packet = self.packets.get(event.payload["packet_id"])

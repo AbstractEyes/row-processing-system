@@ -125,4 +125,4 @@ def written_row_text(record: Mapping[str, Any]) -> str:
 def repair_feedback(row: "RowState") -> tuple[str, ...]:
     """The feedback a repair call carries: the notes of every fix verdict on the row, one item each, then the
     row as it was written (JSON text) as the last item. `rps.prompting.repair_text` turns it into words."""
-    return (*fix_notes(row.verdicts), written_row_text(row.record))
+    return (*fix_notes(row.live_verdicts(audit=None)), written_row_text(row.record))

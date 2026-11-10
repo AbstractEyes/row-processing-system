@@ -426,3 +426,100 @@ def test_counts_summarize_the_state():
     assert counts["rows"] == {"accepted": 1}
     assert counts["calls"] == {"returned": 1, "failed": 1}
     assert counts["batches_waiting"] == 0
+
+
+# ------------------------------------------------------------------ the owner sends a row back to be reviewed again
+
+def settle_live(row, solo=None, **policy):
+    """What the review policy makes of the verdicts of the row that still count."""
+    from rps.config import ReviewPolicy
+    from rps.review.policy import settle
+
+    live = row.live_verdicts()
+    return settle(
+        ReviewPolicy(fix_to_hand=True, **policy),
+        flagged=row.flagged,
+        verdicts=[v["verdict"] for v in live],
+        solo=[(solo or {}).get(v["reviewer_id"], True) for v in live],
+    )
+
+
+def fixed_row_in_hand(b: Builder):
+    """A row whose one reviewer (rev-a, family alpha) sent it back with a fix, now in the owner's hand queue."""
+    row, call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    verdict(b, row, "p0123456789ab", "fix")
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": "fix verdict", "verdicts": ["rev-a: fix"]})
+    return row, call
+
+
+def review_again(b: Builder, row: str, call: str, *set_aside: str) -> None:
+    b.add("hand_resolved", {"row_id": row, "call_id": call, "decision": "review", "set_aside": list(set_aside)})
+
+
+def test_a_row_reviewed_again_by_the_owner_waits_for_a_review_and_its_set_aside_verdict_no_longer_counts():
+    b = Builder()
+    row, call = fixed_row_in_hand(b)
+    before = State.from_events(b.events).rows[row]
+    assert before.status == "hand" and settle_live(before).outcome == "hand"
+    review_again(b, row, call, "rev-a")
+    state = same_state_when_every_event_comes_twice(b.events)
+    after = state.rows[row]
+    assert after.status == "in_question" and after.hand is None and state.hand_queue() == []
+    assert [r.row_id for r in state.rows_in_question()] == [row]
+    assert [(v["reviewer_id"], v["verdict"], v.get("set_aside")) for v in after.verdicts] == [("rev-a", "fix", True)]
+    assert after.live_verdicts() == [] and len(after.main_verdicts()) == 1  # still in the record, no longer counted
+    assert after.families_used() == {"alpha"} and after.reviewers_used() == {"rev-a"}
+    assert settle_live(after).outcome == "need_first"  # a review is asked for, the owner is not
+    assert after.hand_reviews[0]["set_aside"] == ["rev-a"] and after.hand_reviews[0]["decision"] == "review"
+
+
+def test_a_row_reviewed_again_counts_a_keep_that_was_not_set_aside_and_is_accepted_by_a_further_keep():
+    b = Builder()
+    row, call = passed_row(b)
+    publish(b, row, "p0123456789ab")
+    verdict(b, row, "p0123456789ab", "fix")
+    publish(b, row, "p0123456789ac", "rev-b", "beta", round_=2)
+    verdict(b, row, "p0123456789ac", "keep", "rev-b", "beta")
+    b.add("row_to_hand", {"row_id": row, "call_id": call, "reason": "fix verdict", "verdicts": ["rev-a: fix", "rev-b: keep"]})
+    review_again(b, row, call, "rev-a")
+    state = State.from_events(b.events)
+    waiting = state.rows[row]
+    assert waiting.status == "in_question"
+    assert [v["reviewer_id"] for v in waiting.live_verdicts()] == ["rev-b"]
+    solo = {"rev-b": False}  # rev-b may not keep alone
+    assert settle_live(waiting, solo).outcome == "further"
+    publish(b, row, "p0123456789ad", "rev-c", "gamma", round_=3)
+    verdict(b, row, "p0123456789ad", "keep", "rev-c", "gamma")
+    done = State.from_events(b.events).rows[row]
+    assert done.families_used() == {"alpha", "beta", "gamma"}
+    assert settle_live(done, solo).outcome == "accept"
+    b.add("row_accepted", {"row_id": row, "call_id": call, "by": "reviewers"})
+    assert State.from_events(b.events).rows[row].status == "accepted"
+
+
+def test_a_review_decision_for_a_row_not_in_the_hand_queue_changes_nothing():
+    b = Builder()
+    row, call = passed_row(b)
+    review_again(b, row, call, "rev-a")  # never sent to the owner
+    assert State.from_events(b.events).rows[row].status == "passed"
+    assert State.from_events(b.events).rows[row].hand_reviews == []
+    b2 = Builder()
+    row2, call2 = fixed_row_in_hand(b2)
+    review_again(b2, row2, call2, "rev-a")
+    once = State.from_events(b2.events)
+    review_again(b2, row2, call2, "rev-a")  # the row has left the queue
+    assert State.from_events(b2.events).snapshot() == once.snapshot()
+
+
+def test_a_row_with_a_failed_repair_can_still_be_reviewed_again_and_an_extra_key_is_ignored():
+    b = Builder()
+    row, call = fixed_row_in_hand(b)
+    b.add("hand_resolved", {"row_id": row, "call_id": call, "decision": "review", "set_aside": ["rev-a"], "future_key": 1})
+    state = State.from_events(b.events)
+    assert state.rows[row].status == "in_question" and state.rows[row].repair is None
+    # an old-style event with no set_aside list sets nothing aside
+    b2 = Builder()
+    row2, call2 = fixed_row_in_hand(b2)
+    b2.add("hand_resolved", {"row_id": row2, "call_id": call2, "decision": "review"})
+    assert State.from_events(b2.events).rows[row2].live_verdicts()[0]["verdict"] == "fix"

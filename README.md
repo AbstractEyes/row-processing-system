@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.3. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,16 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.3.3
+
+| Change | What happens now |
+|---|---|
+| A fourth hand decision, `review` | `{"row_id": "...", "decision": "review", "set_aside": ["reviewer-id", ...]}` in `control/hand/` sets the named reviewers' verdicts on a row in the hand queue aside and sends the row to be reviewed again. A set-aside verdict stays in the row's record (marked `set_aside`) but no longer counts when the row is settled; the reviewer's assignment stays, so that reviewer and its family count as used on the row and the next review goes to someone else. `set_aside` is required: a non-empty list of reviewers, each with a verdict of its own reviews on the row, or the line is reported and changes nothing. See "The hand queue" |
+| A `review` line that was carried out | It stays in its file and is silent when the row comes back to the hand queue for a verdict given since: every verdict it names is set aside already |
+| No reviewer reads the same row twice | A further review or an audit never goes to a reviewer the row was already sent to, also when the configuration has since moved that reviewer to another family (the family rule alone would then see an unused family) |
+| Unchanged | The other decisions and every event written before are read as they were. A row whose repair came to nothing may still be reviewed again |
+| Version | `0.3.3`; the notebook installs @v0.3.3 at release |
 
 ## What changed in 0.3.2
 
@@ -781,6 +791,18 @@ under `control/hand/` in the state store, one decision per line:
     {"row_id": "...", "decision": "accept"}
     {"row_id": "...", "decision": "discard"}
     {"row_id": "...", "decision": "replace", "row": {"thoughts": ["written by hand"]}}
+    {"row_id": "...", "decision": "review", "set_aside": ["reviewer-id"]}
+
+A `review` decision is for a row whose reviewer was wrong. Each reviewer in `set_aside` must have given a verdict
+of its own reviews on the row (an audit verdict does not count). Those verdicts are set aside: they stay in the
+record, marked `set_aside`, but the review policy reads the row as if they had not been given. The reviewer's
+assignment stays, so the reviewer and its family are used on the row and a reviewer of another family takes the
+next review, by the usual rules: a keep from a reviewer that may keep alone accepts the row, a keep from one that
+may not asks for a further review, a `fix` sends the row to the hand queue again (where a row is rewritten at
+most once). The row leaves the queue as a reopened row does. A row whose rewrite came to nothing may be reviewed
+again this way. A `review` line that is missing `set_aside`, has an empty list, or names a reviewer with no
+verdict on the row is reported and changes nothing. A `review` line that was carried out stays in its file; when
+the row comes back to the queue for a verdict given since, the line is not carried out again and not reported.
 
 A `replace` row is stamped with the human writer label and the row's source label. Decisions for
 rows not in the queue are ignored; a decision that cannot be used is reported once. A row that is

@@ -75,7 +75,7 @@ Event kinds and their payloads:
                          repair comes to nothing, or whose repairs were switched off, goes back to the
                          hand queue with a `row_to_hand` that says why)
     row_accepted         row_id, call_id, by, reason
-    hand_resolved        row_id, call_id, decision (accept, discard, replace), row (for replace)
+    hand_resolved        row_id, call_id, decision (accept, discard, replace, review), row (for replace), set_aside (for review: reviewer ids)
     packet_burned        packet_id, row_ids, deleted (pictures deleted from the shared store)
     shipped              task_id, route, row_ids, path, count
 """

@@ -556,3 +556,91 @@ def test_only_the_assigned_reviewers_file_is_read(tmp_path):
     )
     controller.step()
     assert controller.state.rows[packet.items[0]["row_id"]].verdicts == []
+
+
+# ------------------------------------------------------------------ the owner sends a row back to be reviewed again
+
+
+def fix_to_hand_world(tmp_path):
+    """One flagged row that its first reviewer (rev-a) sent to the owner with a fix; the other families are unused."""
+    world, controller = setup(tmp_path, config=review_config(policy={"fix_to_hand": True}), lines=("001",), assess=flag_everything)
+    world.drive(controller, by_family({"alpha": "fix", "beta": "keep", "gamma": "keep"}))
+    assert [row.status for row in controller.state.rows.values()] == ["hand"]
+    return world, controller
+
+
+def test_a_review_decision_needs_reviewers_with_a_verdict_on_the_row(tmp_path):
+    world, controller = fix_to_hand_world(tmp_path)
+    (row,) = controller.state.rows.values()
+    write_hand_decisions(
+        world,
+        [
+            {"row_id": row.row_id, "decision": "review"},
+            {"row_id": row.row_id, "decision": "review", "set_aside": []},
+            {"row_id": row.row_id, "decision": "review", "set_aside": "rev-a"},
+            {"row_id": row.row_id, "decision": "review", "set_aside": ["rev-c"]},  # rev-c gave no verdict on the row
+            {"row_id": row.row_id, "decision": "review", "set_aside": ["rev-a", "rev-c"]},
+        ],
+    )
+    for _ in range(3):
+        controller.step()
+    assert row.status == "hand" and world.events_of("hand_resolved") == []
+    text = " | ".join(controller.problems)
+    assert text.count("a review needs 'set_aside'") == 1 and text.count("no verdict of its own reviews") == 1  # each said once
+    assert row.row_id in text and "decisions.jsonl" in text
+
+
+def test_the_owner_sets_a_reviewers_verdict_aside_and_a_reviewer_of_another_family_looks_again(tmp_path):
+    world, controller = fix_to_hand_world(tmp_path)
+    (row,) = controller.state.rows.values()
+    assert [v["reviewer_id"] for v in row.verdicts] == ["rev-a"] and row.verdicts[0]["verdict"] == "fix"
+    write_hand_decisions(world, [{"row_id": row.row_id, "decision": "review", "set_aside": ["rev-a"]}])
+    controller.step()
+    controller.step()
+    (event,) = world.events_of("hand_resolved")
+    assert event.payload["decision"] == "review" and event.payload["set_aside"] == ["rev-a"]
+    assert row.verdicts[0].get("set_aside") is True and controller.state.hand_queue() == []
+    further = [p for p in controller.state.packets.values() if p.reviewer_id != "rev-a"]
+    assert len(further) == 1 and further[0].family in ("beta", "gamma")
+    assert [item["row_id"] for item in further[0].items] == [row.row_id] and further[0].items[0]["round"] == 2
+    assert world.state_store.read_text(layout.HAND_QUEUE_PATH) == ""
+    # the line stays where it is: one event, however many passes follow
+    for _ in range(3):
+        controller.step()
+    assert len(world.events_of("hand_resolved")) == 1
+
+
+def test_a_review_line_that_was_carried_out_is_silent_when_the_row_comes_back_to_the_owner(tmp_path):
+    world, controller = fix_to_hand_world(tmp_path)
+    (row,) = controller.state.rows.values()
+    write_hand_decisions(world, [{"row_id": row.row_id, "decision": "review", "set_aside": ["rev-a"]}])
+    world.drive(controller, by_family({"alpha": "fix", "beta": "fix", "gamma": "fix"}))  # the next reviewer sends it back too
+    assert row.status == "hand" and [v.get("set_aside") for v in row.verdicts] == [True, None]
+    for _ in range(3):
+        controller.step()
+    assert len(world.events_of("hand_resolved")) == 1  # the old line does not send the row round again
+    assert not any(row.row_id in problem for problem in controller.problems)  # and it is not a mistake to report
+
+
+# ------------------------------------------------------------------ no reviewer reads the same row twice
+
+
+def test_no_reviewer_is_sent_the_same_row_twice_when_its_family_was_renamed(tmp_path):
+    alone = [{"id": "rev-a", "family": "alpha"}]
+    world, controller = setup(tmp_path, config=review_config(reviewers=alone), assess=flag_everything)
+    world.drive(controller, keep_all)  # a flagged row needs two keeps, and there is no second family
+    assert {row.status for row in controller.state.rows.values()} == {"hand"}
+    first_packets = len(world.events_of("packet_published"))
+    # the same reviewer under a new family name is not a second reader
+    renamed = {"id": "rev-a", "family": "renamed"}
+    world.config = review_config(reviewers=[renamed])
+    again = world.controller(assess=flag_everything)
+    world.drive(again, keep_all)
+    assert {row.status for row in again.state.rows.values()} == {"hand"}
+    assert len(world.events_of("packet_published")) == first_packets and world.events_of("row_reopened") == []
+    # with a reviewer of another family the rows go to that one, never back to the first
+    world.config = review_config(reviewers=[renamed, {"id": "rev-b", "family": "beta"}])
+    last = world.controller(assess=flag_everything)
+    world.drive(last, keep_all)
+    for row in last.state.rows.values():
+        assert row.status == "accepted" and [v["reviewer_id"] for v in row.verdicts] == ["rev-a", "rev-b"]

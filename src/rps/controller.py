@@ -111,7 +111,7 @@ from .store.remote import describe_error
 from .tasks import FilePlanner, Planner, StorePlanner, TaskSpec
 
 ImageLoader = Callable[[Any, Any], "tuple[bytes, str, int]"]
-HAND_DECISIONS = ("accept", "discard", "replace")
+HAND_DECISIONS = ("accept", "discard", "replace", "review")
 
 # A tasks file in a store behind a network is read at most this often (a local folder, on every pass).
 TASKS_CHECK_SECONDS = 15.0
@@ -2128,6 +2128,16 @@ class Controller:
     def _writer_family(self, row: RowState) -> str:
         return self.config.review.family_of(row.record["writer"]["provider"])
 
+    @staticmethod
+    def _not_yet_asked(row: RowState, reviewers: Sequence[ReviewerConfig]) -> list[ReviewerConfig]:
+        """The reviewers the row has not been sent to: no reviewer reads the same row twice.
+
+        The family rule sees to that for as long as a reviewer's family is what it was when the row was
+        sent to it. This keeps it true when the configuration has since moved a reviewer to another family.
+        """
+        asked = row.reviewers_used()
+        return [reviewer for reviewer in reviewers if reviewer.id not in asked]
+
     def _settlement(self, row: RowState) -> Settlement:
         """What the review policy, as the configuration has it now, makes of a row's verdicts so far.
 
@@ -2135,7 +2145,7 @@ class Controller:
         of its own reviews, not its audit. A keep from a reviewer that may not keep alone (`solo_keep`
         off) never accepts a row by itself.
         """
-        counted = row.verdicts if row.reopened else row.main_verdicts()
+        counted = row.live_verdicts(audit=None) if row.reopened else row.live_verdicts()
         return settle(
             self.config.review.policy,
             flagged=row.flagged,
@@ -2163,7 +2173,7 @@ class Controller:
             if outcome.outcome == ACCEPT:
                 self._emit("row_accepted", {"row_id": row.row_id, "call_id": row.call_id, "by": "reviewers", "reason": outcome.reason})
             elif outcome.outcome == DISCARD:
-                errors = [f"{v['reviewer_id']}: {', '.join(v['reasons'])} {v['notes']}".strip() for v in row.verdicts if v["verdict"] == "reject"]
+                errors = [f"{v['reviewer_id']}: {', '.join(v['reasons'])} {v['notes']}".strip() for v in row.live_verdicts(audit=None) if v["verdict"] == "reject"]
                 self._emit(
                     "row_rejected",
                     {
@@ -2179,7 +2189,9 @@ class Controller:
                 self._emit("row_to_hand", {"row_id": row.row_id, "call_id": row.call_id, "reason": outcome.reason, "verdicts": history})
             elif outcome.outcome == FURTHER:
                 key = f"{row.row_id}:{len(row.assignments)}"
-                candidate = pick_further_reviewer(reviewers, row.families_used(), self._writer_family(row), key)
+                candidate = pick_further_reviewer(
+                    self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
+                )
                 if candidate is None:
                     self._emit(
                         "row_to_hand",
@@ -2241,6 +2253,27 @@ class Controller:
                     except ProvenanceError as error:
                         self._note_problem(f"{path}: row {row.row_id!r}: {error}")
                         continue
+                elif kind == "review":
+                    set_aside = decision.get("set_aside")
+                    if not isinstance(set_aside, list) or not set_aside or not all(isinstance(name, str) and name for name in set_aside):
+                        self._note_problem(
+                            f"{path}: row {row.row_id!r}: a review needs 'set_aside', a non-empty list of reviewer ids"
+                        )
+                        continue
+                    names = list(dict.fromkeys(set_aside))
+                    judged = {v["reviewer_id"] for v in row.main_verdicts()}
+                    unknown = [name for name in names if name not in judged]
+                    if unknown:
+                        self._note_problem(
+                            f"{path}: row {row.row_id!r}: no verdict of its own reviews to set aside from {unknown}"
+                        )
+                        continue
+                    counted = {v["reviewer_id"] for v in row.live_verdicts()}
+                    if not any(name in counted for name in names):
+                        # The line was carried out before: every verdict it names is set aside already, and the
+                        # row is in the queue again for a verdict given since. That one is the owner's to answer.
+                        continue
+                    payload["set_aside"] = names
                 self._emit("hand_resolved", payload)
                 del waiting[row.row_id]
 
@@ -2284,7 +2317,7 @@ class Controller:
         family = self._writer_family(row)
         if any(not a.audit for a in row.assignments):
             key = f"{row.row_id}:{len(row.assignments)}"
-            return pick_further_reviewer(reviewers, row.families_used(), family, key) is not None
+            return pick_further_reviewer(self._not_yet_asked(row, reviewers), row.families_used(), family, key) is not None
         return pick_first_reviewer(reviewers, family, row.ordinal or 0, avoid=self._reviewers_of_original(row)) is not None
 
     def _reviewers_of_original(self, row: RowState) -> set[str]:
@@ -2484,7 +2517,9 @@ class Controller:
             plan.setdefault(reviewer.id, []).append((row, 1, False))
         for row in self.state.rows_in_question():
             key = f"{row.row_id}:{len(row.assignments)}"
-            reviewer = pick_further_reviewer(reviewers, row.families_used(), self._writer_family(row), key)
+            reviewer = pick_further_reviewer(
+                self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
+            )
             if reviewer is None:
                 to_hand.append((row, NO_FURTHER_REVIEWER))
                 continue
@@ -2492,7 +2527,9 @@ class Controller:
         selected = lambda row_id: audit_selected(row_id, policy.audit_fraction, policy.audit_seed)  # noqa: E731
         for row in self.state.rows_needing_audit(selected):
             key = f"{row.row_id}:audit"
-            reviewer = pick_further_reviewer(reviewers, row.families_used(), self._writer_family(row), key)
+            reviewer = pick_further_reviewer(
+                self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
+            )
             if reviewer is not None:
                 plan.setdefault(reviewer.id, []).append((row, len(row.assignments) + 1, True))
         return plan, to_hand
