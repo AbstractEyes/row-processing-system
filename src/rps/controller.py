@@ -86,8 +86,9 @@ from .provenance import (
 from .providers.base import CallResult, CallSpec, Handle, Request, RouteRejected, RouteUnavailable, Writer
 from .repair import candidates as repair_candidates
 from .repair import failure_reason as repair_failure_reason
-from .repair import route_may_repair
-from .review.packets import build_packet, parse_verdict_lines, publish_packet, validate_verdict
+from .repair import repair_item, route_may_repair
+from .amend import amend_problems, amend_values
+from .review.packets import AMEND_FIELD, build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
     ACCEPT,
     DISCARD,
@@ -877,6 +878,7 @@ class Controller:
             if boost:
                 max_output_tokens = max(max_output_tokens + 1, int(max_output_tokens * route.truncation_factor))
         rules = self.rules_for(route_name)
+        item = self._item_for(line, repair_of)
         spec = CallSpec(
             call_id=ids.call_id(task.task_id, line.line_id, attempt),
             task_id=task.task_id,
@@ -888,7 +890,7 @@ class Controller:
             kind=route.kind,
             effort=self._effort_of(task, route_name),
             max_output_tokens=max_output_tokens,
-            spec=line.spec,
+            spec=item,
             pool_version=task.pool_version,
             purpose=effective_purpose(task.purpose, attempt, repair=repair_of is not None),
             feedback=tuple(feedback),
@@ -897,12 +899,19 @@ class Controller:
             image_class=line.image_class if line.image else None,
             image_policy=self.config.image_table() if self.config.image_policy else None,
             task_text=render_task_text(
-                line.spec, feedback, ordinal=line.ordinal, rules=rules, repair=repair_of is not None, picture=image is not None
+                item, feedback, ordinal=line.ordinal, rules=rules, repair=repair_of is not None, picture=image is not None
             ),
             rules=rules,
             repair_of=repair_of,
         )
         return spec, size
+
+    def _item_for(self, line: LineState, repair_of: str | None) -> Any:
+        """The spec item a call is built from, and its rows are checked against: the line's own item, except for a
+        call of the repair step, whose item holds the light a reviewer corrected as a given record (`rps.repair`)."""
+        if repair_of is None:
+            return line.spec
+        return repair_item(line.spec, self.state.rows.get(repair_of))
 
     @staticmethod
     def _purpose_of(task: TaskState, status: Any) -> str:
@@ -1970,6 +1979,7 @@ class Controller:
         call = self.state.calls[row.call_id]
         task = self.state.tasks[row.task_id]
         line = task.lines[row.line]
+        item = self._item_for(line, call.repair_of)  # a repaired row is held to the light a reviewer corrected
         return AssessContext(
             task_id=task.task_id,
             source=task.source,
@@ -1978,9 +1988,9 @@ class Controller:
             attempt=call.attempt,
             route=row.route,
             pool_version=task.pool_version,
-            spec=line.spec,
+            spec=item,
             item_id=line.item_id,
-            assignment=assignment_data(assignment_for(line.spec, line.ordinal, self.rules)),
+            assignment=assignment_data(assignment_for(item, line.ordinal, self.rules)),
         )
 
     def _settle_assessment(self, row: RowState, assessment: Assessment) -> None:
@@ -2064,7 +2074,11 @@ class Controller:
                 self._note_problem(f"{path}: {problem}")
             allowed = [item["row_id"] for item in packet.items]
             for verdict in verdicts:
-                problems = validate_verdict(verdict, allowed_row_ids=allowed)
+                # A correction of a record is judged apart from the verdict: one that is not allowed (the reviewer's
+                # configuration does not list the key) or not valid is dropped with a note, and the verdict counts.
+                amend = verdict.get(AMEND_FIELD) if isinstance(verdict, dict) else None
+                bare = {key: value for key, value in verdict.items() if key != AMEND_FIELD} if isinstance(verdict, dict) else verdict
+                problems = validate_verdict(bare, allowed_row_ids=allowed)
                 if problems:
                     self._note_problem(f"{path}: row {verdict.get('row_id')!r}: {'; '.join(problems)}")
                     continue
@@ -2073,6 +2087,17 @@ class Controller:
                     a.open and a.packet_id == packet.packet_id and a.reviewer_id == packet.reviewer_id for a in row.assignments
                 ):
                     continue
+                kept_amend = None
+                if isinstance(verdict, dict) and AMEND_FIELD in verdict:
+                    keys = self.config.review.amendable(packet.reviewer_id)
+                    amend_problems_found = amend_problems(verdict["verdict"], amend, keys, amend_values(keys))
+                    if amend_problems_found:
+                        self._note_problem(
+                            f"{path}: row {verdict.get('row_id')!r}: the correction is dropped, the verdict counts: "
+                            + "; ".join(amend_problems_found)
+                        )
+                    else:
+                        kept_amend = {str(key): str(value) for key, value in amend.items()}
                 self._emit(
                     "verdict_received",
                     {
@@ -2083,6 +2108,7 @@ class Controller:
                         "verdict": verdict["verdict"],
                         "reasons": list(verdict.get("reasons", [])),
                         "notes": str(verdict.get("notes", "")),
+                        **({AMEND_FIELD: kept_amend} if kept_amend else {}),
                     },
                 )
 
@@ -2602,7 +2628,7 @@ class Controller:
                 except ImageError as error:
                     self._warn(f"row {row.row_id}: no picture in the packet ({error})")
             entries.append(
-                (row.record, {"line_id": line.line_id, "item_id": line.item_id, "spec": line.spec}, image, ext)
+                (row.record, {"line_id": line.line_id, "item_id": line.item_id, "spec": self._item_for(line, row.repair_of)}, image, ext)
             )
         packet_id = ids.packet_id([self._assignment_key(reviewer_id, row, round_, audit) for row, round_, audit in chunk])
         brief_version = self._brief_version()
@@ -2613,6 +2639,7 @@ class Controller:
             created=self._timestamp(),
             rows=entries,
             withheld=withheld,
+            **self._amend_permission(reviewer_id),
         )
         publish_packet(self.state_store, packet)
         # The packet's files must be durable before any event announces it.
@@ -2634,6 +2661,12 @@ class Controller:
                 "items": items,
             },
         )
+
+    def _amend_permission(self, reviewer_id: str) -> dict[str, Any]:
+        """The keyword arguments that give a packet its reviewer's permission to correct a record: none for a
+        reviewer whose configuration lists no `may_amend`, so such a packet is built as it always was."""
+        keys = self.config.review.amendable(reviewer_id)
+        return {"may_amend": keys, "amend_values": amend_values(keys)} if keys else {}
 
     @staticmethod
     def _assignment_key(reviewer_id: str, row: RowState, round_: int, audit: bool) -> str:

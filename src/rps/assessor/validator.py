@@ -4,7 +4,9 @@ The dataset's own validator (the `thought_seeds` package, pinned in requirements
 row against the rules and a series for nesting. This module adds what a curator checks on
 top, the same way the package's batch checker does: the id belongs to the item, the license
 and source follow the item, every record of the given spec is kept, and capitalized words
-that might be real names are listed for a reader.
+that might be real names are listed for a reader. An item a reviewer corrected the light of (see `rps.amend`)
+holds the corrected record as a given record, so it is kept like any other; when the reviewer found no light, the
+item carries that, and a row that still records a `shot light` is refused (`light_removed`).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from thought_seeds import rows as _rows
 from thought_seeds.core import HELD, tp
 
+from ..amend import LIGHT_KEY, NONE_VALUE
 from .problems import ERROR, FLAG, Problem, item_ids
 
 PERMISSIVE_ROW = _rows.PERMISSIVE_ROW
@@ -58,6 +61,17 @@ def check_against_item(row: Mapping[str, Any], item: Mapping[str, Any] | None) -
         lost = [kv for kv in tp.records(base) if kv not in have]
         if lost:
             out.append(Problem("spec_kept", row_id, f"records of the given spec missing or changed: {lost[:4]}"))
+    amended = item.get("amend")
+    if isinstance(amended, Mapping) and amended.get(LIGHT_KEY) == NONE_VALUE:
+        held = dict(tp.records(row.get("spec") or {})).get(LIGHT_KEY)
+        if held is not None:
+            out.append(
+                Problem(
+                    "light_removed",
+                    row_id,
+                    f"a reviewer who saw the picture found no light that a listed value fits: the row records {LIGHT_KEY} {held!r}, record no {LIGHT_KEY}",
+                )
+            )
     if item.get("seed_id") and source.get("seed_id") != item["seed_id"]:
         out.append(Problem("source", row_id, f"a seeded row names its seed: seed_id {item['seed_id']!r}, kind 'seeded'"))
     return out

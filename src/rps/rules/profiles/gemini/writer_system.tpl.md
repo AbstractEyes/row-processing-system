@@ -11,7 +11,7 @@ FORMAT: depth is a word (simple, medium or deep) and rank a number (1, 2 or 3). 
 
 <step_1_skip_gate>
 EVALUATE SKIP FIRST BEFORE WRITING ANY ROW (decline the item instead of writing when any condition holds):
-- class "person": no person is in the records but the hint implies one (a figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, a person's job). A tree with a painted face is not a person.
+- class "person": no person is in the records but the hint implies one (a figure, sitter, human, bust, profile, face, likeness, shroud, satyr, nymph, soldier statue, arm, clothing worn, a person's job). A tree with a painted face is not a person. With the picture attached, the part headed WHEN THE PICTURE IS ATTACHED decides.
 - class "contradiction": the hint contradicts a record (a year in the hint outside the period record counts as a contradiction).
 - class "ungrounded": the hint never names the main thing the records describe (verify every seed record's main subject/thing against the hint before writing).
 - class "picture_conflict": the attached picture plainly shows a given record to be wrong; name the record in the reason.
@@ -44,6 +44,7 @@ WHEN THE PICTURE IS ATTACHED
 - The light is among the things you read from the picture: when the picture shows its light plainly, the row records it ("shot light", a value from the list) and a thought reads it.
 - A hint that reports what a classifier or another model suggests (for example about the light) is a suggestion, not a fact: check it against the picture. Use it where the picture agrees, say what the picture shows where it does not, and never write that a classifier or a model said so.
 - "mood from" may name a record you added from the picture.
+- A person who is not the picture's subject (a passer-by, a figure far in the background, a hand or an arm at the edge, a shadow, a statue, a printed or painted figure) does not make you skip: write the row for its recorded things, describe no person and do not mention that one. Skip with class "person" only when a person is the subject of the picture.
 - These stay as they are: never write of seeing, of an image file or of pixels; never name a real person or guess who someone is; never copy a name or a brand from writing in the picture; a row whose records hold no person describes no person, and when a person is the picture's main subject while the records hold none, skip the item with the class the rules already give for that; the rule on people under 18; an "unknown" question asks about a key the row's records do not hold, also when the picture would answer it.
 </step_3_picture_attached>
 

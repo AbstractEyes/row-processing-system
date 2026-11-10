@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.4.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.5.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,16 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.5.0
+
+| Change | What happens now |
+|---|---|
+| A reviewer who may correct the light | A reviewer entry may hold `"may_amend": ["shot light"]` (the only key that may be listed; anything else is a configuration error). Its packets then carry `may_amend` and `amend_values` (`{"shot light": [the list's values, "none"]}`), and its verdict on a row may carry `"amend": {"shot light": "<value>"}`, only with `fix`, only a listed key, only a listed value (`none`: the picture shows no light a listed value fits). The review client refuses anything else when the verdict is recorded and at `check` and `push`; the command line is `verdict ... --amend "shot light=<value>"`. A packet for a reviewer without the setting is unchanged, and the API review seat never amends. The controller drops a correction from a reviewer whose configuration does not allow it, or with an invalid value, with a noted problem; the verdict still counts |
+| The repair step with a correction | When the fix verdicts on a row hold exactly one distinct amended value, the repair call is built from the item with that record set as a given record (for `none`, with any given `shot light` removed), the repair text says what the reviewer saw, and the repaired row is checked against the same item: the given-record check (`spec_kept`) holds it to the value, and for `none` a row that still holds a `shot light` is refused with `light_removed`. Two fix verdicts that differ set no record, and the repair text gives both readings. `State.light_corrections()` lists, for each such row, the value, who gave it, the repaired rows and whether each kept it |
+| A person who is not the picture's subject | With the picture attached, a passer-by, a distant figure, a hand or an arm at the edge, a shadow, a statue or a printed or painted figure no longer makes the writer skip with class `person`: the row is written for its recorded things, describes no person and does not mention that one; `person` is for a picture whose subject is a person. The skip list says the picture block decides for a call with a picture; a text call is unchanged. The reviewers' brief says that leaving such a person out is not a fault (`person` is for a row that describes a person its records do not hold, `should_skip` for a subject the records leave out). Pool rules 103-106 |
+| The form of a person tag | The reviewers' brief has a section "The person tag": `woman`, `man`, `person`, `male` or `female` in the tags where the rules name `1girl`, `1boy`, `1other`, with or without `solo`, and `1girl` or `1boy` for an adult, are not faults and never send a row back; the person words of the tags are made uniform after review, when the dataset is built. A person tag is a fault only when it disagrees with the records (gender, number, a person the records do not hold). Measured before the change: one reviewer sent back one row in four for the tag's form alone. Pool rule 107 |
+| Version | `0.5.0`; the notebook installs @v0.5.0; the rule files and their versions are recompiled |
 
 ## What changed in 0.4.2
 
@@ -774,6 +784,7 @@ mapping in its own events and matches verdicts back by row id.
 | `enabled` | `true` (the default) or `false`. A reviewer that is off is given no packet. A packet already addressed to it that it has not answered is withdrawn, and its rows go to reviewers that are on (see "Switching a reviewer off or on") |
 | `solo_keep` | `true` (the default) or `false`. With `false`, a keep from this reviewer never accepts a row on its own: when the only keeps on a row come from such reviewers, the row is in question and goes on to a further reviewer, as a flagged keep does. At least one keep from a reviewer that may keep alone is needed to accept it (see the policy below) |
 | `weight` | A whole number from 1 to 100 (default 1): how many turns the reviewer takes in each round of the rotation that hands out rows. Among the reviewers that may take a row, one of weight 6 is given about six times as many rows as one of weight 1, for first reviews, further reviews and the audit alike. A weight of 1 is not written out, so a configuration without weights is unchanged |
+| `may_amend` | A list of the records this reviewer may correct with a `fix` verdict (from 0.5.0). The only key that may be listed is `"shot light"`; anything else is a configuration error. Its packets then carry `may_amend` and `amend_values`, and a verdict may add `"amend": {"shot light": "<value>"}` (a value of the list, or `none`). Reviewers type `python -m rps.review verdict --packet P --row R --verdict fix --reasons contradicts_picture --notes "..." --amend "shot light=soft window"` (or `--amend "shot light=none"`). With the repair step on, the row is written again with that record given (see "The repair step"). Left out, the reviewer behaves as before |
 
 Any other key is refused, and the reviewer commands read the same configuration file, so a reviewer's
 machine needs a version of the package that knows `solo_keep` (or, from 0.3.2, `weight`) to read a file that sets it. A configuration

@@ -3,6 +3,7 @@
     python -m rps.review pull    --reviewer ID --config PATH --into DIR
     python -m rps.review status  --reviewer ID --config PATH --into DIR
     python -m rps.review verdict --packet P --row R --verdict keep|fix|reject --reasons a,b --notes TEXT
+                                 [--amend "shot light=VALUE"]     (only where the packet says may_amend; only with fix)
     python -m rps.review check   --packet P [--file PATH]
     python -m rps.review push    --packet P --config PATH
 
@@ -56,6 +57,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help=f"name the problem and where it is (up to {MAX_NOTES_LENGTH} characters)",
     )
+    verdict.add_argument(
+        "--amend",
+        default=None,
+        metavar="KEY=VALUE",
+        help='only where the packet says may_amend, and only with fix: the correction, such as "shot light=soft window" '
+        '(or "shot light=none" when the picture shows no light a listed value fits)',
+    )
     verdict.add_argument("--replace", action="store_true", help="replace an earlier verdict for the row")
     verdict.add_argument("--into", default=".")
 
@@ -80,6 +88,16 @@ def _client_for_packet(into: str, packet_id: str, remote: object = None, reviewe
     if reviewer is not None and reviewer != packet.reviewer_id:
         raise ReviewError(f"packet {packet_id} is addressed to {packet.reviewer_id}, not {reviewer}")
     return ReviewerClient(packet.reviewer_id, remote, into)  # type: ignore[arg-type]
+
+
+def _parse_amend(text: str | None) -> dict[str, str] | None:
+    """`--amend "shot light=soft window"` as {"shot light": "soft window"} (None when the option is not given)."""
+    if text is None:
+        return None
+    key, sep, value = text.partition("=")
+    if not sep or not key.strip() or not value.strip():
+        raise ReviewError('--amend wants a record key and its value, as in --amend "shot light=soft window"')
+    return {key.strip(): value.strip()}
 
 
 def _describe(packet: LocalPacket, client: ReviewerClient, out: TextIO) -> None:
@@ -112,6 +130,11 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextI
                 f"Record each verdict: {PROG} verdict --packet {packet.packet_id} --row ROW_ID "
                 f'--verdict keep|fix|reject --reasons code1,code2 --notes "name the problem and where it is" --into {args.into}\n'
             )
+            if packet.may_amend:
+                out.write(
+                    f"This packet lets you correct {', '.join(packet.may_amend)} with a fix verdict: add --amend \"{packet.may_amend[0]}=VALUE\" "
+                    f"(a value from amend_values in packet.json, or none); read the brief before you use it.\n"
+                )
             out.write(f"When every row has a verdict: {PROG} push --packet {packet.packet_id} --config {args.config} --into {args.into}\n")
             return EXIT_OK
 
@@ -134,7 +157,9 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextI
         if args.command == "verdict":
             client = _client_for_packet(args.into, args.packet)
             reasons = [code.strip() for code in args.reasons.split(",") if code.strip()]
-            client.record_verdict(args.packet, args.row, args.verdict, reasons, args.notes, replace=args.replace)
+            client.record_verdict(
+                args.packet, args.row, args.verdict, reasons, args.notes, replace=args.replace, amend=_parse_amend(args.amend)
+            )
             packet = client.require_packet(args.packet)
             judged = len(client.judged_rows(packet))
             out.write(f"recorded {args.verdict} for row {args.row} in packet {args.packet} ({judged} of {len(packet.row_ids)} judged)\n")

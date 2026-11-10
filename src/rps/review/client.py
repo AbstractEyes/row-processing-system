@@ -58,20 +58,24 @@ class ReviewItem:
     image_path: Path | None
     brief_version: str
     verdict_schema: dict[str, Any]
+    # What the packet's reviewer may correct with a fix verdict (empty for a reviewer who may not).
+    may_amend: tuple[str, ...] = ()
+    amend_values: Mapping[str, Sequence[str]] = field(default_factory=dict)
 
     def to_json(self) -> str:
-        return json.dumps(
-            {
-                "packet_id": self.packet_id,
-                "row_id": self.row_id,
-                "row": self.row,
-                "task": self.task,
-                "image_path": str(self.image_path) if self.image_path else None,
-                "brief_version": self.brief_version,
-                "verdict_schema": self.verdict_schema,
-            },
-            ensure_ascii=True,
-        )
+        data: dict[str, Any] = {
+            "packet_id": self.packet_id,
+            "row_id": self.row_id,
+            "row": self.row,
+            "task": self.task,
+            "image_path": str(self.image_path) if self.image_path else None,
+            "brief_version": self.brief_version,
+            "verdict_schema": self.verdict_schema,
+        }
+        if self.may_amend:
+            data["may_amend"] = list(self.may_amend)
+            data["amend_values"] = {key: list(values) for key, values in self.amend_values.items()}
+        return json.dumps(data, ensure_ascii=True)
 
 
 ReviewFn = Callable[[ReviewItem], Mapping[str, Any]]
@@ -133,6 +137,21 @@ class LocalPacket:
     @property
     def verdicts_file(self) -> Path:
         return self.folder / "verdicts.jsonl"
+
+    @property
+    def may_amend(self) -> tuple[str, ...]:
+        """The records the packet lets its reviewer correct (empty: none)."""
+        listed = self.document.get("may_amend")
+        return tuple(str(key) for key in listed) if isinstance(listed, list) else ()
+
+    @property
+    def amend_values(self) -> dict[str, list[str]]:
+        values = self.document.get("amend_values")
+        return {str(key): list(vals) for key, vals in values.items()} if isinstance(values, dict) and self.may_amend else {}
+
+    def verdict_problems(self, verdict: Any) -> list[str]:
+        """The problems with a verdict for a row of this packet, under the packet's own permission to amend."""
+        return validate_verdict(verdict, allowed_row_ids=self.row_ids, may_amend=self.may_amend, amend_values=self.amend_values)
 
     def entry(self, row_id: str) -> dict[str, Any]:
         for entry in self.document["rows"]:
@@ -327,8 +346,10 @@ class ReviewerClient:
         verdicts, _ = self._read_local_verdicts(packet)
         judged: dict[str, dict[str, Any]] = {}
         for verdict in verdicts:
-            if validate_verdict(verdict, allowed_row_ids=packet.row_ids) == [] and verdict["row_id"] not in judged:
-                judged[verdict["row_id"]] = normalize_verdict(verdict)
+            if packet.verdict_problems(verdict) == [] and verdict["row_id"] not in judged:
+                judged[verdict["row_id"]] = normalize_verdict(
+                    verdict, may_amend=packet.may_amend, amend_values=packet.amend_values
+                )
         return judged
 
     def record_verdict(
@@ -340,14 +361,21 @@ class ReviewerClient:
         notes: str = "",
         *,
         replace: bool = False,
+        amend: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Validate a verdict and append it to the reviewer's own verdict file."""
+        """Validate a verdict and append it to the reviewer's own verdict file.
+
+        `amend` ({"shot light": value}) is the correction a reviewer whose packet says `may_amend` may give
+        with a fix verdict; it is refused for any other reviewer, and for any other verdict.
+        """
         packet = self.require_packet(packet_id)
-        record = {"row_id": row_id, "verdict": verdict, "reasons": list(reasons), "notes": notes}
-        problems = validate_verdict(record, allowed_row_ids=packet.row_ids)
+        record: dict[str, Any] = {"row_id": row_id, "verdict": verdict, "reasons": list(reasons), "notes": notes}
+        if amend is not None:
+            record["amend"] = dict(amend)
+        problems = packet.verdict_problems(record)
         if problems:
             raise ReviewError("; ".join(problems))
-        record = normalize_verdict(record)
+        record = normalize_verdict(record, may_amend=packet.may_amend, amend_values=packet.amend_values)
         path = f"{packet_id}/verdicts.jsonl"
         if row_id in self.judged_rows(packet):
             if not replace:
@@ -374,7 +402,7 @@ class ReviewerClient:
         report.problems.extend(line_problems)
         seen: set[str] = set()
         for number, verdict in enumerate(verdicts, start=1):
-            problems = validate_verdict(verdict, allowed_row_ids=packet.row_ids)
+            problems = packet.verdict_problems(verdict)
             if problems:
                 report.problems.extend(f"verdict {number}: {problem}" for problem in problems)
                 continue
@@ -465,13 +493,20 @@ class ReviewerClient:
                 image_path=packet.image_path(entry),
                 brief_version=str(packet.document["brief_version"]),
                 verdict_schema=packet.document.get("verdict_schema", {}),
+                may_amend=packet.may_amend,
+                amend_values=packet.amend_values,
             )
             try:
                 answer = dict(review_fn(item))
                 if answer.setdefault("row_id", row_id) != row_id:
                     raise ReviewError(f"the reviewer answered for {answer['row_id']!r}, not {row_id!r}")
                 self.record_verdict(
-                    packet_id, row_id, answer.get("verdict", ""), answer.get("reasons", []), answer.get("notes", "")
+                    packet_id,
+                    row_id,
+                    answer.get("verdict", ""),
+                    answer.get("reasons", []),
+                    answer.get("notes", ""),
+                    amend=answer.get("amend"),
                 )
                 result.judged += 1
             except (ReviewError, PacketError) as error:

@@ -14,6 +14,10 @@ The hint of such a row describes the same picture, so a sentence of the row will
 
 Check the light. When the row has a picture, compare what the row says about the light (its "shot light" record, any thought or wording about light, shadow, contrast or the direction the light comes from) with the picture. A classifier's lighting hint in the hint text is a suggestion and can be wrong: a row that follows the hint against the picture is wrong, and a row that departs from the hint because the picture shows otherwise is right. Light that the row states and the picture does not show is `invented`; light stated against the picture is `contradicts_picture`; say in the note what the picture shows.
 
+A person the row leaves out. On a picture row whose records hold no person, a person who is not the picture's subject (a passer-by, a figure far in the background, a hand or an arm at the edge, a shadow, a statue, a printed or painted figure) and whom the row leaves out is not a fault. Use `person` for a row that describes a person its records do not hold, and `should_skip` for a picture whose subject is a person the records leave out.
+
+Correcting the light. When your packet says `may_amend`, you may correct the row's light yourself. When the row's light is wrong and the picture shows its light plainly, send the row back with `fix` and give the light with the correction: add `"amend": {"shot light": "<value>"}` to the verdict, where the value is one of the packet's `amend_values` list, or `none` when the picture shows no light that a list value fits. The correction goes only with `fix`, and the verdict still needs its reason code and a note that says what the picture shows. Never correct what you cannot see: with the picture withheld, or a light the picture does not show plainly, give no correction. When your packet does not say `may_amend`, write the light the picture shows into the note, as before.
+
 ## What to read for
 
 | Code | Look for |
@@ -38,6 +42,10 @@ Check the light. When the row has a picture, compare what the row says about the
 | question | A question that cannot be answered as asked, or a chain question whose value is not really stated. |
 | advice | Advice inside a thought instead of the critique. |
 | other | Anything else; say what in the notes. |
+
+## The person tag
+
+The form of a person tag is not yours to judge. `woman`, `man`, `person`, `male` or `female` in the tags where the rules name `1girl`, `1boy`, `1other`, with or without `solo`, is not a fault, and neither is `1girl` or `1boy` for an adult: the person words of the tags are made uniform after review, when the dataset is built. Do not send a row back for it, and do not name it among a row's other faults. A person tag is a fault only when it disagrees with the records: the wrong gender or the wrong number of people (`wording`), or a person the records do not hold (`person`).
 
 ## Where a restatement of the hint begins
 

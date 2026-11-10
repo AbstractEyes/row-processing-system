@@ -45,7 +45,7 @@ from . import ids
 from .events import Event
 from .failures import KIND_TRUNCATED
 from .ids import canonical_json
-from .repair import repair_feedback
+from .repair import correction_outcomes, repair_feedback
 
 # "repaired" is the end of a row that was written again: it never ships, and what stands for it is the rows its repair wrote.
 TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside", "repaired"})
@@ -625,18 +625,19 @@ class State:
         if assignment is None:
             return
         assignment.open = False
-        row.verdicts.append(
-            {
-                "reviewer_id": p["reviewer_id"],
-                "family": p["family"],
-                "verdict": p["verdict"],
-                "reasons": list(p.get("reasons", [])),
-                "notes": str(p.get("notes", "")),
-                "packet_id": p["packet_id"],
-                "audit": assignment.audit,
-                "round": assignment.round,
-            }
-        )
+        verdict = {
+            "reviewer_id": p["reviewer_id"],
+            "family": p["family"],
+            "verdict": p["verdict"],
+            "reasons": list(p.get("reasons", [])),
+            "notes": str(p.get("notes", "")),
+            "packet_id": p["packet_id"],
+            "audit": assignment.audit,
+            "round": assignment.round,
+        }
+        if isinstance(p.get("amend"), dict):  # a reviewer's correction of a record (see `rps.amend`)
+            verdict["amend"] = {str(key): str(value) for key, value in p["amend"].items()}
+        row.verdicts.append(verdict)
 
     def _on_row_escalated(self, event: Event) -> None:
         p = event.payload
@@ -1003,6 +1004,13 @@ class State:
             if outcome == "due" and task is not None and line is not None:
                 due.append((task, line, status))
         return due
+
+    def light_corrections(self) -> list[dict[str, Any]]:
+        """The rows a reviewer corrected the light of (the `amend` of a fix verdict), in row-id order, with what the
+        repair did: the value or values given and by whom, the value that was set (None when reviewers differed),
+        the rows the repair wrote and for each whether it holds the value (`rps.repair.correction_outcomes`). Read
+        from the verdicts and the rows, so it is the same after a restart."""
+        return correction_outcomes(self.rows)
 
     def repairs_failed(self, max_attempts: int) -> list[tuple[RowState, str, str]]:
         """The rows whose repair has come to nothing, as (row, code, detail), in row-id order.

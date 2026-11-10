@@ -25,6 +25,10 @@ these fields:
     verdict   keep, fix or reject
     reasons   short codes (lowercase letters, digits and "_"); required for fix and reject
     notes     free text: name the problem and where it is (which field or thought)
+
+A reviewer whose packet says `may_amend` may add one more field to a "fix" verdict, `amend` (see
+`rps.amend`): {"shot light": <a value of the packet's amend_values, or "none">}. Any other reviewer's
+verdict has the four fields above and nothing else.
 """
 
 from __future__ import annotations
@@ -36,6 +40,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Iterable, Mapping, Sequence
 
 from .. import layout
+from ..amend import amend_problems
 from ..provenance import require_label
 from ..store.base import Store
 
@@ -45,6 +50,7 @@ REASON_PATTERN = re.compile(r"^[a-z0-9_]{1,40}$")
 MAX_REASONS = 10
 MAX_NOTES_LENGTH = 2000
 VERDICT_FIELDS = ("row_id", "verdict", "reasons", "notes")
+AMEND_FIELD = "amend"
 
 VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -68,21 +74,45 @@ VERDICT_SCHEMA: dict[str, Any] = {
 }
 
 
+def verdict_schema(amend_values: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
+    """The verdict schema of a packet: `VERDICT_SCHEMA`, and for a reviewer who may amend, the `amend` field too."""
+    if not amend_values:
+        return VERDICT_SCHEMA
+    schema = copy.deepcopy(VERDICT_SCHEMA)
+    schema["properties"][AMEND_FIELD] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {key: {"type": "string", "enum": list(values)} for key, values in amend_values.items()},
+        "description": "only with the verdict fix: the value the picture shows for the record (or none)",
+    }
+    return schema
+
+
 class PacketError(ValueError):
     """A packet or verdict that is malformed."""
 
 
-def validate_verdict(obj: Any, allowed_row_ids: Iterable[str] | None = None) -> list[str]:
+def validate_verdict(
+    obj: Any,
+    allowed_row_ids: Iterable[str] | None = None,
+    *,
+    may_amend: Sequence[str] = (),
+    amend_values: Mapping[str, Sequence[str]] | None = None,
+) -> list[str]:
     """Return the problems with a verdict (empty when it is valid).
 
     Fields other than the four above are refused: a reviewer returns a verdict, never
-    a rewritten row.
+    a rewritten row. The one exception is `amend`, for a reviewer whose packet lists `may_amend`
+    (and `amend_values`): it goes only with a fix verdict, names only a key of `may_amend` and gives
+    only a value of `amend_values` for it.
     """
     if not isinstance(obj, Mapping):
         return ["the verdict is not an object"]
     problems: list[str] = []
     for key in obj:
-        if key not in VERDICT_FIELDS:
+        if key == AMEND_FIELD:
+            problems.extend(amend_problems(obj.get("verdict"), obj[key], may_amend, amend_values))
+        elif key not in VERDICT_FIELDS:
             problems.append(f"unexpected field {key!r} (reviewers return verdicts only)")
     row_id = obj.get("row_id")
     if not isinstance(row_id, str) or not row_id:
@@ -107,17 +137,25 @@ def validate_verdict(obj: Any, allowed_row_ids: Iterable[str] | None = None) -> 
     return problems
 
 
-def normalize_verdict(obj: Mapping[str, Any]) -> dict[str, Any]:
-    """A valid verdict with every field present."""
-    problems = validate_verdict(obj)
+def normalize_verdict(
+    obj: Mapping[str, Any],
+    *,
+    may_amend: Sequence[str] = (),
+    amend_values: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """A valid verdict with every field present (`amend` only when the verdict has one)."""
+    problems = validate_verdict(obj, may_amend=may_amend, amend_values=amend_values)
     if problems:
         raise PacketError("; ".join(problems))
-    return {
+    record = {
         "row_id": obj["row_id"],
         "verdict": obj["verdict"],
         "reasons": list(obj.get("reasons", [])),
         "notes": obj.get("notes", ""),
     }
+    if AMEND_FIELD in obj:
+        record[AMEND_FIELD] = dict(obj[AMEND_FIELD])
+    return record
 
 
 def review_view(stored_row: Mapping[str, Any], line: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -169,6 +207,10 @@ class Packet:
     brief_version: str
     created: str
     rows: list[PacketRow]
+    # The records the packet's reviewer may correct with a fix verdict, and the values it may give for each
+    # (empty for a reviewer who may not: the packet then reads as it always did).
+    may_amend: tuple[str, ...] = ()
+    amend_values: dict[str, list[str]] = field(default_factory=dict)
 
     def items(self) -> list[dict[str, Any]]:
         """Row ids and picture paths, as recorded in the packet_published event."""
@@ -186,13 +228,21 @@ def build_packet(
     created: str,
     rows: Sequence[tuple[Mapping[str, Any], Mapping[str, Any] | None, bytes | None, str | None]],
     withheld: Collection[str] = (),
+    may_amend: Sequence[str] = (),
+    amend_values: Mapping[str, Sequence[str]] | None = None,
 ) -> Packet:
     """Assemble a packet from (stored row, spec line, picture bytes, picture extension) tuples.
 
     Each stored row is turned into its blind review view (see `review_view`); a row
     without a writer label is refused. `withheld` names the rows whose picture the
-    reviewer may not see; they must come without picture bytes.
+    reviewer may not see; they must come without picture bytes. `may_amend` and `amend_values`
+    are the permission of a reviewer who may correct a record (see `rps.amend`); a key listed
+    in `may_amend` needs its values.
     """
+    amend_values = dict(amend_values or {}) if may_amend else {}
+    for key in may_amend:
+        if key not in amend_values:
+            raise PacketError(f"the packet lets the reviewer amend {key!r} but gives no values for it")
     if not rows:
         raise PacketError("a packet needs at least one row")
     items: list[PacketRow] = []
@@ -213,18 +263,33 @@ def build_packet(
                 image_withheld=held,
             )
         )
-    return Packet(packet_id=packet_id, reviewer_id=reviewer_id, brief_version=brief_version, created=created, rows=items)
+    return Packet(
+        packet_id=packet_id,
+        reviewer_id=reviewer_id,
+        brief_version=brief_version,
+        created=created,
+        rows=items,
+        may_amend=tuple(may_amend),
+        amend_values={key: list(values) for key, values in amend_values.items()},
+    )
 
 
 def packet_document(packet: Packet) -> dict[str, Any]:
-    """The contents of packet.json."""
+    """The contents of packet.json. A packet for a reviewer who may amend adds `may_amend` and `amend_values`
+    (and the `amend` field to the verdict schema); a packet for any other reviewer reads as it always did."""
+    amend: dict[str, Any] = (
+        {"may_amend": list(packet.may_amend), "amend_values": {key: list(values) for key, values in packet.amend_values.items()}}
+        if packet.may_amend
+        else {}
+    )
     return {
         "format": PACKET_FORMAT,
         "packet_id": packet.packet_id,
         "reviewer_id": packet.reviewer_id,
         "brief_version": packet.brief_version,
         "created": packet.created,
-        "verdict_schema": VERDICT_SCHEMA,
+        "verdict_schema": verdict_schema(packet.amend_values if packet.may_amend else None),
+        **amend,
         "rows": [
             {
                 "row_id": item.row_id,

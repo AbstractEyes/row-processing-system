@@ -72,6 +72,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .config import DEFAULT_PROFILE, ConfigError, RulesConfig
 from .ids import canonical_json
+from .repair import LIGHT_LINE_STARTS
 
 DEFAULT_SYSTEM_FILE = "writer_system.md"
 DEFAULT_SCHEMA_FILE = "row_schema.json"
@@ -513,9 +514,14 @@ def repair_text(feedback: Sequence[str]) -> str:
     if not items:
         return ""
     *notes, earlier = items
+    corrections: list[str] = []  # the lines about a reviewer's correction of the light stand just before the row
+    while notes and notes[-1].startswith(LIGHT_LINE_STARTS):
+        corrections.insert(0, notes.pop())
     parts = [REPAIR_INTRO]
     if notes:
         parts.append(REPAIR_NOTES_HEAD + "\n" + "\n".join("- " + note.replace("\n", "\n  ") for note in notes))
+    if corrections:
+        parts.append("\n".join(corrections))
     parts.append(REPAIR_ROW_HEAD + "\n" + earlier)
     parts.append(REPAIR_CLOSING)
     return "\n\n".join(parts)

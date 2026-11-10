@@ -18,6 +18,11 @@ queue for the owner. With `repair.enabled` on, such a row is sent back instead, 
     back           route's), linked to the row it repairs in the events and the state (never as a column of
                    a stored or shipped row), checked and reviewed like any row. A row that is sent back
                    again is never repaired again: it goes to the owner
+    a correction   a reviewer whose configuration lists `may_amend` may give the light with a fix verdict
+    of the light   (`rps.amend`). When the row's fix verdicts hold exactly one distinct value, the call is built from
+                   the line's item with that record set as a given record (for "none", with any given `shot light`
+                   removed: `repair_item`), the repair text says so (`light_lines`), and the new row is checked
+                   against that same item, so the checker's given-record check holds it to the value
 
 Nothing here touches a store or the state; the controller does the recording (see `rps.controller`).
 """
@@ -27,6 +32,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Iterable, Mapping, Sequence
 
+from .amend import LIGHT_KEY, NONE_VALUE, amended_item
 from .config import REPAIR
 from .provenance import RESERVED_ROW_KEYS
 from .review.policy import FIX_TO_HAND_REASON
@@ -124,5 +130,113 @@ def written_row_text(record: Mapping[str, Any]) -> str:
 
 def repair_feedback(row: "RowState") -> tuple[str, ...]:
     """The feedback a repair call carries: the notes of every fix verdict on the row, one item each, then the
-    row as it was written (JSON text) as the last item. `rps.prompting.repair_text` turns it into words."""
-    return (*fix_notes(row.live_verdicts(audit=None)), written_row_text(row.record))
+    lines about a correction of the light (when a reviewer gave one: `light_lines`), then the row as it was
+    written (JSON text) as the last item. `rps.prompting.repair_text` turns it into words."""
+    verdicts = row.live_verdicts(audit=None)
+    return (*fix_notes(verdicts), *light_lines(light_amendment(verdicts)), written_row_text(row.record))
+
+
+# ---------------------------------------------------------------------------- a reviewer's correction of the light
+
+# The sentences a repair call is given about the light (`light_lines`); `rps.prompting.repair_text` sets them apart
+# from the notes by how they begin.
+LIGHT_GIVEN = "A reviewer who saw the picture gives the light as: {value}. Keep this record exactly and make every sentence agree with it."
+LIGHT_NONE = (
+    "A reviewer who saw the picture found no light that a listed value fits. "
+    "Record no shot light and state no light source or direction."
+)
+LIGHT_DIFFER = (
+    "Reviewers who saw the picture read the light differently: {values}. No light record is set for you: "
+    "look at the picture, and record a shot light only where it shows one plainly."
+)
+LIGHT_LINE_STARTS = ("A reviewer who saw the picture ", "Reviewers who saw the picture ")
+
+
+def light_amendment(verdicts: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """What the fix verdicts on a row say about the light: None when no reviewer corrected it, else
+    {"key", "values" (the distinct values given, in the order they came), "value" (the one value to set,
+    or None when two reviewers differ), "reviewers" (who gave which value, in order)}.
+
+    Only a fix verdict counts, and a verdict the owner set aside is not among `verdicts` (see
+    `RowState.live_verdicts`). The record is set (or, for "none", removed) only when exactly one distinct value
+    was given.
+    """
+    given = [
+        (str(verdict.get("reviewer_id", "")), str(value))
+        for verdict in verdicts
+        if verdict.get("verdict") == "fix"
+        for key, value in (verdict.get("amend") or {}).items()
+        if key == LIGHT_KEY
+    ]
+    if not given:
+        return None
+    values = list(dict.fromkeys(value for _reviewer, value in given))
+    return {
+        "key": LIGHT_KEY,
+        "values": values,
+        "value": values[0] if len(values) == 1 else None,
+        "reviewers": [{"reviewer_id": reviewer, "value": value} for reviewer, value in given],
+    }
+
+
+def light_lines(amendment: Mapping[str, Any] | None) -> list[str]:
+    """The line a repair call is given about the light (empty when no reviewer corrected it)."""
+    if not amendment:
+        return []
+    values = amendment["values"]
+    if len(values) == 1:
+        return [LIGHT_NONE] if values[0] == NONE_VALUE else [LIGHT_GIVEN.format(value=values[0])]
+    shown = ", ".join("no light a listed value fits" if value == NONE_VALUE else f'"{value}"' for value in values)
+    return [LIGHT_DIFFER.format(values=shown)]
+
+
+def repair_item(item: Any, row: "RowState | None") -> Any:
+    """The spec item a row is written again from, and checked against: the line's own item, with the light a
+    reviewer corrected set as a given record (or removed, for "none"). Two reviewers who differ set nothing."""
+    amendment = light_amendment(row.live_verdicts(audit=None)) if row is not None else None
+    if amendment is None or amendment["value"] is None:
+        return item
+    return amended_item(item, amendment["key"], amendment["value"])
+
+
+def kept_value(record: Mapping[str, Any], key: str, value: str) -> bool:
+    """Whether a row holds the corrected record: the row's `key` is `value`, or, for "none", the row holds no
+    such record at all."""
+    system, attribute = key.split(" ", 1)
+    body = (record.get("spec") or {}).get(system)
+    held = body.get(attribute) if isinstance(body, Mapping) else None
+    return held is None if value == NONE_VALUE else held == value
+
+
+def correction_outcomes(rows: Mapping[str, "RowState"]) -> list[dict[str, Any]]:
+    """Every row a reviewer corrected the light of, whose repair is on record, in row-id order: what the
+    reviewers gave and what the repair did with it.
+
+    Each entry is {"row_id" (the row that was sent back), "key", "values", "value" (the value that was set, or
+    None when reviewers differed), "reviewers" ([{reviewer_id, value}]), "repaired_by" (the ids of the rows the
+    repair wrote), "outcomes" ([{row_id, "kept" (the row holds the value; None when no value was set), "status"}])}.
+    """
+    out = []
+    for row_id in sorted(rows):
+        row = rows[row_id]
+        amendment = light_amendment(row.live_verdicts(audit=None))
+        if amendment is None or row.repair is None:
+            continue
+        written = [rows[item] for item in row.repair.get("rows", []) if item in rows]
+        value = amendment["value"]
+        out.append(
+            {
+                "row_id": row_id,
+                **amendment,
+                "repaired_by": [item.row_id for item in written],
+                "outcomes": [
+                    {
+                        "row_id": item.row_id,
+                        "kept": None if value is None else kept_value(item.record, amendment["key"], value),
+                        "status": item.status,
+                    }
+                    for item in written
+                ],
+            }
+        )
+    return out

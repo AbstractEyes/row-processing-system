@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping
 
+from .amend import check_keys as check_amend_keys
 from .ids import canonical_json
 from .keys import looks_like_secret
 from .layout import NAME_PATTERN, PathError, normalize_path, parse_bucket
@@ -469,6 +470,8 @@ class ReviewerConfig:
     (a whole number from 1 to 100; 1 by default): among the reviewers that may take a row, one of
     weight 4 is given about four times as many rows as one of weight 1 (see `rps.review.policy`). A
     weight of 1 is left out of `to_dict`, so a configuration without weights reads as it always did.
+    `may_amend` lists the records this reviewer may correct with a "fix" verdict (see `rps.amend`); in this
+    version the only key that may be listed is "shot light". It is left out of `to_dict` when empty.
     """
 
     id: str
@@ -476,28 +479,37 @@ class ReviewerConfig:
     enabled: bool = True
     solo_keep: bool = True
     weight: int = 1
+    may_amend: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"id": self.id, "family": self.family, "enabled": self.enabled, "solo_keep": self.solo_keep}
         if self.weight != 1:
             data["weight"] = self.weight
+        if self.may_amend:
+            data["may_amend"] = list(self.may_amend)
         return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any], where: str) -> "ReviewerConfig":
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object with 'id' and 'family'")
-        _check_keys(data, {"id", "family", "enabled", "solo_keep", "weight"}, where)
+        _check_keys(data, {"id", "family", "enabled", "solo_keep", "weight", "may_amend"}, where)
         for key in ("id", "family"):
             value = data.get(key)
             if not isinstance(value, str) or not NAME_PATTERN.match(value):
                 _fail(f"{where}.{key}: expected letters, digits, '.', '_' or '-', got {value!r}")
+        amend = data.get("may_amend", [])
+        if not isinstance(amend, (list, tuple)):
+            _fail(f"{where}.may_amend: expected a list of record keys, such as [\"shot light\"]")
+        for problem in check_amend_keys(amend):
+            _fail(f"{where}.may_amend: {problem}")
         return cls(
             id=data["id"],
             family=data["family"],
             enabled=_flag(data.get("enabled", True), f"{where}.enabled"),
             solo_keep=_flag(data.get("solo_keep", True), f"{where}.solo_keep"),
             weight=_number(data.get("weight", 1), f"{where}.weight", minimum=1, maximum=100, integer=True),
+            may_amend=tuple(dict.fromkeys(amend)),
         )
 
 
@@ -620,6 +632,12 @@ class ReviewConfig:
         """True when the reviewer is configured and switched on (one that is off, or gone, is given no packets)."""
         reviewer = self.reviewer(reviewer_id)
         return reviewer is not None and reviewer.enabled
+
+    def amendable(self, reviewer_id: str) -> tuple[str, ...]:
+        """The records this reviewer may correct with a fix verdict (its `may_amend`); none for a reviewer the
+        configuration does not name."""
+        reviewer = self.reviewer(reviewer_id)
+        return () if reviewer is None else reviewer.may_amend
 
     def may_keep_alone(self, reviewer_id: str) -> bool:
         """Whether a keep from this reviewer may accept a row without a second opinion (its `solo_keep`).
