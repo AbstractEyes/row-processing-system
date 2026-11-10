@@ -9,7 +9,7 @@ import re
 import pytest
 
 from rps import assessor, rules
-from rps.assessor import PICTURE_DETAIL_CODES, PICTURE_NOTE, is_picture_row
+from rps.assessor import PICTURE_DETAIL_CODES, PICTURE_HINT_CODES, PICTURE_HINT_NOTE, PICTURE_NOTE, is_picture_row
 from rps.assessor.problems import ERROR, FLAG
 from rps.rules import compile as rules_compile
 from rps.rules import form
@@ -224,7 +224,45 @@ def test_a_text_row_is_checked_exactly_as_before_whatever_the_picture_signal_is(
         assert assessor.check_row(_text_row(row), item) == bare
         picture = assessor.check_row(_pictured(row), item)
         # the picture row differs only in the demoted codes
-        assert [p for p in picture if p.code not in PICTURE_DETAIL_CODES] == [p for p in bare if p.code not in PICTURE_DETAIL_CODES]
+        demoted = PICTURE_DETAIL_CODES | PICTURE_HINT_CODES
+        assert [p for p in picture if p.code not in demoted] == [p for p in bare if p.code not in demoted]
+
+
+# ------------------------------------------------------------------ the hint describes the same picture
+
+HINT_CAPTION = (
+    "A young man stands against a plain light gray background wearing a white shirt and striped shorts. "
+    "He faces the camera with one hand in his pocket."
+)
+HINT_CASES = {
+    "thought_hint_copy": lambda: _case_medium(lambda r: r["thoughts"][1].update(text="Cafe tables stand near the window with a lamp.")),
+    "caption_hint_copy": lambda: (
+        _small(spec={"person": {"gender": "man"}}, caption="A young man stands in a white shirt and striped shorts against a gray background."),
+        {"kind": "single", "hint": HINT_CAPTION, "spec": {"person": {"gender": "man"}}},
+    ),
+    "caption_hint_list": lambda: (
+        _small(spec={"thing": {"name": "dog"}}, caption="A dog, a cat and a horse stand together."),
+        {"kind": "single", "hint": "The painting depicts a dog, a cat and a horse. They stand in a yard.", "spec": {"thing": {"name": "dog"}}},
+    ),
+}
+
+
+def test_the_hint_codes_are_exactly_the_codes_the_cases_cover():
+    assert set(HINT_CASES) == set(PICTURE_HINT_CODES)
+    assert not PICTURE_HINT_CODES & PICTURE_DETAIL_CODES
+
+
+@pytest.mark.parametrize("code", sorted(HINT_CASES))
+def test_a_sentence_that_says_what_the_hint_says_is_a_flag_on_a_picture_row_and_refused_on_a_text_row(code):
+    row, item = HINT_CASES[code]()
+    text_problems = [p for p in assessor.check_row(_text_row(row), item) if p.code == code]
+    assert text_problems and all(p.severity == ERROR for p in text_problems), f"the case must refuse a text row for {code}"
+    # the text path is what it was, with or without a writer label
+    assert [p for p in assessor.check_row(row, item) if p.code == code] == text_problems
+    picture_problems = [p for p in assessor.check_row(_pictured(row), item) if p.code == code]
+    assert len(picture_problems) == len(text_problems)
+    assert all(p.severity == FLAG and p.message.endswith(PICTURE_HINT_NOTE) for p in picture_problems)
+    assert code not in {p.code for p in assessor.check_row(_pictured(row), item) if p.severity == ERROR}
 
 
 def test_a_picture_row_that_drops_a_given_record_is_still_refused():
@@ -281,6 +319,10 @@ def test_the_review_brief_holds_the_picture_sections():
         assert phrase in brief
     assert "A classifier's lighting hint" in brief
     assert "`unrecorded_...`" in brief
+    # the hint describes the same picture: agreement with it is not a copy
+    assert "The hint of such a row describes the same picture" in brief and "That is not `hint_copy`." in brief
+    for flag in ("`thought_hint_copy`", "`caption_hint_copy`", "`caption_hint_list`"):
+        assert brief.count(flag) >= 2  # in the picture section and in the list of flags
 
 
 def test_the_pool_has_the_picture_rules_and_closes_with_version_two():

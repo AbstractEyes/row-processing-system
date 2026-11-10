@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.4.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.4.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,14 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.4.1
+
+| Change | What happens now |
+|---|---|
+| A picture row that agrees with its hint | On a picture row the hint describes the very picture the writer was shown, so a sentence that is true of the picture often says what a hint sentence says. The checks `thought_hint_copy`, `caption_hint_copy` and `caption_hint_list` therefore only flag such a sentence on a picture row, with the note to compare it with the hint; a text row is refused for them exactly as before. Measured on rows written from pictures whose hint was a full caption: these checks had stopped two rows in three |
+| The reviewers' brief and the pool | "Rows with a picture" says when `hint_copy` applies to a picture row (a sentence taken over from the hint, or a name taken from it; never the same fact in the row's own sentence) and that a thought which only lists what is shown is `padding`; the pool gains rule 101 |
+| Version | `0.4.1`; the notebook installs @v0.4.1; the rule files and their versions are recompiled (the writing prompts are unchanged) |
 
 ## What changed in 0.4.0
 

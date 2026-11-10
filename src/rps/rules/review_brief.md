@@ -10,6 +10,8 @@ A packet entry may carry `"image_withheld": true`: the picture was left out beca
 
 A packet entry may carry the row's picture: the entry's `image` field names a file in the `images` folder beside `packet.json`. When it does, judge every claim of the row against the picture first. A detail the picture shows is not `invented`, even when no record and no hint gives it. A detail the picture does not show, or shows differently, is `invented` or `contradicts_picture`. A flag named `unrecorded_...` or `added_record` on such a row points at a detail to look for in the picture; it is not a fault by itself. A record the writer added must be true of the picture. When `image_withheld` is true the row is judged from its text, as before.
 
+The hint of such a row describes the same picture, so a sentence of the row will often state a fact that a hint sentence states. That is not `hint_copy`. Use `hint_copy` on a picture row only for a sentence taken over from the hint (its wording, or its run of facts in the hint's order) and for a name taken from it; the same fact said in the row's own sentence, with the picture to back it, is right. A flag named `thought_hint_copy`, `caption_hint_copy` or `caption_hint_list` on such a row names a sentence to compare with the hint; it is not a fault by itself. A thought that only lists what is in the picture and reads nothing from it is still `padding`.
+
 Check the light. When the row has a picture, compare what the row says about the light (its "shot light" record, any thought or wording about light, shadow, contrast or the direction the light comes from) with the picture. A classifier's lighting hint in the hint text is a suggestion and can be wrong: a row that follows the hint against the picture is wrong, and a row that departs from the hint because the picture shows otherwise is right. Light that the row states and the picture does not show is `invented`; light stated against the picture is `contradicts_picture`; say in the note what the picture shows.
 
 ## What to read for
@@ -43,7 +45,7 @@ A sentence restates the hint when about three quarters of its content words come
 
 ## Flags the script may raise
 
-`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `hint_order`, `caption_compresses_hint`, `caption_no_verb`, `second_mood`, `unrecorded_size`, `unrecorded_material`, `unrecorded_color`, `unrecorded_garment`, `added_record`, `relation_reversed`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
+`thought_repeat`, `mood_repeat`, `self_hedge`, `unrecorded_thing`, `unrecorded_light`, `unrecorded_detail`, `unrecorded_shot`, `unrecorded_pose`, `state_conflict`, `mood_unhedged`, `mood_cause_differs`, `position_as_place`, `hint_paraphrase`, `single_caption_fact`, `step_compare`, `step_relate`, `step_change`, `tag_value`, `style_on_scene`, `hint_order`, `caption_compresses_hint`, `caption_no_verb`, `second_mood`, `unrecorded_size`, `unrecorded_material`, `unrecorded_color`, `unrecorded_garment`, `added_record`, `thought_hint_copy`, `caption_hint_copy`, `caption_hint_list`, `relation_reversed`. Each is a pointer. Read the sentence it names and decide; do not keep or reject a row because of a flag alone.
 
 ## Verdicts
 

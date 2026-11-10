@@ -41,6 +41,13 @@ PICTURE_DETAIL_CODES = frozenset({
 })
 PICTURE_NOTE = "; look for it in the picture"
 
+# Findings that say "this sentence says what a hint sentence says". On a picture row the hint describes the very picture
+# the writer was shown, so a sentence that is true of the picture will often agree with it: each of these only flags the
+# sentence, for a reader to compare with the hint. (Measured on rows written from pictures whose hint was a full caption:
+# these checks stopped two rows in three, most of them sentences in the writer's own words.)
+PICTURE_HINT_CODES = frozenset({"thought_hint_copy", "caption_hint_copy", "caption_hint_list"})
+PICTURE_HINT_NOTE = "; the hint describes this same picture, so compare the sentence with the hint: a fault only when it is taken over from the hint"
+
 
 def is_picture_row(row: Mapping[str, Any]) -> bool:
     """True for a row whose writer call carried the picture: its writer label holds the picture's size."""
@@ -50,13 +57,22 @@ def is_picture_row(row: Mapping[str, Any]) -> bool:
 
 
 def _for_picture(found: list[Problem]) -> list[Problem]:
-    return [Problem(p.code, p.row_id, p.message + PICTURE_NOTE, FLAG) if p.code in PICTURE_DETAIL_CODES else p for p in found]
+    out = []
+    for p in found:
+        if p.code in PICTURE_DETAIL_CODES:
+            out.append(Problem(p.code, p.row_id, p.message + PICTURE_NOTE, FLAG))
+        elif p.code in PICTURE_HINT_CODES:
+            out.append(Problem(p.code, p.row_id, p.message + PICTURE_HINT_NOTE, FLAG))
+        else:
+            out.append(p)
+    return out
 
 
 def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> list[Problem]:
     """Every finding about one row: the validator, the item checks, the row checks.
 
-    On a picture row (see `is_picture_row`) the checks for a detail no record gives only flag it.
+    On a picture row (see `is_picture_row`) the checks for a detail no record gives, and the checks for a sentence
+    that says what a hint sentence says, only flag it.
     """
     found = [
         *validator.validate_row(row),
@@ -70,7 +86,8 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
     picture = is_picture_row(row)
     if picture:
         found = _for_picture(found)
-    return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED and not (picture and p.code in PICTURE_DETAIL_CODES) else p for p in found]
+    flag_only = PICTURE_DETAIL_CODES | PICTURE_HINT_CODES if picture else frozenset()
+    return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED and p.code not in flag_only else p for p in found]
 
 
 def check_series(rows: Sequence[Mapping[str, Any]], item: Mapping[str, Any] | None = None) -> list[Problem]:

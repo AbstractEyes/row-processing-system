@@ -169,6 +169,7 @@ A picture row is one whose writer was sent the picture (the writer label holds t
 | 98 | A detail the picture does not show, or shows differently, is invented or contradicts the picture. A reviewer judges every claim of a picture row against the picture first; a record the writer added must be true of the picture. | READER | invented, contradicts_picture |
 | 99 | A reviewer compares the row's light (its shot light record and any thought or wording about light, shadow, contrast or direction) with the picture: a row that follows a classifier's hint against the picture is wrong, one that departs from it because the picture shows otherwise is right; light the picture does not show is invented, light against the picture contradicts_picture. | READER | invented, contradicts_picture |
 | 100 | A reviewer whose packet withholds the picture judges the row from its text, as a text row, and never faults it for something only the picture could show. | READER | |
+| 101 | On a picture row the hint describes the same picture, so a sentence that says what a hint sentence says is expected: the checks for it only flag the sentence, for a reader to compare with the hint. A reader faults a sentence taken over from the hint (its wording, or its run of facts in the hint's order) or a name taken from it, never the same fact in the row's own sentence; a thought that only lists what is shown is padding. | ASSESSOR | thought_hint_copy, caption_hint_copy, caption_hint_list (flags on a picture row); READER hint_copy, padding |
 
 ## Open
 
