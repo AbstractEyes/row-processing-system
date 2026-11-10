@@ -34,7 +34,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 15 | Simple rows add no interpretive records; medium adds mood (feeling, from); deep adds mood, intent (purpose, for) and story (moment plus one of before, after, cause). | ASSESSOR | rule_3, rule_6 |
 | 16 | "mood from" is the key of a record of the same row. | ASSESSOR | rule_6 |
 | 17 | A seeded mood needs evidence in the records or the hint; with none, take the plainest honest reading (gentle, cozy, hopeful, wistful) and hedge it. | READER | |
-| 18 | Mood evidence varies: light, time, palette, pose, gesture, setting, weather or a relation as often as the face. | WRITER | |
+| 18 | Mood evidence varies: light, time, palette, pose, gesture, state, setting or weather as often as the face; a relation, a position, a count, an angle, a framing or a name never carries a mood. | WRITER | |
 | 19 | Facts without a key go in only as a relation end when a true relation carries it (within 6 relations); otherwise they stay out of the records and the text. | READER | |
 | 20 | A key the hint never mentions is still written; silence is not contradiction. | READER | |
 
@@ -126,7 +126,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 67 | No clause hedges the row's own claims ("this is an interpretation", "the scene does not show how"). | ASSESSOR | self_hedge (flag) |
 | 68 | A thought adds something the earlier ones did not; the mood is claimed in one thought. | ASSESSOR | check_repeat (error); thought_repeat, mood_repeat, second_mood (flags); READER padding |
 | 69 | Light, furniture, size, wear, shot, pose appear only when a record or the hint gives them. | ASSESSOR | unrecorded_thing, unrecorded_light, unrecorded_detail, unrecorded_shot, unrecorded_pose, state_conflict (flags); READER invented |
-| 70 | A mood is never read from a count; thin evidence (a name, a color, a position, a state) is hedged; the mood thoughts credit the evidence the mood record names. | ASSESSOR | mood_weak_evidence (count: error), mood_unhedged, mood_cause_differs (flags) |
+| 70 | A mood is never read from a relation, an angle, a framing, a count or a position; thin evidence (a name, a color, a state) is hedged; the mood thoughts credit the evidence the mood record names. | ASSESSOR | mood_weak_evidence (relation, angle, framing, count, position: error), mood_unhedged, mood_cause_differs (flags) |
 | 71 | A medium row holds a mood record; a deep row holds mood, intent and a story with its moment and one of before, after or cause. | ASSESSOR | required_record, story_incomplete |
 | 72 | A chain or unknown question key is a record key; a chain value is a short phrase (at most 20 bytes), never a sentence. | ASSESSOR | question_key, question_value |
 | 73 | A year in the hint outside the period record contradicts it: the item is skipped (class contradiction). | ASSESSOR | hint_contradicts_record (sets the item aside) |
@@ -149,7 +149,7 @@ The one list every compiled file is built from. Each rule is numbered once. Ever
 | 85 | The framing limits what shows: a close-up or an extreme close shows no full-body pose, no feet and no wide view of the place. | READER | |
 | 86 | Intent purpose and intent for are about the picture (why it was made, who it is for), never about the people or things in it. | READER | |
 | 87 | Story moment agrees with the records; story before and after hold an event and story cause a reason, never a moment word or a time alone. | ASSESSOR | story_slot, story_cause |
-| 88 | The mood is claimed in one thought, hedged, with the thing its mood from record holds named in the same sentence. | ASSESSOR | mood_cause_differs, mood_flat, mood_weak_evidence (framing, count, position); mood_weak_source (angle, relation: flag) |
+| 88 | The mood is claimed in one thought, hedged, with the thing its mood from record holds named in the same sentence. | ASSESSOR | mood_cause_differs, mood_flat, mood_weak_evidence (angle, relation, framing, count, position) |
 | 89 | Directions belong to the frame, never to a person ("to his left"); a relation that only matches colors places nothing beside anything. | ASSESSOR | relation_side, position_as_place, relation_placement |
 | 90 | The hint's sentences are never followed in their order, the caption is never the hint's first sentence reworded or its list of things, and no name is taken from it. | ASSESSOR | caption_hint_copy, caption_hint_list, hint_name; hint_order (flag) |
 | 91 | A chain answer answers its key; the unknown key is answered nowhere in the row, and the task text says what it covers. | ASSESSOR | chain_kind, unknown_stated |

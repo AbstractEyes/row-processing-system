@@ -127,11 +127,28 @@ def test_a_garbled_seed_is_screened():
 
 # ------------------------------------------------------------------ moods and minors
 
-def test_a_mood_from_a_framing_is_an_error_and_from_an_angle_a_flag():
+def test_a_mood_from_a_framing_or_an_angle_is_an_error():
     framing = _row(spec={"mood": {"feeling": "gentle", "from": "shot framing"}}, thoughts=[("mood", "The tight framing suggests a gentle mood.")])
     assert ("mood_weak_evidence", ERROR) in codes(assessor.check_row(framing))
     angle = _row(spec={"mood": {"feeling": "gentle", "from": "shot angle"}}, thoughts=[("mood", "The overhead view suggests a gentle mood.")])
-    assert ("mood_weak_source", FLAG) in codes(assessor.check_row(angle))
+    assert ("mood_weak_evidence", ERROR) in codes(assessor.check_row(angle))
+    assert "mood_weak_source" not in {code for code, _ in codes(assessor.check_row(angle))}
+
+
+@pytest.mark.parametrize("source", ["rel1 rel", "rel2 b", "rel4 rel", "rel3 a", "shot angle"])
+def test_a_mood_from_a_relation_key_or_an_angle_is_one_error_that_says_what_to_do(source):
+    row = _row(spec={"mood": {"feeling": "gentle", "from": source}}, thoughts=[("mood", "The pair suggests a gentle mood.")])
+    found = [p for p in assessor.check_row(row) if p.code in ("mood_weak_evidence", "mood_weak_source")]
+    assert [(p.code, p.severity) for p in found] == [("mood_weak_evidence", ERROR)]
+    assert repr(source) in found[0].message
+    for record in ("look expression", "body pose", "thing state", "shot light", "scene time", "scene weather", "scene setting", "form palette"):
+        assert record in found[0].message
+
+
+@pytest.mark.parametrize("source", ["look expression", "thing state", "scene setting", "shot light"])
+def test_a_mood_from_a_record_that_can_carry_a_feeling_is_not_weak(source):
+    row = _row(spec={"mood": {"feeling": "gentle", "from": source}}, thoughts=[("mood", "The scene suggests a gentle mood.")])
+    assert not {p.code for p in assessor.check_row(row)} & {"mood_weak_evidence", "mood_weak_source"}
 
 
 def test_makes_it_is_a_flat_verb():

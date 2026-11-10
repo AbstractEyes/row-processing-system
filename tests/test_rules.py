@@ -294,7 +294,7 @@ def test_the_genres_drawn_specs_carry_are_on_the_list_and_in_the_prompt():
     text = rules.writer_system()
     assert "animal study" in GENRES and EXTRA_GENRES <= GENRES
     assert all(genre in text for genre in EXTRA_GENRES)
-    assert "so replace it" in text and "only in a row that has a relation" in text
+    assert "so replace it" in text and "first add one fact its hint states plainly" in text
 
 
 def test_an_off_list_drawn_genre_is_named_in_the_task_text():

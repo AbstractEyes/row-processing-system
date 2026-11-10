@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.3.3. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.3.4. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,15 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.3.4
+
+| Change | What happens now |
+|---|---|
+| The writer's mood source | The writing rules (every profile) say that `mood from` names a record that can carry a feeling: look expression, body pose, body gesture, thing state, shot light, scene time, scene weather, scene setting or form palette. A relation, a position, a count, an angle, a framing or a name never does, and `rel1` is no longer a value for `mood from` (it stays an assigned question key). For a real picture whose records hold none of these, the writer first adds one fact the hint states plainly that can carry the feeling. The mood thought names what the record holds and gives no other cue and no second feeling word |
+| The checker's error | A mood read from the shot angle or from any relation key (`rel1 a`, `rel1 rel`, `rel1 b`, `rel2 rel` and so on) is now the error `mood_weak_evidence`, like a count, a position or a framing. The flag `mood_weak_source` is no longer raised; old rows that carry it are read as before |
+| The retry message | The error tells the writer what to do: read the mood from a record that can carry a feeling, adding a fact the hint states plainly when the records hold none |
+| Version | `0.3.4`; the notebook installs @v0.3.4 at release; the rule files and their versions are recompiled |
 
 ## What changed in 0.3.3
 
@@ -118,7 +127,7 @@ The assessor's finding codes that are new or raised in 0.2.7. An error stops the
 | `stock_opening` | new error | a thought that opens with a stock phrase ("Check the cup:", "Compare X with Y:") |
 | `check_repeat` | new error | a check thought whose content repeats an earlier thought |
 | `hint_order` | new flag | thoughts that take three or more of the hint's sentences one after the other in the hint's order |
-| `mood_weak_source` | new flag | a mood read from the shot angle or from a relation |
+| `mood_weak_source` | new flag | a mood read from the shot angle or from a relation (no longer raised from 0.3.4: that case is now the error `mood_weak_evidence`) |
 | `second_mood` | new flag | a second mood claimed in the thoughts beside the recorded feeling |
 | `unrecorded_size` | new flag | a size word (narrow, towering, vast, tiny and the like) that no record or hint holds |
 | `unrecorded_material` | new flag | a material word (brick, concrete, stone, wood, metal and the like) that no record or hint holds |

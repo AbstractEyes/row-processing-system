@@ -57,7 +57,7 @@ RECORDS & RELATIONS:
 2. RELATIONS LIVE ONLY IN "relations":
    - Each relation is {"a", "rel", "b"}, kept in the given order.
    - Never write a relation as a record: no record key starts with "rel" or "relation" (the checker refuses it as an unknown system).
-   - "rel1" names the first relation in exactly two places: the value of "mood from" (`"rel1 rel"`, only in a row that has a relation) and an assigned question key (`"rel1 a"`, `"rel1 rel"`, `"rel1 b"`).
+   - "rel1" names the first relation in one place only: an assigned question key (`"rel1 a"`, `"rel1 rel"`, `"rel1 b"`). It is never the value of `"mood from"`.
    - A relation end ("a" or "b") names a thing, never a direction or a part of the frame.
    - Each relation counts as one toward the row's record-and-relation totals, though it is written only in "relations": simple holds 1-4 records and relations together, medium 6-14, deep 14-30.
 
@@ -80,7 +80,7 @@ RECORDS & RELATIONS:
    - Medium always adds the records `"mood feeling"` and `"mood from"`.
    - Deep adds those (`"mood feeling"`, `"mood from"`), `"intent purpose"`, `"intent for"`, `"story moment"` and one of `"story before"`, `"story after"`, `"story cause"`.
    - `"mood feeling"` takes a value of the feeling list (`scene mood, mood feeling`). Note: `"solemn"` and `"quiet"` are on the `mood tone` list, not the `mood feeling` list, and `"whimsical"` is not on the list.
-   - `"mood from"` is the key of a record of the same row that shows the mood (`look expression`, `shot light`; for a relation, `"rel1 rel"`, only in a row that has a relation). Draw the evidence from light, time, palette, pose, setting, weather or a relation as often as from the face. Never set `"mood from"` to a bare position, a count, a name, one color, or a framing record.
+   - `"mood from"` is the key of a record of the same row that can carry a feeling: `look expression`, `body pose`, `body gesture`, `thing state`, `shot light`, `scene time`, `scene weather`, `scene setting`, `form palette`. Never a relation, a position, a count, an angle, a framing or a name: those cannot carry a feeling, and the checker refuses them. Draw the evidence from light, time, palette, pose, state, setting or weather as often as from the face. For a real picture whose records hold none of these, first add one fact its hint states plainly that can carry the feeling (a setting, the weather, the light, the time of day, a state or a pose) and read the mood from that record. Never set `"mood from"` to one color either.
    - Story event slots (deep rows):
      * `"story before"` is an event just before this one (`"a bus left"`), at most 15 bytes (key and value together at most 27).
      * `"story after"` is the event that comes next (`"the door shuts"`), at most 16 bytes (key and value together at most 27).
@@ -126,7 +126,7 @@ THOUGHTS:
    - Never write `"pixel"`, `"the image file"`, `"I can see"`, `"looking at the image"`, `jpeg`, `png`.
    - Never write advice in a thought (`"A painter would crop"`); advice belongs only in the `critique`.
    - A relation `"a rel b"` means `a` is `rel` of `b`; never write it reversed in prose, and never say `"to his right"` (name the thing or the frame's side). A relation is read as the picture would show it. A size or order claim must agree with the relations.
-   - A mood is read from light, time, weather, palette, expression, pose or setting. A bare position, a count, a name, one color, a framing, or a relation word alone cannot carry one. State it with a hedge (`suggests`, `seems`, `may`, `feels`, `reads as`), never flatly with `gives`, `lends`, `creates` or `evokes`. A mood needs evidence. When nothing points anywhere, take the plainest honest reading (`gentle`, `cozy`, `hopeful`, `wistful`) and hedge it. No `"tense"` or `"bored"` from a bare standing pose.
+   - A mood is read from light, time, weather, palette, expression, pose or setting. A bare position, a count, a name, one color, a framing, or a relation cannot carry one. State it with a hedge (`suggests`, `seems`, `may`, `feels`, `reads as`), never flatly with `gives`, `lends`, `creates` or `evokes`. The mood thought names what the `"mood from"` record holds and says in a few words why that carries the feeling; it gives no other cue as the reason and no second feeling word. A mood needs evidence. When nothing points anywhere, take the plainest honest reading (`gentle`, `cozy`, `hopeful`, `wistful`) and hedge it. No `"tense"` or `"bored"` from a bare standing pose.
    - In a row with no person, an imagined passer-by stays conditional (`"someone might stop"`), never present tense.
 </step_4_thoughts>
 

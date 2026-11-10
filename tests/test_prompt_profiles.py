@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "70de2be6650a"
+TODAYS_VERSION = "8c9aad05f2e6"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -604,3 +604,26 @@ def test_the_gemini_probe_sends_the_prompt_of_the_profile_its_route_names(monkey
     assert seen["config"].system_instruction == rules_of("gemini").system
     unknown = probe_gemini("flash-batch-x", modes=("openapi",), route_config=gemini_route(profile="mystery"), client=client, printer=lambda text: None)
     assert unknown.refused and "unknown prompt profile 'mystery'" in unknown.refused
+
+
+# ---------------------------------------------------------------------------- the mood's source
+
+
+def _writer_texts():
+    texts = {"default": pool.writer_system()}
+    texts.update({name: (RULES_DIR / "profiles" / name / "writer_system.md").read_text(encoding="utf-8") for name in PROFILES})
+    return texts
+
+
+@pytest.mark.parametrize("name", ["default", *PROFILES])
+def test_each_writer_text_names_the_records_that_carry_a_mood_and_no_relation(name):
+    text = _writer_texts()[name]
+    flat = text.replace("`", "")
+    assert "Never a relation, a position, a count, an angle, a framing or a name" in flat or "Never a relation, a position, a count, an angle, a framing or a name" in text
+    assert "scene weather" in flat and "form palette" in flat and "body gesture" in flat
+    assert "first add one fact its hint states plainly" in flat
+    assert "no second feeling word" in flat
+    for old in ("or a relation as often as", "relation word alone", "or relations as often as", "for a relation, \"rel1 rel\"", "or rel1 rel when", "only as mood from's value", "exactly two places"):
+        assert old not in flat, old
+    assert "shot light; for a relation" not in flat
+    assert "never the value of mood from" in flat.replace('"', "")

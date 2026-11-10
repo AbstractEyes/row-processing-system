@@ -258,7 +258,7 @@ def unrecorded_shot_check(row: Mapping[str, Any], item: Any = None) -> list[Prob
 # ------------------------------------------------------------------ mood
 
 WEAK_FROM_ERROR = frozenset({"thing count", "thing position", "shot framing"})
-WEAK_FROM_NOTE = frozenset({"shot angle", "rel1 rel", "rel2 rel", "rel3 rel"})  # a keep was read from these: a flag only
+WEAK_FROM_PATTERN = re.compile(r"^(shot angle|rel\d+ (a|rel|b))$")  # an angle or any relation key cannot carry a feeling
 WEAK_FROM_FLAG = frozenset({"thing colour", "thing name"})
 SYNONYMS = {"moving": ("motion", "movement", "move", "moves"), "standing": ("stands", "stand", "upright"), "still": ("stillness", "calm")}
 # Words that show a sentence is reading the mood from this kind of record.
@@ -292,10 +292,8 @@ def mood_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
         return []
     out: list[Problem] = []
     rid = _rid(row)
-    if source in WEAK_FROM_ERROR:
-        out.append(Problem("mood_weak_evidence", rid, f"a mood cannot be read from {source!r}; draw it from light, time, palette, pose, setting, weather or a relation"))
-    if source in WEAK_FROM_NOTE:
-        out.append(Problem("mood_weak_source", rid, f"the mood is read from {source!r}; check that the thought ties the mood to what the picture shows there", FLAG))
+    if source in WEAK_FROM_ERROR or WEAK_FROM_PATTERN.match(source):
+        out.append(Problem("mood_weak_evidence", rid, f"a mood cannot be read from {source!r}; read it from a record that can carry a feeling (look expression, body pose, thing state, shot light, scene time, scene weather, scene setting, form palette), adding a fact the hint states plainly when the records hold none"))
     sentences = _mood_sentences(row)
     if not sentences:
         return out
