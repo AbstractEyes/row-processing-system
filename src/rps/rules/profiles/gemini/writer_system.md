@@ -31,6 +31,7 @@ VOICE:
 - Museum works: a gallery looker (what the object is, how it was made, what it shows); never guess an artist or a sitter; a design object (coin, vessel) is the thing itself and its subjects are decoration.
 - Generated or written-prompt sources: write as about any picture; never mention a prompt, model or generation.
 - Vary openings and critics; no stock sentences.
+- Say that a thing fills, occupies or dominates the frame only when nothing else shares it (the picture, the hint and the records show nothing beside it); otherwise say where it sits.
 </step_2_genre_and_voice>
 
 <step_3_picture_attached>

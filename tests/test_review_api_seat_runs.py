@@ -97,6 +97,25 @@ def test_a_packet_for_another_brief_version_is_skipped_said_once_and_never_answe
     assert old.packet_id in seat.status()["skipped"]
 
 
+def test_a_packet_of_an_earlier_brief_version_the_seat_is_told_to_judge_is_answered(remote, tmp_path, api):
+    named = publish(remote, rows=2, line="001", brief_version="old-brief")
+    other = publish(remote, rows=2, line="002", brief_version="older-brief")
+    good = publish(remote, rows=2, line="003")
+    seat, printed = make_seat(remote, tmp_path, api, also_brief_versions=["old-brief"])
+    run_until_quiet(seat, api)
+    assert verdict_file(remote, named) is not None and verdict_file(remote, good) is not None
+    assert verdict_file(remote, other) is None
+    assert other.packet_id in seat.status()["skipped"] and named.packet_id not in seat.status()["skipped"]
+    assert not [line for line in printed if f"packet {named.packet_id} skipped" in line]
+    # the setting is written out only when it is set, and anything but a list of versions is refused
+    told = api_seat.SeatConfig.from_dict(seat_config(also_brief_versions=["old-brief", "old-brief"]))
+    assert told.also_brief_versions == ("old-brief",) and told.to_dict()["also_brief_versions"] == ["old-brief"]
+    assert "also_brief_versions" not in api_seat.SeatConfig.from_dict(seat_config()).to_dict()
+    for bad in ("old-brief", [""], [7]):
+        with pytest.raises(ConfigError):
+            api_seat.SeatConfig.from_dict(seat_config(also_brief_versions=bad))
+
+
 def test_a_packet_that_cannot_be_read_or_is_not_for_this_reviewer_is_skipped(remote, tmp_path, api):
     remote.write_text(layout.packet_json_path(REVIEWER, "p00000000000a"), "{not json")
     tampered = publish(remote, rows=2, line="001")

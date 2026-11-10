@@ -187,7 +187,7 @@ def _usd(value: float) -> str:
 
 _SEAT_KEYS = {
     "reviewer_id", "model", "effort", "max_tokens", "budget_usd", "packets_per_batch", "poll_seconds", "max_attempts",
-    "extra_instructions", "prices", "work_dir", "run_config",
+    "extra_instructions", "prices", "work_dir", "run_config", "also_brief_versions",
 }
 
 
@@ -203,6 +203,9 @@ class SeatConfig:
     unanswered. `extra_instructions` is text added to the end of the system prompt. `work_dir` is the local
     folder the reviewer client works in (the seat's pictures and verdict files never leave it), and
     `run_config` names the run's configuration file, from which the command line takes the state store.
+    `also_brief_versions` lists earlier brief versions whose packets the seat still judges, by the brief this
+    package renders: after a change of the rules, packets made just before it would otherwise never be answered.
+    The owner names a version there only when the newer brief judges those rows the same way.
     """
 
     reviewer_id: str
@@ -217,8 +220,15 @@ class SeatConfig:
     prices: Mapping[str, ListPrice] = field(default_factory=lambda: {m: ListPrice(*p) for m, p in DEFAULT_PRICES.items()})
     work_dir: str | None = None
     run_config: str | None = None
+    also_brief_versions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
+        data = self._base_dict()
+        if self.also_brief_versions:  # only when set, so that a seat without it reads as it always did
+            data["also_brief_versions"] = list(self.also_brief_versions)
+        return data
+
+    def _base_dict(self) -> dict[str, Any]:
         return {
             "reviewer_id": self.reviewer_id,
             "model": self.model,
@@ -257,6 +267,9 @@ class SeatConfig:
             raise ConfigError(f"{where}.effort: must be one of {list(EFFORTS)}, got {effort!r}")
         if "budget_usd" not in data:
             raise ConfigError(f"{where}.budget_usd: required (the most this seat may spend, in dollars)")
+        also = data.get("also_brief_versions", [])
+        if not isinstance(also, (list, tuple)) or not all(isinstance(v, str) and v.strip() for v in also):
+            raise ConfigError(f"{where}.also_brief_versions: expected a list of brief versions")
         return cls(
             reviewer_id=reviewer_id,
             model=model,
@@ -272,6 +285,7 @@ class SeatConfig:
             prices=prices,
             work_dir=_text(data.get("work_dir"), f"{where}.work_dir", allow_none=True),
             run_config=_text(data.get("run_config"), f"{where}.run_config", allow_none=True),
+            also_brief_versions=tuple(dict.fromkeys(v.strip() for v in also)),
         )
 
 
@@ -1114,8 +1128,9 @@ class ApiSeat:
             document = self._packet(packet_id)
             if document is None:
                 continue
-            if str(document["brief_version"]) != self.brief.version:
-                self._skip(packet_id, f"its brief version is {document['brief_version']}, the brief this package renders is {self.brief.version}")
+            version = str(document["brief_version"])
+            if version != self.brief.version and version not in self.config.also_brief_versions:
+                self._skip(packet_id, f"its brief version is {version}, the brief this package renders is {self.brief.version}")
                 continue
             have = self._judged.get(packet_id, {})
             todo = [(place, entry) for place, entry in enumerate(document["rows"], start=1) if entry["row_id"] not in have]

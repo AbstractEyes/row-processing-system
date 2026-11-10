@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.4.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.4.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,14 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.4.2
+
+| Change | What happens now |
+|---|---|
+| The API review seat and an earlier brief version | A seat skips a packet whose brief version is not the one this package renders, so after a change of the rules the packets made just before it were never answered. The seat setting `also_brief_versions` lists earlier versions whose packets the seat still judges, by the brief it renders; an owner names a version there only when the newer brief judges those rows the same way. Without the setting a seat behaves exactly as before |
+| A thing that "fills the frame" | Every writing prompt says: a thing fills, occupies or dominates the frame only when nothing else shares it; otherwise the row says where it sits (pool rule 102). Measured on rows written from pictures: one row in five made the claim, and reviewers with the picture kept such rows half as often |
+| Version | `0.4.2`; the notebook installs @v0.4.2; the rule files and their versions are recompiled |
 
 ## What changed in 0.4.1
 
