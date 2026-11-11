@@ -102,8 +102,10 @@ def route_may_repair(config: "Config", route_name: str) -> bool:
 # ---------------------------------------------------------------------------- what the writer is told
 
 
-def fix_notes(verdicts: Sequence[Mapping[str, Any]]) -> list[str]:
+def fix_notes(verdicts: Sequence[Mapping[str, Any]], *, every: bool = False) -> list[str]:
     """The notes of every "fix" verdict, in the order the verdicts came: the notes alone, never who wrote them.
+    With `every` (a row under a review chain, whose writer verdicts may include a reject that agreed with a fix) the
+    notes of every verdict given, whatever it says.
 
     A reviewer's note names the problem and where it is, and never holds corrected text. A fix verdict that
     came with no note at all (a fix needs a reason code, not a note) says so, with its reason codes, so that
@@ -111,7 +113,7 @@ def fix_notes(verdicts: Sequence[Mapping[str, Any]]) -> list[str]:
     """
     notes = []
     for verdict in verdicts:
-        if verdict.get("verdict") != "fix":
+        if verdict.get("verdict") != "fix" and not every:
             continue
         text = str(verdict.get("notes") or "").strip()
         if not text:
@@ -132,8 +134,8 @@ def repair_feedback(row: "RowState") -> tuple[str, ...]:
     """The feedback a repair call carries: the notes of every fix verdict on the row, one item each, then the
     lines about a correction of the light (when a reviewer gave one: `light_lines`), then the row as it was
     written (JSON text) as the last item. `rps.prompting.repair_text` turns it into words."""
-    verdicts = row.live_verdicts(audit=None)
-    return (*fix_notes(verdicts), *light_lines(light_amendment(verdicts)), written_row_text(row.record))
+    verdicts = row.writer_verdicts()  # all the live verdicts, or for a row under a review chain the ones whose notes go back
+    return (*fix_notes(verdicts, every=row.under_chain), *light_lines(light_amendment(verdicts)), written_row_text(row.record))
 
 
 # ---------------------------------------------------------------------------- a reviewer's correction of the light
@@ -193,7 +195,7 @@ def light_lines(amendment: Mapping[str, Any] | None) -> list[str]:
 def repair_item(item: Any, row: "RowState | None") -> Any:
     """The spec item a row is written again from, and checked against: the line's own item, with the light a
     reviewer corrected set as a given record (or removed, for "none"). Two reviewers who differ set nothing."""
-    amendment = light_amendment(row.live_verdicts(audit=None)) if row is not None else None
+    amendment = light_amendment(row.writer_verdicts()) if row is not None else None
     if amendment is None or amendment["value"] is None:
         return item
     return amended_item(item, amendment["key"], amendment["value"])
@@ -219,7 +221,7 @@ def correction_outcomes(rows: Mapping[str, "RowState"]) -> list[dict[str, Any]]:
     out = []
     for row_id in sorted(rows):
         row = rows[row_id]
-        amendment = light_amendment(row.live_verdicts(audit=None))
+        amendment = light_amendment(row.writer_verdicts())
         if amendment is None or row.repair is None:
             continue
         written = [rows[item] for item in row.repair.get("rows", []) if item in rows]

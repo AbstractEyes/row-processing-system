@@ -6,4 +6,4 @@ repository. Every step is recorded as an event so a run can stop at any moment
 and resume where it left off.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"

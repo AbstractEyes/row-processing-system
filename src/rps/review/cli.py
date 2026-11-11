@@ -4,6 +4,7 @@
     python -m rps.review status  --reviewer ID --config PATH --into DIR
     python -m rps.review verdict --packet P --row R --verdict keep|fix|reject --reasons a,b --notes TEXT
                                  [--amend "shot light=VALUE"]     (only where the packet says may_amend; only with fix)
+                                 [--unsure]                       (only on a row whose stage is arbiter or overseer)
     python -m rps.review check   --packet P [--file PATH]
     python -m rps.review push    --packet P --config PATH
 
@@ -64,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         help='only where the packet says may_amend, and only with fix: the correction, such as "shot light=soft window" '
         '(or "shot light=none" when the picture shows no light a listed value fits)',
     )
+    verdict.add_argument(
+        "--unsure",
+        action="store_true",
+        help="only on a row whose stage is arbiter or overseer: mark this verdict as your best one that cannot settle the row "
+        "(the deciding claim cannot be told from the picture at its size, or the rule sheet does not settle it)",
+    )
     verdict.add_argument("--replace", action="store_true", help="replace an earlier verdict for the row")
     verdict.add_argument("--into", default=".")
 
@@ -107,7 +114,19 @@ def _describe(packet: LocalPacket, client: ReviewerClient, out: TextIO) -> None:
     for row_id in packet.row_ids:
         entry = packet.entry(row_id)
         picture = f" picture: {entry['image']}" if entry.get("image") else ""
-        out.write(f"  {row_id}{' (judged)' if row_id in judged else ''}{picture}\n")
+        out.write(f"  {row_id}{' (judged)' if row_id in judged else ''}{picture}{_staged(entry)}\n")
+
+
+def _staged(entry: dict) -> str:
+    """What a row of a review chain adds to its line: the stage and a short account of the earlier reviews."""
+    if not entry.get("stage"):
+        return ""
+    reviews = entry.get("reviews") if isinstance(entry.get("reviews"), list) else []
+    shown = "; ".join(
+        f"{review.get('stage')} {review.get('verdict')}" + (f" ({', '.join(review.get('reasons') or [])})" if review.get("reasons") else "")
+        for review in reviews
+    )
+    return f" stage: {entry['stage']}" + (f"; earlier reviews: {shown}" if shown else "")
 
 
 def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextIO | None = None) -> int:
@@ -135,6 +154,17 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextI
                     f"This packet lets you correct {', '.join(packet.may_amend)} with a fix verdict: add --amend \"{packet.may_amend[0]}=VALUE\" "
                     f"(a value from amend_values in packet.json, or none); read the brief before you use it.\n"
                 )
+            if packet.stage:
+                out.write(
+                    f"This packet is at the {packet.stage} stage: each row in packet.json carries `reviews`, the earlier reviews of the row "
+                    f"(their verdicts, reason codes and notes, without who gave them). Judge the row yourself against the picture and the records"
+                    + (
+                        "; add --unsure to a verdict only when the deciding claim cannot be told from the picture at its size or the rule sheet "
+                        "does not settle it (the verdict you give is still your best one).\n"
+                        if packet.may_unsure(packet.row_ids[0])
+                        else ".\n"
+                    )
+                )
             out.write(f"When every row has a verdict: {PROG} push --packet {packet.packet_id} --config {args.config} --into {args.into}\n")
             return EXIT_OK
 
@@ -147,7 +177,7 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextI
                 state = "pushed" if status.pushed else "not pushed"
                 out.write(
                     f"packet {status.packet_id}: {status.total} rows, {status.judged} judged, {status.left} left, "
-                    f"{state}, {status.images_left} pictures here\n"
+                    f"{state}, {status.images_left} pictures here" + (f", stage {status.stage}" if status.stage else "") + "\n"
                 )
             local_ids = {status.packet_id for status in statuses}
             waiting = [pid for pid in client.pending_packet_ids() if pid not in local_ids]
@@ -158,7 +188,8 @@ def run(argv: Sequence[str] | None = None, out: TextIO | None = None, err: TextI
             client = _client_for_packet(args.into, args.packet)
             reasons = [code.strip() for code in args.reasons.split(",") if code.strip()]
             client.record_verdict(
-                args.packet, args.row, args.verdict, reasons, args.notes, replace=args.replace, amend=_parse_amend(args.amend)
+                args.packet, args.row, args.verdict, reasons, args.notes, replace=args.replace, amend=_parse_amend(args.amend),
+                unsure=True if args.unsure else None,
             )
             packet = client.require_packet(args.packet)
             judged = len(client.judged_rows(packet))

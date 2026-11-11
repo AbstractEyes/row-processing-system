@@ -104,6 +104,7 @@ from ..store.base import ActorStore, NotFound, Store, StoreError
 from ..store.remote import describe_error
 from .client import ReviewerClient, ReviewError
 from .packets import REASON_PATTERN, VERDICT_VALUES, PacketError, parse_packet, parse_verdict_lines, validate_verdict
+from .policy import UNSURE_STAGES
 
 SEAT_DIR = "seat"
 DEFAULT_WORK_DIR = "seat_local"
@@ -133,6 +134,20 @@ ROLE = (
     "then the review brief."
 )
 ASK_LINE = "Judge this row. Return its verdict as the JSON object the answer format asks for."
+# The line for a row at the arbiter or overseer stage of a review chain: the answer may carry `unsure`.
+ASK_LINE_UNSURE = (
+    ASK_LINE
+    + ' If the deciding claim cannot be told from the picture at its size, or the rule sheet does not settle it, '
+    'add "unsure": true; the verdict you give is still your best one.'
+)
+# A row after the first stage of a review chain carries the earlier reviews of the row: they go under this heading,
+# after the row and its task and before the instruction to answer, with one neutral sentence for the stage.
+REVIEWS_HEADING = "Earlier reviews of this row"
+STAGE_SENTENCES: dict[str, str] = {
+    "challenge": "You are asked at the challenge stage: one earlier review of this row follows.",
+    "arbiter": "You are asked at the arbiter stage: the earlier reviews of this row follow, and they disagree.",
+    "overseer": "You are asked at the overseer stage: the earlier reviews of this row follow, and they did not settle it.",
+}
 
 EXIT_OK, EXIT_INVALID, EXIT_REFUSED, EXIT_FAILED = 0, 1, 2, 3
 PROG = "python -m rps.review.api_seat"
@@ -350,14 +365,15 @@ def system_text(brief: Brief, extra_instructions: str | None = None) -> str:
     return "\n\n".join(parts) + "\n"
 
 
-def answer_schema(reasons: Sequence[str] = ()) -> dict[str, Any]:
+def answer_schema(reasons: Sequence[str] = (), unsure: bool = False) -> dict[str, Any]:
     """The shape of an answer, in the dialect Anthropic's structured outputs take (the size limits of
     `VERDICT_SCHEMA` are not allowed there, so the package's own checks read the answer after it arrives).
 
-    `reasons` are the codes the brief lists; without any, a code is a short code as `VERDICT_SCHEMA` has it.
+    `reasons` are the codes the brief lists; without any, a code is a short code as `VERDICT_SCHEMA` has it. With
+    `unsure` (the answer of an arbiter or overseer row) the answer may also hold `unsure`, true or false.
     """
     code: dict[str, Any] = {"type": "string", "enum": list(reasons)} if reasons else {"type": "string", "pattern": REASON_PATTERN.pattern}
-    return {
+    schema: dict[str, Any] = {
         "type": "object",
         "additionalProperties": False,
         "required": ["verdict", "reasons", "notes"],
@@ -371,6 +387,12 @@ def answer_schema(reasons: Sequence[str] = ()) -> dict[str, Any]:
             "notes": {"type": "string", "description": "name the problem and where it is (which field or thought)"},
         },
     }
+    if unsure:
+        schema["properties"]["unsure"] = {
+            "type": "boolean",
+            "description": "true when the deciding claim cannot be told from what you were given; the verdict is still your best one",
+        }
+    return schema
 
 
 def request_custom_id(packet_id: str, ordinal: int, attempt: int) -> str:
@@ -384,10 +406,44 @@ def request_custom_id(packet_id: str, ordinal: int, attempt: int) -> str:
     return ids.custom_id(ids.call_id(task, f"{ordinal:03d}", attempt))
 
 
+def may_unsure(entry: Mapping[str, Any]) -> bool:
+    """Whether the verdict for a packet entry may be marked unsure: its stage is arbiter or overseer."""
+    return entry.get("stage") in UNSURE_STAGES
+
+
+def reviews_text(entry: Mapping[str, Any]) -> str:
+    """The earlier reviews of a row of a review chain as text (empty for a row that has none): the heading, one
+    sentence for the stage and a line for each review with its stage, verdict, reason codes and note, and the light
+    correction when it had one."""
+    reviews = entry.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return ""
+    lines = [f"## {REVIEWS_HEADING}"]
+    sentence = STAGE_SENTENCES.get(str(entry.get("stage")))
+    if sentence:
+        lines.append(sentence)
+    for number, review in enumerate(reviews, start=1):
+        codes = ", ".join(str(code) for code in review.get("reasons") or [])
+        parts = [
+            f"Review {number} ({review.get('stage')}): verdict {review.get('verdict')}",
+            f"reason codes: {codes}" if codes else "no reason codes",
+            f"note: {review.get('notes')}" if review.get("notes") else "no note",
+        ]
+        for key, value in (review.get("amend") or {}).items():
+            parts.append(f"correction: {key} = {value}")
+        lines.append("; ".join(parts))
+    return "\n".join(lines)
+
+
 def user_text(entry: Mapping[str, Any]) -> str:
-    """The user message for a row: its blind review view and task, as packet.json holds them, and what to return."""
+    """The user message for a row: its blind review view and task, as packet.json holds them, then (for a row of a
+    review chain after the first stage) the earlier reviews of the row, and what to return."""
     view = {"row_id": entry["row_id"], "row": entry["row"], "task": entry.get("task")}
-    return json.dumps(view, ensure_ascii=True, indent=1, allow_nan=False) + "\n\n" + ASK_LINE
+    text = json.dumps(view, ensure_ascii=True, indent=1, allow_nan=False)
+    earlier = reviews_text(entry)
+    if earlier:
+        text += "\n\n" + earlier
+    return text + "\n\n" + (ASK_LINE_UNSURE if may_unsure(entry) else ASK_LINE)
 
 
 # ---------------------------------------------------------------------------- results
@@ -407,11 +463,11 @@ class Outcome:
     usd: float = 0.0
 
 
-def read_answer(text: str, row_id: str) -> tuple[dict[str, Any] | None, str]:
+def read_answer(text: str, row_id: str, allow_unsure: bool = False) -> tuple[dict[str, Any] | None, str]:
     """A verdict from the model's answer text: (verdict, "") when it is valid, else (None, why not).
 
-    The seat adds `row_id`; the answer holds only verdict, reasons and notes. The package's own verdict
-    checks decide whether it is valid.
+    The seat adds `row_id`; the answer holds only verdict, reasons and notes (and `unsure` for a row of the arbiter
+    or overseer stage, `allow_unsure`). The package's own verdict checks decide whether it is valid.
     """
     try:
         data = json.loads(text)
@@ -419,22 +475,25 @@ def read_answer(text: str, row_id: str) -> tuple[dict[str, Any] | None, str]:
         return None, "the answer is not valid JSON"
     if not isinstance(data, dict):
         return None, "the answer is not a JSON object"
-    extra = sorted(set(data) - {"verdict", "reasons", "notes"})
+    extra = sorted(set(data) - {"verdict", "reasons", "notes", *(["unsure"] if allow_unsure else [])})
     if extra:
         return None, f"the answer has unexpected field(s) {extra}"
     candidate = {"row_id": row_id, **data}
-    problems = validate_verdict(candidate, allowed_row_ids=[row_id])
+    problems = validate_verdict(candidate, allowed_row_ids=[row_id], may_unsure=allow_unsure)
     if problems:
         return None, "; ".join(problems)
-    return {
+    verdict = {
         "row_id": row_id,
         "verdict": candidate["verdict"],
         "reasons": list(candidate.get("reasons", [])),
         "notes": candidate.get("notes", ""),
-    }, ""
+    }
+    if candidate.get("unsure") is True:
+        verdict["unsure"] = True
+    return verdict, ""
 
 
-def outcome_of(item: Any, row_id: str, rates: Rates) -> Outcome:
+def outcome_of(item: Any, row_id: str, rates: Rates, allow_unsure: bool = False) -> Outcome:
     """One line of a batch's results as an outcome: the result type first, then why the model stopped, then the answer."""
     result = lookup(item, "result")
     kind = lookup(result, "type")
@@ -463,7 +522,7 @@ def outcome_of(item: Any, row_id: str, rates: Rates) -> Outcome:
     text = "".join(
         str(lookup(block, "text") or "") for block in (lookup(message, "content") or []) if lookup(block, "type") == "text"
     )
-    verdict, problem = read_answer(text, row_id)
+    verdict, problem = read_answer(text, row_id, allow_unsure)
     if verdict is None:
         return Outcome(kind="invalid", reason=problem, usage=usage, usd=usd)
     return Outcome(verdict=verdict, usage=usage, usd=usd)
@@ -711,12 +770,15 @@ class ApiSeat:
         self.brief = brief if brief is not None else package_brief()
         self._rates = self.config.prices[self.config.model].batch_rates()
         self._schema = answer_schema(reason_codes(self.brief.text))
+        self._schema_unsure = answer_schema(reason_codes(self.brief.text), unsure=True)  # for a row at the arbiter or overseer stage
         try:
             check_schema(self._schema, ANTHROPIC)
+            check_schema(self._schema_unsure, ANTHROPIC)
         except SchemaError as error:
             raise ConfigError(f"the seat's answer format: {error}") from None
         self._system = system_text(self.brief, self.config.extra_instructions)
         self._base_tokens = estimate_text_tokens(self._system, canonical_json(self._schema))
+        self._base_tokens_unsure = estimate_text_tokens(self._system, canonical_json(self._schema_unsure))
         self._print = printer
         self._now = now
         self._store: Store = ActorStore(store, layout.reviewer_actor(self.reviewer_id))
@@ -766,10 +828,12 @@ class ApiSeat:
                 continue
             kept: dict[str, dict[str, Any]] = {}
             for verdict in verdicts:
-                if not validate_verdict(verdict) and verdict["row_id"] not in kept:
+                if not validate_verdict(verdict, may_unsure=True) and verdict["row_id"] not in kept:
                     kept[verdict["row_id"]] = {
                         key: verdict.get(key, "" if key == "notes" else []) for key in ("row_id", "verdict", "reasons", "notes")
                     }
+                    if verdict.get("unsure") is True:
+                        kept[verdict["row_id"]]["unsure"] = True
             if kept:
                 found[packet_id] = kept
         return found
@@ -930,7 +994,7 @@ class ApiSeat:
             for item in self._api.messages.batches.results(entry.batch_id):
                 ask = by_id.get(str(lookup(item, "custom_id")))
                 if ask is not None and ask.custom_id not in outcomes:
-                    outcomes[ask.custom_id] = outcome_of(item, ask.row_id, self._rates_of(entry))
+                    outcomes[ask.custom_id] = outcome_of(item, ask.row_id, self._rates_of(entry), self._may_unsure(ask))
         except Exception as error:
             if http_status(error) != 404:
                 raise
@@ -946,6 +1010,13 @@ class ApiSeat:
             outcomes.setdefault(ask.custom_id, Outcome(kind="missing", reason="the batch returned no result for this request"))
         self._record_settled(entry, [(ask, outcomes[ask.custom_id]) for ask in entry.asks])
         return True
+
+    def _may_unsure(self, ask: Ask) -> bool:
+        """Whether the answer to a request may be marked unsure: its packet entry says its stage is arbiter or overseer.
+        A packet that cannot be read any more has no such row."""
+        document = self._packet(ask.packet_id)
+        entry = next((item for item in (document or {}).get("rows", []) if item.get("row_id") == ask.row_id), None)
+        return entry is not None and may_unsure(entry)
 
     def _rates_of(self, entry: Batch) -> Rates:
         """The rates a batch settles at: its own model's, or the most it could have cost when the model has no price now."""
@@ -1098,7 +1169,9 @@ class ApiSeat:
         """
         text = user_text(entry)
         picture = self._picture_block(packet_id, entry)
-        tokens = self._base_tokens + estimate_text_tokens(text) + (PICTURE_TOKENS if picture is not None else 0)
+        unsure = may_unsure(entry)
+        base = self._base_tokens_unsure if unsure else self._base_tokens
+        tokens = base + estimate_text_tokens(text) + (PICTURE_TOKENS if picture is not None else 0)
         if tokens > LONG_PROMPT_TOKENS:
             return None
         custom_id = request_custom_id(packet_id, ordinal, attempt)
@@ -1109,7 +1182,10 @@ class ApiSeat:
                 "max_tokens": self.config.max_tokens,
                 "system": [{"type": "text", "text": self._system, "cache_control": {"type": "ephemeral", "ttl": CACHE_TTL}}],
                 "messages": [{"role": "user", "content": [*([picture] if picture is not None else []), {"type": "text", "text": text}]}],
-                "output_config": {"format": {"type": "json_schema", "schema": self._schema}, "effort": self.config.effort},
+                "output_config": {
+                    "format": {"type": "json_schema", "schema": self._schema_unsure if unsure else self._schema},
+                    "effort": self.config.effort,
+                },
             },
         }
         usd = (tokens * self._rates.input_ceiling + self.config.max_tokens * self._rates.output) / MILLION

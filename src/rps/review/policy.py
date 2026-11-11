@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Collection, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from ..config import ReviewerConfig, ReviewPolicy
 
@@ -68,10 +68,114 @@ class Settlement:
     further     the row is in question and needs another reviewer
     hand        the row goes to the owner: reviewers could not settle it, or it has a
                 "fix" verdict and the policy's `fix_to_hand` is on
+
+    For a row under a review chain (`settle_chain`), `stage` is the stage that is asked next when the outcome is
+    `further` (or `need_first`: "first"); a row sent back to its writer is `hand` with `FIX_TO_HAND_REASON`.
     """
 
     outcome: str
     reason: str
+    stage: str | None = None
+
+
+# ---------------------------------------------------------------------------- the review chain
+
+FIRST, CHALLENGE, ARBITER, OVERSEER = "first", "challenge", "arbiter", "overseer"
+STAGES: tuple[str, ...] = (FIRST, CHALLENGE, ARBITER, OVERSEER)
+UNSURE_STAGES: tuple[str, ...] = (ARBITER, OVERSEER)  # the stages whose verdict may be marked unsure
+CONTESTED_REASON = "contested: the reviewers disagree"
+STILL_CONTESTED_ARBITER = "still contested after the arbiter"
+STILL_CONTESTED_OVERSEER = "still contested after the overseer"
+CHAIN_CONTESTED_REASONS: tuple[str, ...] = (CONTESTED_REASON, STILL_CONTESTED_ARBITER, STILL_CONTESTED_OVERSEER)
+
+
+@dataclass(frozen=True)
+class ChainStages:
+    """Which stages after `first` a row's chain has now (a stage whose reviewer is switched off is left out)."""
+
+    challenge: bool = False
+    arbiter: bool = False
+    overseer: bool = False
+
+
+def settle_chain(stages: ChainStages, verdicts: Sequence[Mapping[str, Any]]) -> Settlement:
+    """Apply a writer family's review chain to a row's verdicts so far.
+
+    Each verdict is a mapping with `stage` (first, challenge, arbiter or overseer), `verdict` and, for an
+    arbiter or an overseer, `unsure`. The last verdict of a stage counts. Written out:
+
+        v1 = the first review. No challenger: keep accepts, fix goes back to the writer, reject discards.
+        v2 = the challenge. agree = (v1 is keep) == (v2 is keep).
+        agree, both keep: accept. agree, both reject: discard. agree, otherwise: back to the writer.
+        not agree, no arbiter: the owner (contested). Otherwise v3 = the arbiter:
+            v3 sure: keep accepts, fix goes back to the writer, reject discards.
+            v3 unsure, no overseer: the owner (still contested after the arbiter). Otherwise v4 = the overseer:
+            v4 sure: as v3. v4 unsure: the owner (still contested after the overseer).
+
+    The outcome is `accept`, `discard`, `hand` (the owner; a row sent back to its writer is `hand` with
+    `FIX_TO_HAND_REASON`, the path of a fix verdict under `fix_to_hand`), `need_first` (no first verdict yet) or
+    `further` (`stage` says which stage is asked next).
+    """
+    latest: dict[str, Mapping[str, Any]] = {}
+    for verdict in verdicts:
+        latest[str(verdict.get("stage"))] = verdict
+    first = latest.get(FIRST)
+    if first is None:
+        return Settlement(NEED_FIRST, "no first review yet", FIRST)
+
+    def deciding(verdict: Mapping[str, Any], who: str) -> Settlement:
+        word = verdict.get("verdict")
+        if word == "keep":
+            return Settlement(ACCEPT, f"{who} keeps the row")
+        if word == "reject":
+            return Settlement(DISCARD, f"{who} rejects the row")
+        return Settlement(HAND, FIX_TO_HAND_REASON)
+
+    if not stages.challenge:
+        return deciding(first, "the first reviewer")
+    challenge = latest.get(CHALLENGE)
+    if challenge is None:
+        return Settlement(FURTHER, "waiting for the challenger", CHALLENGE)
+    keeps = (first.get("verdict") == "keep", challenge.get("verdict") == "keep")
+    if keeps[0] == keeps[1]:
+        if all(keeps):
+            return Settlement(ACCEPT, "the first review and the challenge both keep the row")
+        if first.get("verdict") == "reject" and challenge.get("verdict") == "reject":
+            return Settlement(DISCARD, "the first review and the challenge both reject the row")
+        return Settlement(HAND, FIX_TO_HAND_REASON)
+    if not stages.arbiter:
+        return Settlement(HAND, CONTESTED_REASON)
+    arbiter = latest.get(ARBITER)
+    if arbiter is None:
+        return Settlement(FURTHER, "waiting for the arbiter", ARBITER)
+    if not arbiter.get("unsure"):
+        return deciding(arbiter, "the arbiter")
+    if not stages.overseer:
+        return Settlement(HAND, STILL_CONTESTED_ARBITER)
+    overseer = latest.get(OVERSEER)
+    if overseer is None:
+        return Settlement(FURTHER, "waiting for the overseer", OVERSEER)
+    if not overseer.get("unsure"):
+        return deciding(overseer, "the overseer")
+    return Settlement(HAND, STILL_CONTESTED_OVERSEER)
+
+
+def writer_verdicts(verdicts: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The verdicts of a chain whose notes go back to the writer, in the order they were given.
+
+    After an overseer or an arbiter settled the row (a verdict that is not unsure), that reviewer's verdict alone:
+    the earlier notes may hold claims it found wrong. Otherwise the first review and, when there was one, the
+    challenge. A row outside a chain (no stage on its verdicts) has none: its verdicts are all of them.
+    """
+    staged = [verdict for verdict in verdicts if verdict.get("stage")]
+    latest: dict[str, Mapping[str, Any]] = {}
+    for verdict in staged:
+        latest[str(verdict["stage"])] = verdict
+    for stage in (OVERSEER, ARBITER):
+        verdict = latest.get(stage)
+        if verdict is not None and not verdict.get("unsure"):
+            return [verdict]
+    return [latest[stage] for stage in (FIRST, CHALLENGE) if stage in latest]
 
 
 def settle(

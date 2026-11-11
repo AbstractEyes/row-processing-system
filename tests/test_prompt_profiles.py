@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "b24ea4ded9b0"
+TODAYS_VERSION = "51a624992384"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 

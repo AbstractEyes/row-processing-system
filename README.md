@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.5.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,17 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.0
+
+| Change | What happens now |
+|---|---|
+| The review chain | `review.chain` gives a writer family a chain of stages: one of the listed first reviewers, a challenger who is shown the row and the first review, an arbiter when the two disagree, an overseer when the arbiter is unsure, then the owner (see "The review chain" under "Review"). A configuration without `review.chain` behaves exactly as 0.5.0 does, and a packet for a row outside a chain is byte for byte what it was |
+| Packets and the client | A row after the first stage carries `"stage"` and `"reviews"` (the earlier reviews, no reviewer's name among them); a packet holds rows of one stage. A verdict on an arbiter or overseer row may carry `"unsure": true` (`verdict ... --unsure`); the client refuses it anywhere else and the controller drops it with a noted problem. `pull` and `status` show the stage and the earlier reviews |
+| The API review seat | A row with earlier reviews is put to the model with them, under the heading "Earlier reviews of this row", after the row and its task and before the instruction to answer; for an arbiter or overseer row the answer format allows `unsure` |
+| The tally | `State.chain_tally()` counts the rows reviewed under a chain by outcome, for all writer families and for each, read from the rows and verdicts so it is the same after a restart |
+| The rules | The review brief has a section "When a row comes with earlier reviews"; the pool has rules 108 to 112 for the chain |
+| Version | `0.6.0`; the notebook installs @v0.6.0; the rule files and their versions are recompiled |
 
 ## What changed in 0.5.0
 
@@ -892,6 +903,93 @@ The bucket copy of a packet's pictures is deleted by the controller once it has 
 verdicts (recorded as `packet_burned`), or with the whole packet when it is withdrawn (recorded as
 `packet_withdrawn`). Reviewers delete their local copies when they push. A reviewer that holds a local copy
 of a packet when it is withdrawn can still push its verdicts; the controller ignores that file.
+
+### The review chain
+
+By default one reviewer first-reviews a row and the policy settles it. A writer family can instead have
+a chain of stages (`review.chain`, from 0.6.0). A key of `chain` is a writer family (the family of the
+provider that wrote the row, as `review.provider_families` maps it):
+
+```json
+"review": {
+  "chain": {
+    "openai":   {"first": ["rev-a", "rev-x"], "challenger": "rev-b", "arbiter": "rev-c", "overseer": "rev-d"},
+    "deepseek": {"first": ["rev-x"]}
+  },
+  "reviewers": [ ... ]
+}
+```
+
+`first` is a non-empty list of reviewer ids; `challenger`, `arbiter` and `overseer` are single ids and
+optional. An `arbiter` needs a `challenger` and an `overseer` needs an `arbiter`. Every id names a
+reviewer of `reviewers`, the ids within one family's entry are all different, and a first reviewer or a
+challenger of the writer's own family is a configuration error (an arbiter and an overseer may be of any
+family). A reviewer that is switched off is skipped as a first reviewer, and a row whose chain has no
+first reviewer that is on goes to the hand queue with the "no reviewer" reason (and is reopened when one
+is available); a stage whose reviewer is off counts as not configured. `to_dict` leaves `chain` out when
+it is empty.
+
+The stages, for a row whose writer family has a chain:
+
+| Stage | Who is asked | What it is given |
+|---|---|---|
+| `first` | one of the listed first reviewers, by the usual rotation over their `weight` | the row, as always |
+| `challenge` | the challenger | the row and the first review |
+| `arbiter` | the arbiter, only when first and challenge disagree | the row and both reviews |
+| `overseer` | the overseer, only when the arbiter marks its verdict unsure | the row and the three reviews |
+| owner | the hand queue, only when the overseer marks its verdict unsure | |
+
+The rule, written out:
+
+```
+v1 = the first reviewer's verdict
+no challenger configured:
+    keep -> ACCEPT; fix -> BACK TO THE WRITER; reject -> DISCARD
+challenger configured:
+    v2 = the challenger's verdict (it saw v1 and its note)
+    agree = (v1 is keep) == (v2 is keep)
+    agree, both keep                -> ACCEPT
+    agree, both reject              -> DISCARD
+    agree, otherwise                -> BACK TO THE WRITER, with the notes of both
+    not agree, no arbiter           -> the owner's hand queue, "contested: the reviewers disagree"
+    not agree, arbiter configured   -> v3 = the arbiter's verdict (it saw v1, v2 and their notes)
+        v3 not unsure: keep -> ACCEPT; fix -> BACK TO THE WRITER with the arbiter's note ONLY; reject -> DISCARD
+        v3 unsure, no overseer      -> the owner's hand queue, "still contested after the arbiter"
+        v3 unsure, overseer         -> v4 = the overseer's verdict (it saw v1, v2, v3)
+            v4 not unsure: as v3's three cases, with the overseer's note only
+            v4 unsure               -> the owner's hand queue, "still contested after the overseer"
+```
+
+"Back to the writer" is the path of a `fix` verdict under `fix_to_hand` with the repair step on (the row
+waits in the hand queue with the fix reason, the repair step sends it once to its writer, and a row sent
+back a second time stays with the owner). What changes is which notes the repair call carries: after
+agreement the notes of both reviews, in order; after an arbiter or an overseer settled the row, that
+reviewer's note alone, because the earlier notes may hold claims it found wrong. A light correction
+(`amend`) counts only on a verdict whose note goes to the writer. A row written again by the repair step
+is a new row and goes through its family's chain from `first` again. Its first reviewer is chosen by the first reviewers' weights, as
+for any row of the chain: the policy's preference for a reviewer that did not read the replaced row does not apply
+under a chain, where the challenger is the second pair of eyes.
+
+Under a chain the policy's `keeps_to_accept`, `rejects_to_discard`, `max_reviewers`,
+`first_keep_accepts`, `fix_to_hand` and `solo_keep` do not apply, and an assessor flag no longer changes
+the outcome (it still travels with the row for the reviewers to read). No audit sample is drawn from a row
+a chain settled. A row that already has a review made before the chain was configured for its family
+finishes under the policy: an assignment made under a chain is recorded with its stage in
+`packet_published`, and a row is under a chain only when its first review was made with a stage, so a
+restart decides the same.
+
+A packet row after the first stage carries `"stage": "challenge" | "arbiter" | "overseer"` and
+`"reviews": [{"stage", "verdict", "reasons", "notes", "amend"?}, ...]` in the order they were given, with
+no reviewer id, family or model name. A packet holds rows of one stage, so a reviewer that serves
+different stages for different writer families gets a packet for each. A verdict of an arbiter or an
+overseer may add `"unsure": true` (`python -m rps.review verdict ... --unsure`): the verdict is still its
+best one, and `unsure` says the deciding claim cannot be told from the picture at its size or the rule
+sheet does not settle it. Any other row refuses it (the client at record, check and push) and the
+controller drops it with a noted problem while the verdict counts. `State.chain_tally()` returns the
+counts (`rows`, `waiting`, `agreed`, `single`, `contested`, `arbiter`, `overseer`, `to_owner` and the same
+for each writer family under `by_family`). The review brief's section "When a row comes with earlier
+reviews" and pool rules 108 to 112 carry the reviewers' side; an API seat's `extra_instructions` carry
+the role's own guidance.
 
 ## The API review seat
 

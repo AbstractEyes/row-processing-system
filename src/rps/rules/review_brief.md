@@ -65,6 +65,12 @@ A sentence restates the hint when about three quarters of its content words come
 
 Return one line per row: row_id, verdict, reasons (the codes above; at least one for fix and reject), notes (name the problem and where it is). Codes are lower-case letters, digits and "_" only.
 
+## When a row comes with earlier reviews
+
+A row may come with earlier reviews of the same row (a `reviews` list in the packet, or a section headed "Earlier reviews of this row"): each shows its stage, its verdict, its reason codes and its note, and never who gave it. Judge the row against the picture, the records and the hint, as for any row. Check each fault an earlier review names against the row and say, in your note, which of them hold and which do not. Do not defer to an earlier review because it came first or because it agrees with another, and do not look for who wrote it.
+
+A row at the arbiter or overseer stage may carry `unsure` beside its verdict (`--unsure` on the command line): the verdict you give is still your best one, and `unsure` says that the deciding claim cannot be told from the picture at its size, or that the rule sheet does not settle it. No other row takes `unsure`; it is refused there.
+
 ## Rules the script already holds (named only)
 
 Sizes and counts; closed lists and sealed values; nesting of ranks; wordings present; no pixel or file talk; no meta-language or spec talk; no advice words; genre on the list and one per series; capitalized style names; recorded garments named in text and tags; relation question keys; the assigned relation part, unknown key and wordings; hint-implied people in plain records.

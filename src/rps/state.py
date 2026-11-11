@@ -46,6 +46,7 @@ from .events import Event
 from .failures import KIND_TRUNCATED
 from .ids import canonical_json
 from .repair import correction_outcomes, repair_feedback
+from .review.policy import CHAIN_CONTESTED_REASONS, writer_verdicts
 
 # "repaired" is the end of a row that was written again: it never ships, and what stands for it is the rows its repair wrote.
 TERMINAL_ROW_STATUSES = frozenset({"accepted", "rejected", "set_aside", "repaired"})
@@ -127,6 +128,10 @@ class Assignment:
     round: int
     audit: bool = False
     open: bool = True
+    # The review chain (see `review.chain`): the stage this review is (first, challenge, arbiter or overseer) and the
+    # writer's family, recorded when the packet was published. None for a review outside a chain.
+    stage: str | None = None
+    writer_family: str | None = None
 
 
 @dataclass
@@ -187,6 +192,23 @@ class RowState:
         only and None for both.
         """
         return [v for v in self.verdicts if not v.get("set_aside") and (audit is None or bool(v.get("audit")) == audit)]
+
+    @property
+    def under_chain(self) -> bool:
+        """True when the row's first review was made under a review chain (an assignment recorded with a stage).
+
+        A row whose first review was planned before the chain was configured for its writer's family never is: it
+        finishes under the policy. Read from the events alone, so a restart decides the same.
+        """
+        main = [a for a in self.assignments if not a.audit]
+        return bool(main) and main[0].stage is not None
+
+    def writer_verdicts(self) -> list[dict[str, Any]]:
+        """The verdicts whose notes (and light correction) go back to the writer when the row is sent back: all the
+        live verdicts of a row outside a chain, and for a row under a chain the ones `rps.review.policy.writer_verdicts`
+        names (the arbiter's or the overseer's alone when one settled the row, else the first review and the challenge)."""
+        live = self.live_verdicts(audit=None)
+        return list(writer_verdicts(live)) if self.under_chain else live
 
     def families_used(self) -> set[str]:
         """Families of every reviewer the row has been sent to (open or finished)."""
@@ -582,6 +604,8 @@ class State:
                     family=packet.family,
                     round=int(item.get("round", 1)),
                     audit=bool(item.get("audit", False)),
+                    stage=str(item["stage"]) if item.get("stage") else None,
+                    writer_family=str(item["writer_family"]) if item.get("writer_family") else None,
                 )
             )
             if not item.get("audit") and row.status in ("passed", "in_question"):
@@ -637,6 +661,10 @@ class State:
         }
         if isinstance(p.get("amend"), dict):  # a reviewer's correction of a record (see `rps.amend`)
             verdict["amend"] = {str(key): str(value) for key, value in p["amend"].items()}
+        if assignment.stage is not None:  # a review of a chain: its stage, and whether the reviewer marked it unsure
+            verdict["stage"] = assignment.stage
+            if p.get("unsure") is True:
+                verdict["unsure"] = True
         row.verdicts.append(verdict)
 
     def _on_row_escalated(self, event: Event) -> None:
@@ -1088,6 +1116,7 @@ class State:
             if row.status == "accepted"
             and not any(a.audit for a in row.assignments)
             and row.accepted_by == "reviewers"
+            and not row.under_chain  # no audit sample is drawn from a row a chain settled
             and selected(row.row_id)
         ]
 
@@ -1153,6 +1182,88 @@ class State:
             if answered:
                 result.append((packet, answered))
         return result
+
+    # ------------------------------------------------------------------ the review chain
+
+    def chain_tally(self) -> dict[str, Any]:
+        """How the rows reviewed under a review chain have gone, read from the rows and their verdicts alone (so the
+        same after a restart), as a whole and for each writer family under `by_family`:
+
+            rows        rows whose first review was made under a chain
+            waiting     of those, rows not yet settled (a review is out, or the next stage has not been asked yet)
+            agreed      rows whose first review and challenge agree: accept (both keep), discard (both reject),
+                        back (otherwise: sent back to the writer)
+            single      rows with a first review and no challenge that are settled (the family has no challenger):
+                        accept, discard, back
+            contested   rows whose first review and challenge disagree
+            arbiter     the arbiter's verdicts: keep, fix, reject (every verdict given), unsure (those marked unsure),
+                        with_first and with_challenger (a sure verdict that stood with the first reviewer's side, keep
+                        or not keep, or with the challenger's)
+            overseer    keep, fix, reject, unsure
+            to_owner    rows sent to the owner's hand queue as contested or still contested
+        """
+
+        def empty() -> dict[str, Any]:
+            return {
+                "rows": 0,
+                "waiting": 0,
+                "agreed": {"accept": 0, "back": 0, "discard": 0},
+                "single": {"accept": 0, "back": 0, "discard": 0},
+                "contested": 0,
+                "arbiter": {"keep": 0, "fix": 0, "reject": 0, "unsure": 0, "with_first": 0, "with_challenger": 0},
+                "overseer": {"keep": 0, "fix": 0, "reject": 0, "unsure": 0},
+                "to_owner": 0,
+            }
+
+        def add(tally: dict[str, Any], row: RowState) -> None:
+            tally["rows"] += 1
+            settled = row.status not in ("passed", "in_review", "in_question")
+            if not settled:
+                tally["waiting"] += 1
+            latest: dict[str, dict[str, Any]] = {}
+            for verdict in row.live_verdicts(audit=None):
+                if verdict.get("stage"):
+                    latest[verdict["stage"]] = verdict
+            first, challenge = latest.get("first"), latest.get("challenge")
+            word = lambda verdict: "accept" if verdict["verdict"] == "keep" else "discard" if verdict["verdict"] == "reject" else "back"  # noqa: E731
+            if first is not None and challenge is None and settled:
+                tally["single"][word(first)] += 1
+            if first is not None and challenge is not None:
+                if (first["verdict"] == "keep") == (challenge["verdict"] == "keep"):
+                    kind = "back"
+                    if first["verdict"] == "keep":
+                        kind = "accept"
+                    elif first["verdict"] == "reject" and challenge["verdict"] == "reject":
+                        kind = "discard"
+                    tally["agreed"][kind] += 1
+                else:
+                    tally["contested"] += 1
+            for stage in ("arbiter", "overseer"):
+                verdict = latest.get(stage)
+                if verdict is None:
+                    continue
+                tally[stage][verdict["verdict"]] += 1
+                if verdict.get("unsure"):
+                    tally[stage]["unsure"] += 1
+                elif stage == "arbiter" and first is not None and challenge is not None:
+                    keeps = verdict["verdict"] == "keep"
+                    if keeps == (first["verdict"] == "keep"):
+                        tally["arbiter"]["with_first"] += 1
+                    if keeps == (challenge["verdict"] == "keep"):
+                        tally["arbiter"]["with_challenger"] += 1
+            if (row.hand or {}).get("reason") in CHAIN_CONTESTED_REASONS:  # kept on the row after the owner answered it
+                tally["to_owner"] += 1
+
+        total = empty()
+        families: dict[str, dict[str, Any]] = {}
+        for row_id in sorted(self.rows):
+            row = self.rows[row_id]
+            if not row.under_chain:
+                continue
+            add(total, row)
+            family = next((a.writer_family for a in row.assignments if not a.audit and a.writer_family), "")
+            add(families.setdefault(family, empty()), row)
+        return {**total, "by_family": {family: families[family] for family in sorted(families)}}
 
     # ------------------------------------------------------------------ reporting
 

@@ -35,6 +35,7 @@ from ..layout import reviewer_actor
 from ..store.base import ActorStore, NotFound, Store
 from ..store.local import LocalStore
 from .packets import (
+    UNSURE_STAGES,
     PacketError,
     normalize_verdict,
     parse_packet,
@@ -61,6 +62,10 @@ class ReviewItem:
     # What the packet's reviewer may correct with a fix verdict (empty for a reviewer who may not).
     may_amend: tuple[str, ...] = ()
     amend_values: Mapping[str, Sequence[str]] = field(default_factory=dict)
+    # A row under a review chain, after the first stage: its stage (challenge, arbiter or overseer) and the earlier
+    # reviews of the row, in the order they were given, without who gave them.
+    stage: str | None = None
+    reviews: Sequence[Mapping[str, Any]] | None = None
 
     def to_json(self) -> str:
         data: dict[str, Any] = {
@@ -75,6 +80,10 @@ class ReviewItem:
         if self.may_amend:
             data["may_amend"] = list(self.may_amend)
             data["amend_values"] = {key: list(values) for key, values in self.amend_values.items()}
+        if self.stage is not None:
+            data["stage"] = self.stage
+        if self.reviews is not None:
+            data["reviews"] = [dict(review) for review in self.reviews]
         return json.dumps(data, ensure_ascii=True)
 
 
@@ -149,9 +158,44 @@ class LocalPacket:
         values = self.document.get("amend_values")
         return {str(key): list(vals) for key, vals in values.items()} if isinstance(values, dict) and self.may_amend else {}
 
+    @property
+    def stage(self) -> str | None:
+        """The stage of the packet's rows (a packet holds rows of one stage), None outside a review chain."""
+        stages = {self.stage_of(entry["row_id"]) for entry in self.document["rows"]} - {None}
+        return next(iter(stages)) if len(stages) == 1 else None
+
+    def stage_of(self, row_id: Any) -> str | None:
+        """The stage of a row of this packet under a review chain (challenge, arbiter or overseer), else None."""
+        for entry in self.document["rows"]:
+            if entry["row_id"] == row_id:
+                stage = entry.get("stage")
+                return str(stage) if stage else None
+        return None
+
+    def may_unsure(self, row_id: Any) -> bool:
+        """Whether a verdict for this row may be marked unsure: only a row whose entry says its stage is arbiter or overseer."""
+        return self.stage_of(row_id) in UNSURE_STAGES
+
     def verdict_problems(self, verdict: Any) -> list[str]:
-        """The problems with a verdict for a row of this packet, under the packet's own permission to amend."""
-        return validate_verdict(verdict, allowed_row_ids=self.row_ids, may_amend=self.may_amend, amend_values=self.amend_values)
+        """The problems with a verdict for a row of this packet, under the packet's own permission to amend and to
+        mark a verdict unsure."""
+        row_id = verdict.get("row_id") if isinstance(verdict, Mapping) else None
+        return validate_verdict(
+            verdict,
+            allowed_row_ids=self.row_ids,
+            may_amend=self.may_amend,
+            amend_values=self.amend_values,
+            may_unsure=self.may_unsure(row_id),
+        )
+
+    def normalized(self, verdict: Mapping[str, Any]) -> dict[str, Any]:
+        """A valid verdict of this packet with every field present."""
+        return normalize_verdict(
+            verdict,
+            may_amend=self.may_amend,
+            amend_values=self.amend_values,
+            may_unsure=self.may_unsure(verdict.get("row_id")),
+        )
 
     def entry(self, row_id: str) -> dict[str, Any]:
         for entry in self.document["rows"]:
@@ -187,6 +231,7 @@ class PacketStatus:
     judged: int
     pushed: bool
     images_left: int
+    stage: str | None = None  # the stage of a packet under a review chain (challenge, arbiter or overseer)
 
     @property
     def left(self) -> int:
@@ -347,9 +392,7 @@ class ReviewerClient:
         judged: dict[str, dict[str, Any]] = {}
         for verdict in verdicts:
             if packet.verdict_problems(verdict) == [] and verdict["row_id"] not in judged:
-                judged[verdict["row_id"]] = normalize_verdict(
-                    verdict, may_amend=packet.may_amend, amend_values=packet.amend_values
-                )
+                judged[verdict["row_id"]] = packet.normalized(verdict)
         return judged
 
     def record_verdict(
@@ -362,20 +405,25 @@ class ReviewerClient:
         *,
         replace: bool = False,
         amend: Mapping[str, str] | None = None,
+        unsure: bool | None = None,
     ) -> dict[str, Any]:
         """Validate a verdict and append it to the reviewer's own verdict file.
 
         `amend` ({"shot light": value}) is the correction a reviewer whose packet says `may_amend` may give
-        with a fix verdict; it is refused for any other reviewer, and for any other verdict.
+        with a fix verdict; it is refused for any other reviewer, and for any other verdict. `unsure` (true) marks
+        the verdict of an arbiter or an overseer as its best one that cannot settle the row; it is refused for a row
+        whose packet entry does not say its stage is arbiter or overseer.
         """
         packet = self.require_packet(packet_id)
         record: dict[str, Any] = {"row_id": row_id, "verdict": verdict, "reasons": list(reasons), "notes": notes}
         if amend is not None:
             record["amend"] = dict(amend)
+        if unsure is not None:
+            record["unsure"] = unsure
         problems = packet.verdict_problems(record)
         if problems:
             raise ReviewError("; ".join(problems))
-        record = normalize_verdict(record, may_amend=packet.may_amend, amend_values=packet.amend_values)
+        record = packet.normalized(record)
         path = f"{packet_id}/verdicts.jsonl"
         if row_id in self.judged_rows(packet):
             if not replace:
@@ -429,6 +477,7 @@ class ReviewerClient:
                     judged=len(self.judged_rows(packet)),
                     pushed=packet.packet_id in pushed,
                     images_left=left_images,
+                    stage=packet.stage,
                 )
             )
         return result
@@ -495,6 +544,8 @@ class ReviewerClient:
                 verdict_schema=packet.document.get("verdict_schema", {}),
                 may_amend=packet.may_amend,
                 amend_values=packet.amend_values,
+                stage=entry.get("stage") or None,
+                reviews=entry["reviews"] if entry.get("stage") and isinstance(entry.get("reviews"), list) else None,
             )
             try:
                 answer = dict(review_fn(item))
@@ -507,6 +558,7 @@ class ReviewerClient:
                     answer.get("reasons", []),
                     answer.get("notes", ""),
                     amend=answer.get("amend"),
+                    unsure=answer.get("unsure"),
                 )
                 result.judged += 1
             except (ReviewError, PacketError) as error:

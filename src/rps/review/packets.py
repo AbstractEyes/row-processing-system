@@ -29,6 +29,13 @@ these fields:
 A reviewer whose packet says `may_amend` may add one more field to a "fix" verdict, `amend` (see
 `rps.amend`): {"shot light": <a value of the packet's amend_values, or "none">}. Any other reviewer's
 verdict has the four fields above and nothing else.
+
+A row under a review chain (see `rps.review.policy.settle_chain`) is put to a reviewer at a stage. A row of the
+stages after the first carries `stage` ("challenge", "arbiter" or "overseer") and `reviews`, the earlier reviews of
+the same row in the order they were given: {"stage", "verdict", "reasons", "notes"} and, when the review had one,
+"amend". No reviewer id, family or model name is in them: the review stays blind. A packet holds rows of one
+stage. A verdict on an arbiter or overseer row may add `unsure` (true), the reviewer's mark that the deciding claim
+cannot be settled from what it was given (the verdict is still its best one); no other row takes it.
 """
 
 from __future__ import annotations
@@ -42,6 +49,7 @@ from typing import Any, Collection, Iterable, Mapping, Sequence
 from .. import layout
 from ..amend import amend_problems
 from ..provenance import require_label
+from .policy import STAGES, UNSURE_STAGES
 from ..store.base import Store
 
 PACKET_FORMAT = 1
@@ -51,6 +59,8 @@ MAX_REASONS = 10
 MAX_NOTES_LENGTH = 2000
 VERDICT_FIELDS = ("row_id", "verdict", "reasons", "notes")
 AMEND_FIELD = "amend"
+UNSURE_FIELD = "unsure"
+REVIEW_FIELDS = ("stage", "verdict", "reasons", "notes", "amend")  # what an earlier review shows: its answer and nothing of its reviewer
 
 VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -74,17 +84,24 @@ VERDICT_SCHEMA: dict[str, Any] = {
 }
 
 
-def verdict_schema(amend_values: Mapping[str, Sequence[str]] | None = None) -> dict[str, Any]:
-    """The verdict schema of a packet: `VERDICT_SCHEMA`, and for a reviewer who may amend, the `amend` field too."""
-    if not amend_values:
+def verdict_schema(amend_values: Mapping[str, Sequence[str]] | None = None, unsure: bool = False) -> dict[str, Any]:
+    """The verdict schema of a packet: `VERDICT_SCHEMA`; for a reviewer who may amend, the `amend` field too; and for
+    an arbiter or overseer packet (`unsure`), the `unsure` field."""
+    if not amend_values and not unsure:
         return VERDICT_SCHEMA
     schema = copy.deepcopy(VERDICT_SCHEMA)
-    schema["properties"][AMEND_FIELD] = {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {key: {"type": "string", "enum": list(values)} for key, values in amend_values.items()},
-        "description": "only with the verdict fix: the value the picture shows for the record (or none)",
-    }
+    if amend_values:
+        schema["properties"][AMEND_FIELD] = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {key: {"type": "string", "enum": list(values)} for key, values in amend_values.items()},
+            "description": "only with the verdict fix: the value the picture shows for the record (or none)",
+        }
+    if unsure:
+        schema["properties"][UNSURE_FIELD] = {
+            "type": "boolean",
+            "description": "true when the deciding claim cannot be told from what you were given; the verdict is still your best one",
+        }
     return schema
 
 
@@ -98,13 +115,15 @@ def validate_verdict(
     *,
     may_amend: Sequence[str] = (),
     amend_values: Mapping[str, Sequence[str]] | None = None,
+    may_unsure: bool = False,
 ) -> list[str]:
     """Return the problems with a verdict (empty when it is valid).
 
     Fields other than the four above are refused: a reviewer returns a verdict, never
     a rewritten row. The one exception is `amend`, for a reviewer whose packet lists `may_amend`
     (and `amend_values`): it goes only with a fix verdict, names only a key of `may_amend` and gives
-    only a value of `amend_values` for it.
+    only a value of `amend_values` for it. The other is `unsure`, for a row whose packet entry says its stage is
+    arbiter or overseer (`may_unsure`): it is true or false, and true is refused anywhere else.
     """
     if not isinstance(obj, Mapping):
         return ["the verdict is not an object"]
@@ -112,6 +131,11 @@ def validate_verdict(
     for key in obj:
         if key == AMEND_FIELD:
             problems.extend(amend_problems(obj.get("verdict"), obj[key], may_amend, amend_values))
+        elif key == UNSURE_FIELD:
+            if not isinstance(obj[key], bool):
+                problems.append("unsure must be true or false")
+            elif obj[key] and not may_unsure:
+                problems.append("unsure is allowed only on a row whose packet entry says its stage is arbiter or overseer")
         elif key not in VERDICT_FIELDS:
             problems.append(f"unexpected field {key!r} (reviewers return verdicts only)")
     row_id = obj.get("row_id")
@@ -142,9 +166,10 @@ def normalize_verdict(
     *,
     may_amend: Sequence[str] = (),
     amend_values: Mapping[str, Sequence[str]] | None = None,
+    may_unsure: bool = False,
 ) -> dict[str, Any]:
-    """A valid verdict with every field present (`amend` only when the verdict has one)."""
-    problems = validate_verdict(obj, may_amend=may_amend, amend_values=amend_values)
+    """A valid verdict with every field present (`amend` only when the verdict has one, `unsure` only when true)."""
+    problems = validate_verdict(obj, may_amend=may_amend, amend_values=amend_values, may_unsure=may_unsure)
     if problems:
         raise PacketError("; ".join(problems))
     record = {
@@ -155,6 +180,8 @@ def normalize_verdict(
     }
     if AMEND_FIELD in obj:
         record[AMEND_FIELD] = dict(obj[AMEND_FIELD])
+    if obj.get(UNSURE_FIELD) is True:
+        record[UNSURE_FIELD] = True
     return record
 
 
@@ -190,6 +217,9 @@ class PacketRow:
     image_ext: str | None = None
     image_bytes: bytes | None = field(default=None, repr=False)
     image_withheld: bool = False
+    # A row under a review chain, after the first stage: its stage and the earlier reviews of the row (None otherwise).
+    stage: str | None = None
+    reviews: list[dict[str, Any]] | None = None
 
     @property
     def row_id(self) -> str:
@@ -212,10 +242,19 @@ class Packet:
     may_amend: tuple[str, ...] = ()
     amend_values: dict[str, list[str]] = field(default_factory=dict)
 
+    @property
+    def stage(self) -> str | None:
+        """The stage of the rows of the packet (all one), or None for a packet outside a chain or of first reviews."""
+        return self.rows[0].stage if self.rows else None
+
     def items(self) -> list[dict[str, Any]]:
-        """Row ids and picture paths, as recorded in the packet_published event."""
+        """Row ids and picture paths, as recorded in the packet_published event (and the stage of a staged row)."""
         return [
-            {"row_id": item.row_id, "image": f"images/{item.image_name}" if item.image_name else None}
+            {
+                "row_id": item.row_id,
+                "image": f"images/{item.image_name}" if item.image_name else None,
+                **({"stage": item.stage} if item.stage else {}),
+            }
             for item in self.rows
         ]
 
@@ -230,6 +269,7 @@ def build_packet(
     withheld: Collection[str] = (),
     may_amend: Sequence[str] = (),
     amend_values: Mapping[str, Sequence[str]] | None = None,
+    chain: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> Packet:
     """Assemble a packet from (stored row, spec line, picture bytes, picture extension) tuples.
 
@@ -237,9 +277,12 @@ def build_packet(
     without a writer label is refused. `withheld` names the rows whose picture the
     reviewer may not see; they must come without picture bytes. `may_amend` and `amend_values`
     are the permission of a reviewer who may correct a record (see `rps.amend`); a key listed
-    in `may_amend` needs its values.
+    in `may_amend` needs its values. `chain` gives, for a row id, the stage and the earlier reviews of a row under
+    a review chain ({"stage", "reviews"}); a packet holds rows of one stage, and an earlier review shows nothing of
+    its reviewer (see `REVIEW_FIELDS`).
     """
     amend_values = dict(amend_values or {}) if may_amend else {}
+    chain = chain or {}
     for key in may_amend:
         if key not in amend_values:
             raise PacketError(f"the packet lets the reviewer amend {key!r} but gives no values for it")
@@ -255,14 +298,19 @@ def build_packet(
         held = view["row_id"] in withheld
         if held and image_bytes is not None:
             raise PacketError(f"row {view['row_id']!r} has its picture withheld but carries picture bytes")
+        stage, reviews = _chain_entry(view["row_id"], chain.get(view["row_id"]))
         items.append(
             PacketRow(
                 view=view,
                 image_ext=ext if image_bytes is not None else None,
                 image_bytes=image_bytes,
                 image_withheld=held,
+                stage=stage,
+                reviews=reviews,
             )
         )
+    if len({item.stage for item in items}) > 1:
+        raise PacketError("a packet holds rows of one stage; this one mixes " + ", ".join(sorted({item.stage or "no stage" for item in items})))
     return Packet(
         packet_id=packet_id,
         reviewer_id=reviewer_id,
@@ -272,6 +320,23 @@ def build_packet(
         may_amend=tuple(may_amend),
         amend_values={key: list(values) for key, values in amend_values.items()},
     )
+
+
+def _chain_entry(row_id: str, entry: Mapping[str, Any] | None) -> tuple[str | None, list[dict[str, Any]] | None]:
+    """The stage and the earlier reviews of a row under a chain, checked: a stage after the first, and reviews that
+    show only a review's own answer (never who gave it)."""
+    if not entry:
+        return None, None
+    stage = entry.get("stage")
+    if stage not in STAGES or stage == "first":
+        raise PacketError(f"row {row_id!r}: a staged row is at the challenge, arbiter or overseer stage, not {stage!r}")
+    reviews = []
+    for review in entry.get("reviews") or ():
+        extra = sorted(set(review) - set(REVIEW_FIELDS))
+        if extra:
+            raise PacketError(f"row {row_id!r}: an earlier review shows only {list(REVIEW_FIELDS)}, not {extra}")
+        reviews.append(copy.deepcopy(dict(review)))
+    return str(stage), reviews
 
 
 def packet_document(packet: Packet) -> dict[str, Any]:
@@ -288,7 +353,7 @@ def packet_document(packet: Packet) -> dict[str, Any]:
         "reviewer_id": packet.reviewer_id,
         "brief_version": packet.brief_version,
         "created": packet.created,
-        "verdict_schema": verdict_schema(packet.amend_values if packet.may_amend else None),
+        "verdict_schema": verdict_schema(packet.amend_values if packet.may_amend else None, packet.stage in UNSURE_STAGES),
         **amend,
         "rows": [
             {
@@ -297,6 +362,7 @@ def packet_document(packet: Packet) -> dict[str, Any]:
                 "task": item.view["task"],
                 "image": f"images/{item.image_name}" if item.image_name else None,
                 "image_withheld": item.image_withheld,
+                **({"stage": item.stage, "reviews": item.reviews or []} if item.stage else {}),
             }
             for item in packet.rows
         ],

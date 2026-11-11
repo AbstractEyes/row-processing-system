@@ -29,7 +29,7 @@ import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Collection, Mapping
+from typing import Any, Collection, Mapping, Sequence
 
 from .amend import check_keys as check_amend_keys
 from .ids import canonical_json
@@ -593,6 +593,81 @@ class ReviewPolicy:
         return policy
 
 
+CHAIN_STAGES: tuple[str, ...] = ("first", "challenge", "arbiter", "overseer")
+CHAIN_KEYS = {"first", "challenger", "arbiter", "overseer"}
+
+
+@dataclass(frozen=True)
+class ChainEntry:
+    """The review chain of one writer family (see `review.chain` and `rps.review.policy.settle_chain`).
+
+    `first` lists the reviewers that may first-review a row of the family (they take turns by their `weight`).
+    `challenger` is given the row and the first review and returns a verdict of its own. `arbiter` is asked only
+    when those two disagree, and `overseer` only when the arbiter marks its verdict unsure; a row still unsure
+    after the last stage goes to the owner. `arbiter` needs `challenger` and `overseer` needs `arbiter`.
+    """
+
+    first: tuple[str, ...]
+    challenger: str | None = None
+    arbiter: str | None = None
+    overseer: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"first": list(self.first)}
+        for key in ("challenger", "arbiter", "overseer"):
+            if getattr(self, key) is not None:
+                data[key] = getattr(self, key)
+        return data
+
+    def reviewer_ids(self) -> tuple[str, ...]:
+        """Every reviewer id the entry names, the first reviewers first."""
+        return (*self.first, *(item for item in (self.challenger, self.arbiter, self.overseer) if item is not None))
+
+    def stage_reviewer(self, stage: str) -> str | None:
+        """The reviewer of a stage after `first` (None when the stage is not configured)."""
+        return {"challenge": self.challenger, "arbiter": self.arbiter, "overseer": self.overseer}.get(stage)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any], where: str, writer_family: str, reviewers: Sequence[ReviewerConfig]) -> "ChainEntry":
+        if not isinstance(data, Mapping):
+            _fail(f"{where}: expected an object with 'first' (a list of reviewer ids) and, optionally, 'challenger', 'arbiter' and 'overseer'")
+        _check_keys(data, CHAIN_KEYS, where)
+        known = {reviewer.id: reviewer for reviewer in reviewers}
+        first_in = data.get("first")
+        if not isinstance(first_in, (list, tuple)) or not first_in:
+            _fail(f"{where}.first: expected a non-empty list of reviewer ids, got {first_in!r}")
+        singles: dict[str, str | None] = {}
+        for key in ("challenger", "arbiter", "overseer"):
+            value = data.get(key)
+            if value is not None and not isinstance(value, str):
+                _fail(f"{where}.{key}: expected one reviewer id, got {value!r}")
+            singles[key] = value
+        if singles["arbiter"] is not None and singles["challenger"] is None:
+            _fail(f"{where}.arbiter: an arbiter needs a challenger (the arbiter settles a disagreement between the first review and the challenger)")
+        if singles["overseer"] is not None and singles["arbiter"] is None:
+            _fail(f"{where}.overseer: an overseer needs an arbiter (the overseer is asked when the arbiter is unsure)")
+        named: list[tuple[str, str]] = [(f"{where}.first[{index}]", item) for index, item in enumerate(first_in)]
+        named += [(f"{where}.{key}", value) for key, value in singles.items() if value is not None]
+        used: dict[str, str] = {}
+        for position, item in named:
+            if not isinstance(item, str):
+                _fail(f"{position}: expected a reviewer id, got {item!r}")
+            if item not in known:
+                _fail(f"{position}: unknown reviewer {item!r}; use one of {sorted(known)}")
+            if item in used:
+                _fail(f"{position}: reviewer {item!r} is already named at {used[item]}; the reviewers of one chain are all different")
+            used[item] = position
+            if position.startswith(f"{where}.first") or position.endswith(".challenger"):
+                if known[item].family == writer_family:
+                    _fail(f"{position}: reviewer {item!r} is of the writer's own family {writer_family!r}; a first reviewer and a challenger are of another family")
+        return cls(
+            first=tuple(first_in),
+            challenger=singles["challenger"],
+            arbiter=singles["arbiter"],
+            overseer=singles["overseer"],
+        )
+
+
 # Which model family a provider's output belongs to, for choosing reviewers.
 DEFAULT_PROVIDER_FAMILIES: dict[str, str] = {
     "anthropic": "anthropic",
@@ -614,6 +689,12 @@ class ReviewConfig:
     reviewers: tuple[ReviewerConfig, ...] = ()
     policy: ReviewPolicy = field(default_factory=ReviewPolicy)
     provider_families: Mapping[str, str] = field(default_factory=lambda: dict(DEFAULT_PROVIDER_FAMILIES))
+    # The review chain of a writer family (see `ChainEntry`); a family with no entry is reviewed by the policy alone.
+    chain: Mapping[str, ChainEntry] = field(default_factory=dict)
+
+    def chain_for(self, family: str) -> ChainEntry | None:
+        """The review chain of a writer family, or None when the family has none."""
+        return self.chain.get(family)
 
     def family_of(self, provider: str) -> str:
         """The model family of a writer's provider (the provider itself if unmapped)."""
@@ -649,20 +730,23 @@ class ReviewConfig:
         return True if reviewer is None else reviewer.solo_keep
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data: dict[str, Any] = {
             "packet_size": self.packet_size,
             "brief_version": self.brief_version,
             "reviewers": [reviewer.to_dict() for reviewer in self.reviewers],
             "policy": self.policy.to_dict(),
             "provider_families": {key: self.provider_families[key] for key in sorted(self.provider_families)},
         }
+        if self.chain:  # left out when empty, so a configuration without a chain reads (and hashes) as it did
+            data["chain"] = {family: self.chain[family].to_dict() for family in sorted(self.chain)}
+        return data
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "ReviewConfig":
         where = "review"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"packet_size", "brief_version", "reviewers", "policy", "provider_families"}, where)
+        _check_keys(data, {"packet_size", "brief_version", "reviewers", "policy", "provider_families", "chain"}, where)
         reviewers_in = data.get("reviewers", [])
         if not isinstance(reviewers_in, (list, tuple)):
             _fail(f"{where}.reviewers: expected a list")
@@ -680,12 +764,21 @@ class ReviewConfig:
             if not isinstance(family, str) or not NAME_PATTERN.match(family):
                 _fail(f"{where}.provider_families.{provider}: invalid family {family!r}")
             families[str(provider)] = family
+        chain_in = data.get("chain", {})
+        if not isinstance(chain_in, Mapping):
+            _fail(f"{where}.chain: expected an object that maps a writer family to its chain, such as {{\"openai\": {{\"first\": [\"rev-a\"]}}}}")
+        chain: dict[str, ChainEntry] = {}
+        for family in sorted(chain_in, key=str):
+            if not isinstance(family, str) or not NAME_PATTERN.match(family):
+                _fail(f"{where}.chain: expected writer families as keys (letters, digits, '.', '_' or '-'), got {family!r}")
+            chain[family] = ChainEntry.from_dict(chain_in[family], f"{where}.chain.{family}", family, reviewers)
         return cls(
             packet_size=_number(data.get("packet_size", 20), f"{where}.packet_size", minimum=1, integer=True),
             brief_version=str(_text(str(data.get("brief_version", "1")), f"{where}.brief_version")),
             reviewers=reviewers,
             policy=ReviewPolicy.from_dict(data.get("policy", {})),
             provider_families=families,
+            chain=chain,
         )
 
 
@@ -939,7 +1032,8 @@ class Config:
                 "review: no enabled reviewer may keep alone (solo_keep), so no keep can accept a row;"
                 " a row is discarded by two rejects or goes to the hand queue"
             )
-        if self.repair.enabled and not self.review.policy.fix_to_hand:
+        # (A row under a review chain waits in the hand queue with a fix verdict whatever `fix_to_hand` says.)
+        if self.repair.enabled and not self.review.policy.fix_to_hand and not self.review.chain:
             notes.append(
                 "repair: the step is on, but review.policy.fix_to_hand is off, so no row waits in the hand queue"
                 " with a fix verdict and nothing is sent back to its writer"

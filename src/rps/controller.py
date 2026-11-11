@@ -46,7 +46,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from . import __version__, ids, layout
 from .assess import AssessCallFn, AssessContext, AssessFn, Assessment, default_assess
-from .config import PURPOSES, Config, ConfigError, ReviewerConfig, RouteConfig
+from .config import PURPOSES, ChainEntry, Config, ConfigError, ReviewerConfig, RouteConfig
 from .events import EventLog, Event, replay, utc_now
 from .failures import (
     KIND_BAD_REQUEST,
@@ -88,21 +88,25 @@ from .repair import candidates as repair_candidates
 from .repair import failure_reason as repair_failure_reason
 from .repair import repair_item, route_may_repair
 from .amend import amend_problems, amend_values
-from .review.packets import AMEND_FIELD, build_packet, parse_verdict_lines, publish_packet, validate_verdict
+from .review.packets import AMEND_FIELD, UNSURE_FIELD, build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
     ACCEPT,
     DISCARD,
+    FIRST,
     FURTHER,
     HAND,
     NEED_FIRST,
     NO_FIRST_REVIEWER,
     NO_FURTHER_REVIEWER,
     REOPEN_REASONS,
+    UNSURE_STAGES,
+    ChainStages,
     Settlement,
     audit_selected,
     pick_first_reviewer,
     pick_further_reviewer,
     settle,
+    settle_chain,
 )
 from .routing import ImageRoutingError
 from .state import LineState, PacketState, RowState, State, TaskState
@@ -113,6 +117,8 @@ from .tasks import FilePlanner, Planner, StorePlanner, TaskSpec
 
 ImageLoader = Callable[[Any, Any], "tuple[bytes, str, int]"]
 HAND_DECISIONS = ("accept", "discard", "replace", "review")
+# Why a row first-reviewed under a chain goes to the owner when its writer family has no chain in the configuration any more.
+CHAIN_GONE_REASON = "the review chain of this row's writer family is no longer in the configuration: the row waits for the owner"
 
 # A tasks file in a store behind a network is read at most this often (a local folder, on every pass).
 TASKS_CHECK_SECONDS = 15.0
@@ -2077,7 +2083,11 @@ class Controller:
                 # A correction of a record is judged apart from the verdict: one that is not allowed (the reviewer's
                 # configuration does not list the key) or not valid is dropped with a note, and the verdict counts.
                 amend = verdict.get(AMEND_FIELD) if isinstance(verdict, dict) else None
-                bare = {key: value for key, value in verdict.items() if key != AMEND_FIELD} if isinstance(verdict, dict) else verdict
+                bare = (
+                    {key: value for key, value in verdict.items() if key not in (AMEND_FIELD, UNSURE_FIELD)}
+                    if isinstance(verdict, dict)
+                    else verdict
+                )
                 problems = validate_verdict(bare, allowed_row_ids=allowed)
                 if problems:
                     self._note_problem(f"{path}: row {verdict.get('row_id')!r}: {'; '.join(problems)}")
@@ -2098,6 +2108,22 @@ class Controller:
                         )
                     else:
                         kept_amend = {str(key): str(value) for key, value in amend.items()}
+                kept_unsure = False
+                if isinstance(verdict, dict) and UNSURE_FIELD in verdict:
+                    # The unsure mark is judged apart from the verdict, as a correction is: only a row whose packet entry
+                    # says its stage is arbiter or overseer takes it. Anywhere else it is dropped with a note, and the
+                    # verdict counts as a sure one.
+                    stage = next((item.get("stage") for item in packet.items if item["row_id"] == verdict["row_id"]), None)
+                    mark = verdict[UNSURE_FIELD]
+                    if not isinstance(mark, bool):
+                        self._note_problem(f"{path}: row {verdict.get('row_id')!r}: the unsure mark is dropped, the verdict counts: unsure must be true or false")
+                    elif mark and stage not in UNSURE_STAGES:
+                        self._note_problem(
+                            f"{path}: row {verdict.get('row_id')!r}: the unsure mark is dropped, the verdict counts: "
+                            "unsure is allowed only on a row whose packet entry says its stage is arbiter or overseer"
+                        )
+                    else:
+                        kept_unsure = mark
                 self._emit(
                     "verdict_received",
                     {
@@ -2109,6 +2135,7 @@ class Controller:
                         "reasons": list(verdict.get("reasons", [])),
                         "notes": str(verdict.get("notes", "")),
                         **({AMEND_FIELD: kept_amend} if kept_amend else {}),
+                        **({UNSURE_FIELD: True} if kept_unsure else {}),
                     },
                 )
 
@@ -2200,13 +2227,92 @@ class Controller:
         asked = row.reviewers_used()
         return [reviewer for reviewer in reviewers if reviewer.id not in asked]
 
+    # -- the review chain
+
+    def _in_chain(self, row: RowState) -> bool:
+        """True when the row is reviewed under its writer family's review chain (`review.chain`).
+
+        A row whose first review was made under a chain stays under it (the assignment is recorded with its stage).
+        A row that already has a review of its own made before the chain was configured finishes under the policy.
+        A row with no review yet follows the chain its family has now. Everything here comes from the events and the
+        configuration, so a restart decides the same.
+        """
+        if row.under_chain:
+            return True
+        if any(not a.audit for a in row.assignments):
+            return False
+        return self.config.review.chain_for(self._writer_family(row)) is not None
+
+    def _chain_stages(self, entry: ChainEntry) -> ChainStages:
+        """The stages after the first that a chain has now: a stage whose reviewer is switched off counts as not configured."""
+        review = self.config.review
+        challenge = entry.challenger is not None and review.is_active(entry.challenger)
+        arbiter = challenge and entry.arbiter is not None and review.is_active(entry.arbiter)
+        overseer = arbiter and entry.overseer is not None and review.is_active(entry.overseer)
+        return ChainStages(challenge=challenge, arbiter=arbiter, overseer=overseer)
+
+    def _chain_reviewer(
+        self, row: RowState, entry: ChainEntry, stage: str, reviewers: Sequence[ReviewerConfig] | None = None
+    ) -> ReviewerConfig | None:
+        """The reviewer a row's next review at `stage` goes to, or None when there is none.
+
+        The first review goes to one of the chain's `first` reviewers (the ones that are on and have not read the row),
+        by the usual rotation over their weights, a row a repair wrote included (the preference for a reviewer that did
+        not read the row it replaces is the policy's, not the chain's: here the challenger is the second pair of eyes).
+        A later stage goes to the one reviewer the chain names for it, if it is on and has not read the row.
+        """
+        available = self.config.review.enabled_reviewers() if reviewers is None else reviewers
+        asked = row.reviewers_used()
+        if stage == FIRST:
+            pool = [reviewer for reviewer in available if reviewer.id in entry.first and reviewer.id not in asked]
+            # The first reviewers of a chain share its rows by their weights alone, a row a repair wrote included: the
+            # challenger is the second pair of eyes, and a preference for a reviewer that did not read the row it
+            # replaces would send every rewrite to the smaller first reviewer.
+            return pick_first_reviewer(pool, self._writer_family(row), row.ordinal or 0)
+        wanted = entry.stage_reviewer(stage)
+        return next((reviewer for reviewer in available if reviewer.id == wanted and reviewer.id not in asked), None)
+
+    def _next_stage(self, row: RowState) -> str | None:
+        """The stage of the review a row waits for (first, challenge, arbiter or overseer); None outside a chain."""
+        if not self._in_chain(row):
+            return None
+        settlement = self._settlement(row)
+        return settlement.stage if settlement.outcome in (NEED_FIRST, FURTHER) else None
+
+    def _reviews_before(self, row: RowState) -> list[dict[str, Any]]:
+        """The earlier reviews of a row under a chain, as the next reviewer is shown them: stage, verdict, reason codes,
+        note and the light correction when the review had one, in the order they were given, and nothing of who gave
+        them. A verdict the owner set aside is left out."""
+        reviews = []
+        for verdict in row.live_verdicts(audit=None):
+            if not verdict.get("stage"):
+                continue
+            review: dict[str, Any] = {
+                "stage": verdict["stage"],
+                "verdict": verdict["verdict"],
+                "reasons": list(verdict.get("reasons", [])),
+                "notes": verdict.get("notes", ""),
+            }
+            if verdict.get("amend"):
+                review["amend"] = dict(verdict["amend"])
+            reviews.append(review)
+        return reviews
+
     def _settlement(self, row: RowState) -> Settlement:
         """What the review policy, as the configuration has it now, makes of a row's verdicts so far.
+
+        A row under a review chain is settled by the chain's rule (`rps.review.policy.settle_chain`); the policy's
+        counts and shortcuts do not apply to it.
 
         A row an audit reviewer rejected counts every verdict it has; any other row counts the verdicts
         of its own reviews, not its audit. A keep from a reviewer that may not keep alone (`solo_keep`
         off) never accepts a row by itself.
         """
+        if self._in_chain(row):
+            entry = self.config.review.chain_for(self._writer_family(row))
+            if entry is None:
+                return Settlement(HAND, CHAIN_GONE_REASON)
+            return settle_chain(self._chain_stages(entry), row.live_verdicts())
         counted = row.live_verdicts(audit=None) if row.reopened else row.live_verdicts()
         return settle(
             self.config.review.policy,
@@ -2249,11 +2355,15 @@ class Controller:
                 )
             elif outcome.outcome == HAND:
                 self._emit("row_to_hand", {"row_id": row.row_id, "call_id": row.call_id, "reason": outcome.reason, "verdicts": history})
-            elif outcome.outcome == FURTHER:
-                key = f"{row.row_id}:{len(row.assignments)}"
-                candidate = pick_further_reviewer(
-                    self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
-                )
+            elif outcome.outcome == FURTHER or (outcome.outcome == NEED_FIRST and self._in_chain(row)):
+                if self._in_chain(row):
+                    entry = self.config.review.chain_for(self._writer_family(row))
+                    candidate = self._chain_reviewer(row, entry, outcome.stage or FIRST, reviewers) if entry is not None else None
+                else:
+                    key = f"{row.row_id}:{len(row.assignments)}"
+                    candidate = pick_further_reviewer(
+                        self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
+                    )
                 if candidate is None:
                     self._emit(
                         "row_to_hand",
@@ -2377,6 +2487,10 @@ class Controller:
         straight back to the hand queue.
         """
         family = self._writer_family(row)
+        if self._in_chain(row):
+            entry = self.config.review.chain_for(family)
+            stage = self._next_stage(row)
+            return entry is not None and stage is not None and self._chain_reviewer(row, entry, stage, reviewers) is not None
         if any(not a.audit for a in row.assignments):
             key = f"{row.row_id}:{len(row.assignments)}"
             return pick_further_reviewer(self._not_yet_asked(row, reviewers), row.families_used(), family, key) is not None
@@ -2572,14 +2686,31 @@ class Controller:
         if not reviewers:
             return plan, to_hand
         for row in self.state.rows_awaiting_first_review():
-            reviewer = pick_first_reviewer(
-                reviewers, self._writer_family(row), row.ordinal or 0, avoid=self._reviewers_of_original(row)
-            )
+            if self._in_chain(row):
+                entry = self.config.review.chain_for(self._writer_family(row))
+                reviewer = self._chain_reviewer(row, entry, FIRST, reviewers) if entry is not None else None
+            else:
+                reviewer = pick_first_reviewer(
+                    reviewers, self._writer_family(row), row.ordinal or 0, avoid=self._reviewers_of_original(row)
+                )
             if reviewer is None:
                 to_hand.append((row, NO_FIRST_REVIEWER))
                 continue
             plan.setdefault(reviewer.id, []).append((row, 1, False))
         for row in self.state.rows_in_question():
+            if self._in_chain(row):
+                settlement = self._settlement(row)
+                entry = self.config.review.chain_for(self._writer_family(row))
+                if settlement.outcome not in (NEED_FIRST, FURTHER) or settlement.stage is None or entry is None:
+                    # The chain, as it is configured now, no longer asks for a review of this row.
+                    to_hand.append((row, f"the review chain no longer asks for a review of this row ({settlement.reason}): the row waits for the owner"))
+                    continue
+                reviewer = self._chain_reviewer(row, entry, settlement.stage, reviewers)
+                if reviewer is None:
+                    to_hand.append((row, NO_FIRST_REVIEWER if settlement.stage == FIRST else NO_FURTHER_REVIEWER))
+                    continue
+                plan.setdefault(reviewer.id, []).append((row, len([a for a in row.assignments if not a.audit]) + 1, False))
+                continue
             key = f"{row.row_id}:{len(row.assignments)}"
             reviewer = pick_further_reviewer(
                 self._not_yet_asked(row, reviewers), row.families_used(), self._writer_family(row), key
@@ -2607,14 +2738,27 @@ class Controller:
         packet_size = self.config.review.packet_size
         partial_ok = self._upstream_idle()
         for reviewer in self.config.review.enabled_reviewers():
-            items = plan.get(reviewer.id, [])
-            while items and (len(items) >= packet_size or partial_ok):
-                chunk, items = items[:packet_size], items[packet_size:]
-                self._publish_packet(reviewer.id, reviewer.family, chunk)
+            # One packet holds rows of one stage: a reviewer that serves different stages for different writer
+            # families gets a packet for each. The first stage (and every row outside a chain) is one group.
+            groups: dict[str | None, list[tuple[RowState, int, bool]]] = {}
+            for item in plan.get(reviewer.id, []):
+                stage = None if item[2] else self._next_stage(item[0])
+                groups.setdefault(None if stage in (None, FIRST) else stage, []).append(item)
+            for items in groups.values():
+                while items and (len(items) >= packet_size or partial_ok):
+                    chunk, items = items[:packet_size], items[packet_size:]
+                    self._publish_packet(reviewer.id, reviewer.family, chunk)
 
     def _publish_packet(self, reviewer_id: str, family: str, chunk: Sequence[tuple[RowState, int, bool]]) -> None:
         entries = []
         withheld = []
+        stages = {row.row_id: (None if audit else self._next_stage(row)) for row, _round, audit in chunk}
+        # A row after the first stage of its chain is shown the earlier reviews of the row (no reviewer's name among them).
+        chain = {
+            row_id: {"stage": stage, "reviews": self._reviews_before(self.state.rows[row_id])}
+            for row_id, stage in stages.items()
+            if stage not in (None, FIRST)
+        }
         for row, _round, _audit in chunk:
             task = self.state.tasks[row.task_id]
             line = task.lines[row.line]
@@ -2639,6 +2783,7 @@ class Controller:
             created=self._timestamp(),
             rows=entries,
             withheld=withheld,
+            **({"chain": chain} if chain else {}),
             **self._amend_permission(reviewer_id),
         )
         publish_packet(self.state_store, packet)
@@ -2650,7 +2795,10 @@ class Controller:
             # and a profile's name would say which provider wrote the row.
             label = row.record.get("writer") or {}
             written = {key: label[key] for key in ("rules_version", "rules_profile") if label.get(key) is not None}
-            items.append({**entry, "round": round_, "audit": audit, **written})
+            # A row under a chain: the assignment is recorded with its stage (so the row stays under the chain whatever the
+            # configuration says later) and the writer's family (for the tallies).
+            staged = {"stage": stages[row.row_id], "writer_family": self._writer_family(row)} if stages[row.row_id] else {}
+            items.append({**entry, "round": round_, "audit": audit, **written, **staged})
         self._emit(
             "packet_published",
             {
