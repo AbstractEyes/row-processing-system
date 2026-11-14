@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.2. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,15 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.2
+
+| Change | What happens now |
+|---|---|
+| Shown text in straight marks, the sentence's punctuation outside | Every writing prompt (default and each profile) adds one sentence to the rule on text in the picture: "Use plain straight double quotes, never curly ones, and keep your own sentence's punctuation outside them: write "STOP", then the comma, never "STOP," (a mark that is part of the shown text stays inside the quotes)." Measured on a bench of 600 rows: quotations were faithful but often held the row's own comma or period (`reads "20 / MPH," beside`, `"ATP," "BARCLAYS," and "LACOSTE"`), and some rows used curly marks where others used straight ones |
+| Curly marks made straight | On a picture call the controller makes the curly quotation marks of each row's thoughts, caption, prompt and critique straight before it stores the row (`rps.assessor.shown_text.straighten`, called from the controller's stamping step): “ and ” become ", ‘ and ’ become '. The tags are never touched, and a text row keeps its characters. The checker reads a picture row the same way, so a row checked from elsewhere is read as it would be stored |
+| New check | `quote_comma` (error, picture rows only): a quoted text whose last character before the closing quotation mark is a comma holds the sentence's comma, not the picture's; the writer writes the row again. A period there is not refused, since shown text can end with one ("LOW CLEARANCE 9 FT."). A text row is not checked for it |
+| Version | `0.6.2`; the notebook installs @v0.6.2; the rule files and their versions are recompiled (pool rules 117 and 118). The review brief's text is unchanged, but the brief version is new (`1d3698cdced2`; the release before had `92dc1222f674`), so a seat that is to answer packets made under the earlier brief names that version in `also_brief_versions` (see "What changed in 0.4.2") |
 
 ## What changed in 0.6.1
 

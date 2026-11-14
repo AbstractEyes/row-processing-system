@@ -28,11 +28,15 @@ RULES = Path(rules.__file__).parent
 PROMPTS = {"default": RULES / "writer_system.md", **{name: RULES / "profiles" / name / "writer_system.md" for name in ("openai", "gemini", "deepseek")}}
 TEMPLATES = {"default": RULES / "templates" / "writer_system.tpl.md", **{name: RULES / "profiles" / name / "writer_system.tpl.md" for name in ("openai", "gemini", "deepseek")}}
 BRIEF_BEFORE = "51a624992384"  # the brief version of 0.6.0: a seat names it in also_brief_versions to answer packets made under it
-
+# 0.6.2: the sentence that follows " / " between lines in every writer prompt (quote marks and the sentence's punctuation)
+QUOTE_MARKS_RULE = (
+    "Use plain straight double quotes, never curly ones, and keep your own sentence's punctuation outside them: "
+    "write \"STOP\", then the comma, never \"STOP,\" (a mark that is part of the shown text stays inside the quotes)."
+)
 TEXT_RULE = (
     "Text is among the things you read from the picture: when the picture shows text that can be read (a sign, a label, a screen, "
     "a page, lettering on clothing or on a vehicle, an inscription), the row reads it. One thought with the step \"say\" gives the words "
-    "in double quotes, exactly as written: the same spelling and letter case, with \" / \" between lines. The caption quotes those words "
+    "in double quotes, exactly as written: the same spelling and letter case, with \" / \" between lines. " + QUOTE_MARKS_RULE + " The caption quotes those words "
     "in double quotes, and so does the prompt where the row has one; the tags quote nothing. A hint may quote or list text that the "
     "picture shows; it helps with spelling only. Quote a word only when you can read it in the picture yourself, in the form you see it. "
     "Never quote a hinted word you cannot find in the picture. A word cut off by the frame or by something in front of it is given only "

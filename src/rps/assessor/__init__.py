@@ -48,6 +48,13 @@ PICTURE_NOTE = "; look for it in the picture"
 PICTURE_HINT_CODES = frozenset({"thought_hint_copy", "caption_hint_copy", "caption_hint_list"})
 PICTURE_HINT_NOTE = "; the hint describes this same picture, so compare the sentence with the hint: a fault only when it is taken over from the hint"
 
+# A quoted text of a picture row that ends with a comma holds the row's own comma, not the picture's (rule 118): an
+# error, so the writer writes the row again. A period there is not refused: shown text can end with one.
+QUOTE_COMMA_MESSAGE = (
+    'quoted text holds the sentence\'s comma: put the comma after the closing quotation mark (write "STOP", not "STOP,"); '
+    "the quotation holds only what the picture shows"
+)
+
 # A picture row quotes the text its picture shows (`shown_text`): a thought with the step "say" gives the words, and the
 # caption and the prompt quote them. That shown text is the picture's, not the row's prose, so a check reads the row
 # without it (`shown_text.own_prose`): what a sign says claims no detail, no mood and no name. Any other quotation is
@@ -90,9 +97,12 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
 
     On a picture row (see `is_picture_row`) the checks for a detail no record gives, and the checks for a sentence
     that says what a hint sentence says, only flag it; and the text the row quotes from its picture is not read as its
-    prose (see `ROW_CHECK_GROUPS`). A text row is read whole by every check, quoted words and all.
+    prose (see `ROW_CHECK_GROUPS`). A picture row is read with straight quote marks, and a quoted text that ends with
+    a comma is refused (`quote_comma`). A text row is read whole by every check, quoted words and all.
     """
     picture = is_picture_row(row)
+    if picture:  # as the controller stores it (`shown_text.straighten`): a row checked from elsewhere reads the same
+        row = shown_text.straighten(row)
     prose = shown_text.own_prose(row) if picture else row
     hint_row, hint_item = shown_text.beside_hint(row, item) if picture else (row, item)
 
@@ -113,6 +123,8 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
     ]
     if picture:
         found = _for_picture(found)
+        if shown_text.comma_quotes(row):
+            found.append(Problem("quote_comma", checks.row_id(row), QUOTE_COMMA_MESSAGE))
     flag_only = PICTURE_DETAIL_CODES | PICTURE_HINT_CODES if picture else frozenset()
     return [Problem(p.code, p.row_id, p.message, ERROR) if p.code in ERROR_WHEN_RAISED and p.code not in flag_only else p for p in found]
 

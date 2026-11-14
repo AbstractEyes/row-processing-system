@@ -19,6 +19,14 @@ Every other quotation is the row's own words and is read as such, so prose put b
     own_prose(row)             the row with its shown text emptied, in its thoughts, caption, prompt and critique
     beside_hint(row, item)     the row, and its item, without the shown words that the hint quotes too
     outside_quotes(text, f)    the text with `f` applied to everything but its quoted texts
+    straighten(row)            the row with straight quote marks in place of curly ones, in the same texts
+    comma_quotes(row)          the quotations of the row whose last character is a comma
+
+A writer is told to quote shown text in plain straight double quotes and to keep its own sentence's punctuation
+outside them (rule pool, rules 117 and 118). On a picture row the controller makes curly marks straight when it
+stores the row (`straighten`): “ and ” become ", ‘ and ’ become '. A comma before a closing quote mark is the
+sentence's, never the picture's, so the checker refuses it (`comma_quotes`); a period there is not refused, since
+shown text can end with one ("LOW CLEARANCE 9 FT.").
 
 A quoted text opens with a double quote that follows a space, a bracket or the start of the text and closes with one
 that a letter or a digit does not follow, so the inch mark of 12" opens nothing; curly double quotes count too. A hint
@@ -137,6 +145,20 @@ def shown(row: Mapping[str, Any]) -> list[str]:
 def own_prose(row: Mapping[str, Any]) -> Mapping[str, Any]:
     """The row as its writer's own prose: each shown text is emptied (the marks stay, so the place still shows)."""
     return _in_shown(row, lambda inner: "")
+
+
+STRAIGHT = str.maketrans({"“": '"', "”": '"', "‘": "'", "’": "'"})
+
+
+def straighten(row: Mapping[str, Any]) -> Mapping[str, Any]:
+    """The row with straight quote marks in place of curly ones in its thoughts, caption, prompt and critique (never
+    its tags); the row itself when it has none."""
+    return _reworded(row, lambda text, in_say: text.translate(STRAIGHT))
+
+
+def comma_quotes(row: Mapping[str, Any]) -> list[str]:
+    """The quotations of the row whose last character is a comma, in order, without the quote marks."""
+    return [quotation for text, _ in _texts(row) for quotation in quoted(text) if quotation.endswith(",")]
 
 
 def beside_hint(row: Mapping[str, Any], item: Any) -> tuple[Mapping[str, Any], Any]:

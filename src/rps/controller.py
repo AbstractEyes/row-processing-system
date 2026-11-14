@@ -1889,7 +1889,8 @@ class Controller:
 
         The writer label names the route the call was made on (`route_name`; the task's own route when omitted),
         so a row a repair wrote on another route (`repair.routes`) carries that route's provider, model, effort
-        and rules, not those of the route that wrote the row it replaces.
+        and rules, not those of the route that wrote the row it replaces. On a picture call (`image_size` set)
+        each row's curly quote marks are made straight (`rps.assessor.shown_text.straighten`).
         """
         route_name = route_name or task.route
         route = self.config.routes[route_name]
@@ -1913,13 +1914,19 @@ class Controller:
             item_id=line.item_id or line.line_id,
             license=line.license or self.config.source(task.source).license or "",
         )
+        straighten: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
+        if isinstance(image_size, int) and image_size > 0:
+            # A picture row quotes the text its picture shows in straight marks: the curly ones of its thoughts,
+            # caption, prompt and critique are made straight before the row is stored (never its tags).
+            from .assessor.shown_text import straighten
         stamped = []
         flags: dict[str, list[str]] = {}
         for index, row in enumerate(rows):
             row_id = ids.row_id(call_id, index)
             if reserved_keys_in(row):
                 flags[row_id] = ["model_supplied_reserved_keys"]
-            stamped.append(stamp_row(row, row_id=row_id, writer=writer, source=source))
+            record = stamp_row(row, row_id=row_id, writer=writer, source=source)
+            stamped.append(dict(straighten(record)) if straighten is not None else record)
         return stamped, flags
 
     # ------------------------------------------------------------------ assess
