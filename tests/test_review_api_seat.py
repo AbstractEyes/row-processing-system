@@ -36,6 +36,7 @@ from rps.review.api_seat import (
 )
 from rps.review.client import ReviewerClient
 from rps.review.packets import VERDICT_VALUES
+from rps.rules import compile as rules_compile
 from rps.store import LocalStore
 
 from seat_helpers import (
@@ -179,6 +180,21 @@ def test_the_judging_rules_are_plain_and_hold_nothing_of_the_place_they_came_fro
     # paths, shell commands, model names and a version line
     for leak in ("\\", "powershell", "python -m", "claude", "haiku", "sonnet", "opus", ":/", rules.rules_version()):
         assert leak not in lowered, leak
+
+
+def test_the_judging_rules_say_a_row_may_come_with_its_picture_and_when_the_text_alone_decides():
+    text = judging_text()
+    assert "Every row is text; a row may come with its picture, attached before the text. Read the row against its task" in text
+    rule = "- When no picture is attached, judge from the text and the task alone, and never fault a row for something only a picture could show."
+    assert rule in text.splitlines()
+    # the seat has sent a row's picture since 0.4.0: the rules no longer tell the model that it is shown none
+    for stale in ("No picture is shown", "Where the brief speaks of a picture"):
+        assert stale not in text
+    assert text.strip() in system_text(package_brief())
+    # the judging rules are no part of any rules version: the hashed files are the rule pool's own
+    hashed = [*rules_compile.VERSIONED, *rules_compile.SHARED, *(f for name in rules_compile.profile_names() for f in rules_compile.profile_files(name))]
+    assert hashed and not any("judging" in name or name.startswith("review/") for name in hashed)
+    assert rules_compile.rules_version() == rules.rules_version()
 
 
 def test_the_answer_format_is_in_the_dialect_anthropic_takes_and_binds_reasons_to_the_briefs_codes():

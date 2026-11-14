@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any, Mapping, Sequence
 
 from ..assess import AssessContext, Assessment
-from . import checks, invention_checks, reading_checks, review_checks, validator
+from . import checks, invention_checks, reading_checks, review_checks, shown_text, validator
 from .seed_checks import screen_item
 from .problems import ERROR, FLAG, Problem, errors, flags
 from .report import Report, balance_problems, row_stats
@@ -48,6 +48,23 @@ PICTURE_NOTE = "; look for it in the picture"
 PICTURE_HINT_CODES = frozenset({"thought_hint_copy", "caption_hint_copy", "caption_hint_list"})
 PICTURE_HINT_NOTE = "; the hint describes this same picture, so compare the sentence with the hint: a fault only when it is taken over from the hint"
 
+# A picture row quotes the text its picture shows (`shown_text`): a thought with the step "say" gives the words, and the
+# caption and the prompt quote them. That shown text is the picture's, not the row's prose, so a check reads the row
+# without it (`shown_text.own_prose`): what a sign says claims no detail, no mood and no name. Any other quotation is
+# read as the row's own words. Sizes, counts, questions and tags are the validator's, read from the row as written.
+# Two kinds of check read the shown text too.
+ROW_CHECK_GROUPS = (checks.ROW_CHECKS, review_checks.REVIEW_CHECKS, invention_checks.INVENTION_CHECKS, reading_checks.READING_CHECKS)
+# The check for fit and shape words about a minor reads every word of the row: nothing is kept from it.
+AS_WRITTEN_CHECKS = frozenset({review_checks.minor_fit_check})
+# A check that compares the row with its hint counts a shown word as the row's own, except the words the hint quotes
+# too: those are left out of the row's shown text. The row is then compared with the hint as written, and with the hint
+# without those words in its quotations, and a finding of either counts (`shown_text.beside_hint`): a hint sentence
+# is caught whether the row copies it with the quoted words outside quote marks, around them, or inside quote marks.
+HINT_COPY_CHECKS = frozenset({
+    checks.hint_copy_check, review_checks.hint_paraphrase_check, review_checks.caption_hint_list_check, invention_checks.hint_name_check,
+    invention_checks.caption_hint_copy_check, invention_checks.hint_order_check, invention_checks.thought_hint_copy_check,
+})
+
 
 def is_picture_row(row: Mapping[str, Any]) -> bool:
     """True for a row whose writer call carried the picture: its writer label holds the picture's size."""
@@ -72,18 +89,28 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
     """Every finding about one row: the validator, the item checks, the row checks.
 
     On a picture row (see `is_picture_row`) the checks for a detail no record gives, and the checks for a sentence
-    that says what a hint sentence says, only flag it.
+    that says what a hint sentence says, only flag it; and the text the row quotes from its picture is not read as its
+    prose (see `ROW_CHECK_GROUPS`). A text row is read whole by every check, quoted words and all.
     """
-    found = [
-        *validator.validate_row(row),
-        *validator.check_against_item(row, item),
-        *validator.name_warnings(row),
-        *checks.run_row_checks(row, item),
-        *[p for check in review_checks.REVIEW_CHECKS for p in check(row, item)],
-        *[p for check in invention_checks.INVENTION_CHECKS for p in check(row, item)],
-        *[p for check in reading_checks.READING_CHECKS for p in check(row, item)],
-    ]
     picture = is_picture_row(row)
+    prose = shown_text.own_prose(row) if picture else row
+    hint_row, hint_item = shown_text.beside_hint(row, item) if picture else (row, item)
+
+    def run(check: Any) -> list[Problem]:
+        if check not in HINT_COPY_CHECKS:
+            return check(row if check in AS_WRITTEN_CHECKS else prose, item)
+        found = check(hint_row, item)
+        if hint_item is not item:  # the hint quotes words the row shows: look for a run copied around them as well
+            seen = {p.code for p in found}
+            found = [*found, *(p for p in check(hint_row, hint_item) if p.code not in seen)]
+        return found
+
+    found = [
+        *validator.validate_row(row, prose),
+        *validator.check_against_item(row, item),
+        *validator.name_warnings(prose),
+        *[p for group in ROW_CHECK_GROUPS for check in group for p in run(check)],
+    ]
     if picture:
         found = _for_picture(found)
     flag_only = PICTURE_DETAIL_CODES | PICTURE_HINT_CODES if picture else frozenset()

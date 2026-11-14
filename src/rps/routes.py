@@ -1,10 +1,10 @@
 """The standard routes: which provider, model and access path each named route uses.
 
     route           provider    model              path                      pictures
-    haiku-batch     anthropic   claude-haiku-5-5   Message Batches           public common, COCO, FFHQ
-    luna-batch      openai      gpt-6-luna         Batch API (/v1/responses) public common, COCO, FFHQ
-    flash-batch     gemini      gemini-3.8-flash   inline batch              public common, COCO, FFHQ
-    deepseek-sync   deepseek    deepseek-flash     one call at a time        public common, COCO, FFHQ
+    haiku-batch     anthropic   claude-haiku-5-5   Message Batches           public common, COCO, FFHQ, museum
+    luna-batch      openai      gpt-6-luna         Batch API (/v1/responses) public common, COCO, FFHQ, museum
+    flash-batch     gemini      gemini-3.8-flash   inline batch              public common, COCO, FFHQ, museum
+    deepseek-sync   deepseek    deepseek-flash     one call at a time        public common, COCO, FFHQ, museum
     luna-sync                                      one call at a time: the route GPT is used through, at any size
     haiku-sync, flash-sync                         one call at a time, for small tests
 

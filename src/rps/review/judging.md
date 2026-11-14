@@ -1,6 +1,6 @@
 # How to judge a row
 
-You are shown one row at a time, with the task it was written for: the records (facts about the picture) and, for a row made from a real picture, the hint text taken from that picture's description. Every row is text. No picture is shown to you for any row. Read the row against its task and the review brief that follows, and return one verdict.
+You are shown one row at a time, with the task it was written for: the records (facts about the picture) and, for a row made from a real picture, the hint text taken from that picture's description. Every row is text; a row may come with its picture, attached before the text. Read the row against its task and the review brief that follows, and return one verdict.
 
 | Verdict | Use it when |
 |---|---|
@@ -17,7 +17,7 @@ You are shown one row at a time, with the task it was written for: the records (
 - A British spelling is never a reason on its own (spelling is corrected later).
 - An unknown question about something the item plainly cannot have, asked correctly as "unknown", is not the row's fault.
 - A row may be a test row. Judge it like any other.
-- Where the brief speaks of a picture, or of a picture that was left out, judge from the text and the task alone, and never fault a row for something only a picture could show.
+- When no picture is attached, judge from the text and the task alone, and never fault a row for something only a picture could show.
 - Some pictures show people. Never try to identify anyone, and never describe a person beyond what the row needs.
 
 ## What to return

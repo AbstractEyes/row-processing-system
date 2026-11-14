@@ -1,7 +1,7 @@
 {
  "note": "The default prompt's texts for items.json, as the release before prompt profiles rendered them (no profile may change them).",
- "version": "51a624992384",
- "system_sha256": "96165c9e8e269567ce17b75302fdedf9a3d6cdf5da254ecaf6c7f33c261a3bc1",
+ "version": "92dc1222f674",
+ "system_sha256": "efa2dbf320f165dce82a59d113189d5545cb05bf58044893fbf26a62b13f9569",
  "json_format_sha256": "4eda4393b5bfff53a0407b2e2ee0c13b0700b75ffc1458fda4ad366f91669a3e",
  "texts": {
   "drawn_series": {

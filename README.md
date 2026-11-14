@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.0. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.1. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,18 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.1
+
+| Change | What happens now |
+|---|---|
+| A row reads the text its picture shows | Every writing prompt (default and each profile) gains one rule in the block "WHEN THE PICTURE IS ATTACHED": when the picture shows text that can be read (a sign, a label, a screen, a page, lettering on clothing or on a vehicle, an inscription), one thought with the step `say` gives the words in double quotes, exactly as written (the same spelling and letter case, " / " between lines), and the caption and the prompt quote them; the tags quote nothing. A hint may quote or list text that the picture shows, and it helps with spelling only: a word is quoted only when the writer can read it in the picture, in the form the picture shows it, and a hinted word that cannot be found in the picture is never quoted. A word cut off by the frame or by something in front of it is given only as far as it shows and is said to be cut off. A text longer than the length limit of the thoughts allows is quoted by its main words, and the row says that more follows. Text too small or too blurred to read at the picture's size is called unreadable and never guessed. A person's name is never quoted (a signature, a photo credit or a name tag is described as such, without the name); brand names and place names may be quoted, so the line that said "never copy a name or a brand from writing in the picture" now says "never copy a person's name". A picture that shows no text gets no `say` thought for text. Nothing else about the step changes: the vocabulary and the row schema are what they were, and a call without a picture is told nothing new. Measured before the change: 9 `say` thoughts and 128 quoted strings in 40,493 released rows |
+| The reviewers' brief | "Rows with a picture" gains the paragraph "Text in the picture". A reviewer compares every quoted text with the picture, letter for letter: one that differs is `contradicts_picture`, one the picture does not show, or does not show readably, is `invented`, even when the hint lists it (a hint is no evidence that text can be read at the picture's size). A row that leaves out text that is plainly readable and is the picture's main subject goes back with `fix` and `wording`; other text left out does not send a row back by itself. A quoted person's name is `real_name`. A `say` thought that gives the picture's text is not `padding`, and words the picture shows are not `hint_copy`. No reason code is added: the table "What to read for" is unchanged |
+| The API seat's judging rules | `src/rps/review/judging.md` said that no picture is shown for any row and that a row is judged from its text and its task alone, although the seat has sent a row's picture as an image block since 0.4.0. It now says that a row may come with its picture, attached before the text, and that the text and the task alone decide only when no picture is attached, so a seat compares a quoted text with the picture as the brief asks. The file is not part of the rules version, so no version changes with it |
+| The checker and quoted text | On a picture row the text a row quotes from its picture is the picture's, not the row's prose (`rps.assessor.shown_text`). A quotation counts as such shown text only when it stands in a thought with the step `say`, or its words are quoted in such a thought of the same row (the same words, or a run of them), and it is no longer than 100 bytes (the thought length of a simple row, which the text of every picture must fit). Any other quotation is read as the row's own words, so prose put between quote marks hides nothing. The checks that read the prose read the row without its shown text: a sign that says "OPEN" no longer answers an unknown question (`unknown_stated`), "french fries" is not a style name in lower case (`style_lowercase`), "STORY TIME" is not talk about the records (`spec_talk`), a quoted "PIXEL" is not talk about the file (`rule_1`), and "Fresh Bread Daily", "HAPPY HOUR" and "RED BULL" raise no `names`, `second_mood` or `unrecorded_color` flag. The checks for hint copying (`hint_copy`, `thought_hint_copy`, `caption_hint_copy`, `caption_compresses_hint`, `caption_hint_list`, `hint_paraphrase`, `hint_order`, `hint_name`) leave the shown words that the hint quotes too out of the row. They then compare the row with the hint as written and with the hint without those words in its quotations, and a finding of either counts: a hint sentence is caught whether the row copies it with the quoted words outside quote marks, around them or between quote marks, and every other quoted word counts as the row's own. Sizes, counts, questions and tags are checked on the row as written, and so are fit and shape words about a minor (`minor_fit`). A text row is checked exactly as before, and no check and no code is new |
+| The spelling step | `americanize_row` leaves the words inside double quotes of a picture row as written (a sign that reads "TOWN CENTRE" is not respelled), and a chain value the thoughts state only among them keeps its spelling. A text row is respelled as before |
+| A picture class for museums | `museum` is a class of the picture table, open to every provider: for a museum's open-access pictures, fetched from the museum's own host through the links in `control/pictures/*.jsonl`. A source names it with `"image_class": "museum"` (see "Which pictures go where") |
+| Version | `0.6.1`; the notebook installs @v0.6.1; the rule files and their versions are recompiled. The brief version is new (`92dc1222f674`; the release before had `51a624992384`), so a seat that is to answer packets made under the earlier brief names that version in `also_brief_versions` (see "What changed in 0.4.2"); the newer brief then judges those rows by the rule on text too |
 
 ## What changed in 0.6.0
 
@@ -527,7 +539,7 @@ as it lands. GPT is used this way here.
 | Part | Form |
 |---|---|
 | Request | `model`, `max_tokens`, the rules as one `system` block marked for a cache (`cache_control` `ephemeral`, one hour), one user message, `output_config` with the row schema (`json_schema`) and the effort |
-| Pictures | A call carries a picture only where the routing table allows its class for Claude: `public_common`, `coco` and `ffhq`, the publicly viewable pictures of public datasets. The picture goes first in the user message as a base64 image block (`image/jpeg`, `image/png`, `image/webp` or `image/gif`) and the text after it; the cost estimate adds 1,600 tokens for it, and its bytes count toward the size that splits a batch. A call with a picture of any other class (`deepfashion`, `hico`, `synthetic`), of an unknown class or of none is refused, as for every provider |
+| Pictures | A call carries a picture only where the routing table allows its class for Claude: `public_common`, `coco` and `ffhq`, the publicly viewable pictures of public datasets, and `museum`, a museum's open-access pictures. The picture goes first in the user message as a base64 image block (`image/jpeg`, `image/png`, `image/webp` or `image/gif`) and the text after it; the cost estimate adds 1,600 tokens for it, and its bytes count toward the size that splits a batch. A call with a picture of any other class (`deepfashion`, `hico`, `synthetic`), of an unknown class or of none is refused, as for every provider |
 | Batch | `messages.batches.create`; results from `messages.batches.results`, matched by `custom_id` in any order. At most 100,000 requests and 240 MB per batch (the limit is 256 MB). A batch can expire after 24 hours; its unfinished calls come back as `expired` and are sent again as rebounds |
 | Answer | `end_turn` (and `stop_sequence`) is parsed; `max_tokens` is a truncation; `refusal` is recorded and not retried on the route; any other stop is a failure that is not retried |
 | Usage | input, cache write and cache read tokens as given; output minus thinking tokens, thinking apart |
@@ -591,6 +603,7 @@ own origin (a narration written for a COCO picture is COCO class).
 | `public_common` | yes | yes | yes | yes |
 | `coco` | yes | yes | yes | yes |
 | `ffhq` | yes | yes | yes | yes |
+| `museum` | yes | yes | yes | yes |
 | `deepfashion` | no | no | no | no |
 | `hico` | no | no | no | no |
 | `synthetic` (no picture) | no | no | no | no |
@@ -600,6 +613,15 @@ whose pictures may not go to its route is refused when it is added, before anyth
 paid for; the check is made again when each call is built and once more inside each adapter, so no
 picture reaches a provider by another path. A class that is not in the table, a route that is not
 recognized, and a picture with no class are all refused. Text is always allowed.
+
+`museum` is the class of a museum's open-access pictures. They are fetched from the museum's own
+host through the picture links (see "Pictures": any https address) and may go to every provider. A
+source of such pictures is set up in the configuration alone, for example
+`"sources": {"museum-open": {"image_class": "museum", "image_size": 768, "license": "<the pictures' license>"}}`,
+with a line in `control/pictures/*.jsonl` for each picture
+(`{"image": "museum-open/000123.jpg", "urls": ["https://..."]}`). The size is the source's
+(`image_size`, the longest side every writer and reviewer is shown); the table decides only who may
+see a class.
 
 Review packets follow the same table, by the reviewer's model family (`review.reviewers[].family`:
 `anthropic`, `openai`, `google`, `deepseek`). A row whose picture the reviewer's family may not see
@@ -1025,7 +1047,7 @@ is a value that looks like a key.
 | Part | What it holds |
 |---|---|
 | `system` | One text block with a one-hour cache mark: a short role, the judging rules (`src/rps/review/judging.md`), the review brief exactly as this package renders it (`rps.rules.review_brief()`) and `extra_instructions` |
-| `messages` | One user message of one text block: the row's blind review view and its task as `packet.json` holds them, and a line saying what to return. No picture is sent: a desk seat judges text only, and a calibration compares like with like |
+| `messages` | One user message: the row's picture as an image block, when its packet entry holds one, and then one text block with the row's blind review view and its task as `packet.json` holds them and a line saying what to return. A row whose entry holds no picture (it has none, or the picture was withheld from the reviewer's family) is sent as text only |
 | `output_config` | `format`: an object with `verdict` (keep, fix or reject), `reasons` (limited to the codes the brief's table "What to read for" lists) and `notes`; the seat adds the row id itself. `effort`: the configured level |
 | `custom_id` | Made with the package's `call_id` and `custom_id` helpers from the packet, the row's place in it and the try; letters, digits, `_` and `-`, at most 64 characters |
 | not sent | `temperature`, `top_p`, `top_k`, a prefill and a forced `tool_choice` (these models refuse them), and `thinking`, which is left unset so that both models think adaptively (Sonnet 5.5 refuses `thinking: disabled`) |
@@ -1445,10 +1467,9 @@ reads `ANTHROPIC_API_KEY` the same way.
 - Two lost Anthropic batches of the same size are matched to their groups in the order the groups
   were sent; if that guess is wrong the check at collection sends the calls again.
 - The prices of a prompt over a long-prompt threshold are not modeled: such a call is refused.
-- The API review seat judges text only. It sends no picture even for a packet that carries one (the reviewer client still
-  copies the packet's pictures to the seat's local folder and burns them when it pushes). Its cache prices are taken at
-  list, without the batch discount, until a billed batch settles whether the two stack; its ledger is appended and never
-  compacted; and it does not score itself: calibrating it against known answers is done by hand (see "The API review seat").
+- The API review seat's cache prices are taken at list, without the batch discount, until a billed batch settles
+  whether the two stack; its ledger is appended and never compacted; and it does not score itself: calibrating it
+  against known answers is done by hand (see "The API review seat").
 - Whether the Gemini batch service takes the `openapi` form of the row schema is not known: the probe of
   0.2.5 named the schema as the refused part and the rejected name, and this form leaves that name out, but
   it has not been run against the service. `python -m rps.geminiprobe --route flash-batch --batch --only

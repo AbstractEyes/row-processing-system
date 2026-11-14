@@ -34,10 +34,29 @@ def _base_spec(row: Mapping[str, Any], item: Mapping[str, Any]) -> Mapping[str, 
     return specs.get(row.get("depth"))
 
 
-def validate_row(row: Mapping[str, Any]) -> list[Problem]:
-    """The validator's rules on one row; each problem's code is `rule_N`."""
+FILE_TALK = "the text speaks of the image as seen"  # how the validator words the finding of rule 1's phrase check
+
+
+def _speaks_of_the_file(row: Mapping[str, Any]) -> str | None:
+    """Rule 1's phrase check ("pixel", "the image file") on a row's thoughts and wordings, as the validator makes it."""
+    texts = [str(t.get("text", "")) for t in row.get("thoughts") or [] if isinstance(t, Mapping)]
+    return tp.speaks_of_the_file(" ".join(texts + [str(v) for v in (row.get("wordings") or {}).values()]))
+
+
+def validate_row(row: Mapping[str, Any], prose: Mapping[str, Any] | None = None) -> list[Problem]:
+    """The validator's rules on one row; each problem's code is `rule_N`.
+
+    The row is read as it was written: its sizes, counts and questions are what they are. `prose` is the same row
+    without the words it quotes from its picture (`shown_text.own_prose`, for a picture row). Rule 1's phrase check is
+    then answered by that text, so a banned phrase the picture itself shows, quoted, is not talk about the file.
+    """
     row_id = str(row.get("id", "?"))
-    return [Problem(f"rule_{rule}", row_id, message) for rule, message in tp.validate(dict(row), HELD)]
+    found = tp.validate(dict(row), HELD)
+    if prose is not None and prose is not row:
+        talk = [(rule, message) for rule, message in found if rule == 1 and message.startswith(FILE_TALK)]
+        if talk and _speaks_of_the_file(prose) is None:
+            found = [entry for entry in found if entry not in talk]
+    return [Problem(f"rule_{rule}", row_id, message) for rule, message in found]
 
 
 def check_against_item(row: Mapping[str, Any], item: Mapping[str, Any] | None) -> list[Problem]:

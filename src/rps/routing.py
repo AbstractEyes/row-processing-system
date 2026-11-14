@@ -9,6 +9,7 @@ Images picture is public-common class.
     public_common     yes      yes      yes      yes (one request at a time)
     coco              yes      yes      yes      yes
     ffhq              yes      yes      yes      yes
+    museum            yes      yes      yes      yes
     deepfashion       no       no       no       no
     hico              no       no       no       no
     synthetic         no       no       no       no     (specs with no picture; text only)
@@ -18,7 +19,8 @@ route that is not recognized: the answer for anything unknown is no.
 
 Claude writers and Claude reviewers get the publicly viewable pictures of public datasets
 (public_common, coco and ffhq) like the other families do; deepfashion, hico and synthetic
-stay closed to every outside provider.
+stay closed to every outside provider. The class museum is for a museum's open-access
+pictures, fetched from the museum's own host through the picture links (`rps.pictures`).
 
 Review packets follow the same table, by the reviewer's model family: a packet carries
 a row's picture only when `allowed_image(class, family)` is true, so a reviewer from a
@@ -36,11 +38,12 @@ from typing import Mapping
 PUBLIC_COMMON = "public_common"
 COCO = "coco"
 FFHQ = "ffhq"
+MUSEUM = "museum"
 DEEPFASHION = "deepfashion"
 HICO = "hico"
 SYNTHETIC = "synthetic"
 
-SOURCE_CLASSES: tuple[str, ...] = (PUBLIC_COMMON, COCO, FFHQ, DEEPFASHION, HICO, SYNTHETIC)
+SOURCE_CLASSES: tuple[str, ...] = (PUBLIC_COMMON, COCO, FFHQ, MUSEUM, DEEPFASHION, HICO, SYNTHETIC)
 
 CLAUDE = "claude"
 OPENAI = "openai"
@@ -54,6 +57,7 @@ IMAGE_POLICY: Mapping[str, Mapping[str, bool]] = {
     PUBLIC_COMMON: {CLAUDE: True, OPENAI: True, GEMINI: True, DEEPSEEK: True},
     COCO: {CLAUDE: True, OPENAI: True, GEMINI: True, DEEPSEEK: True},
     FFHQ: {CLAUDE: True, OPENAI: True, GEMINI: True, DEEPSEEK: True},
+    MUSEUM: {CLAUDE: True, OPENAI: True, GEMINI: True, DEEPSEEK: True},
     DEEPFASHION: {CLAUDE: False, OPENAI: False, GEMINI: False, DEEPSEEK: False},
     HICO: {CLAUDE: False, OPENAI: False, GEMINI: False, DEEPSEEK: False},
     SYNTHETIC: {CLAUDE: False, OPENAI: False, GEMINI: False, DEEPSEEK: False},

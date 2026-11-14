@@ -15,6 +15,7 @@ ALLOWED = {
     "public_common": {"claude", "openai", "gemini", "deepseek"},
     "coco": {"claude", "openai", "gemini", "deepseek"},
     "ffhq": {"claude", "openai", "gemini", "deepseek"},
+    "museum": {"claude", "openai", "gemini", "deepseek"},
     "deepfashion": set(),
     "hico": set(),
     "synthetic": set(),
@@ -99,3 +100,11 @@ def test_the_policy_table_has_a_row_for_every_class_and_a_cell_for_every_column(
 def test_synthetic_specs_have_no_picture_to_send():
     with pytest.raises(ImageRoutingError, match="no picture"):
         check_image_allowed("synthetic", "openai")
+
+
+def test_a_museums_open_access_pictures_are_a_class_of_their_own_open_to_every_provider():
+    assert "museum" in SOURCE_CLASSES
+    for route in ("anthropic", "haiku-batch", "openai", "luna-sync", "gemini", "flash-batch", "deepseek", "deepseek-sync"):
+        assert allowed_image("museum", route) is True
+        check_image_allowed("museum", route)  # raises nothing
+    assert allowed_image("Museum", "openai") is False and allowed_image("museums", "openai") is False  # the name is exact
