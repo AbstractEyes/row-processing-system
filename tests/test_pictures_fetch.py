@@ -207,6 +207,38 @@ def test_missing_pictures_are_fetched_ahead_side_by_side_and_the_loader_then_fin
     assert load.prefetch(items) == 0 and len(seen["asked"]) == 7  # nothing is missing any more
 
 
+def test_a_host_that_refuses_stops_the_fetch_ahead_which_then_rests(world):
+    names = [f"coco/{n:03d}.jpg" for n in range(1, 13)]
+    manifest(world, "a", *({"image": name, "urls": [f"https://x/{name}"]} for name in names))
+    script = {f"https://x/{name}": [(200, jpeg())] for name in names}
+    script["https://x/coco/002.jpg"] = [(403, b"")]  # the host starts to refuse
+    opener = Opener(script)
+    load = loader(world, opener)
+    items = [(world.source, SimpleNamespace(image=name)) for name in names]
+    assert load.prefetch(items, workers=1) == 1  # the first came; the second was refused; the other ten were not asked for
+    assert opener.calls == ["https://x/coco/001.jpg", "https://x/coco/002.jpg"]
+    assert load.prefetch(items, workers=4) == 0 and len(opener.calls) == 2  # resting: nothing is fetched ahead
+    assert load(world.source, SimpleNamespace(image="coco/003.jpg"))[2] == 40  # the loader goes on, one at a time
+    with pytest.raises(ImageError, match="HTTP 403"):
+        load(world.source, SimpleNamespace(image="coco/002.jpg"))
+    world.clock.now += 601
+    script["https://x/coco/002.jpg"] = [(200, jpeg())]
+    opener.script = {url: list(steps) for url, steps in script.items()}
+    assert load.prefetch(items, workers=4) == 10  # after the rest the fetch ahead takes the pictures still missing
+
+
+def test_too_many_requests_is_tried_again_after_a_pause(world):
+    manifest(world, "a", {"image": "coco/001.jpg", "urls": ["https://x/1.jpg"]})
+    opener = Opener({"https://x/1.jpg": [(429, b""), (200, jpeg())]})
+    assert loader(world, opener)(world.source, world.line)[2] == 40
+    assert opener.calls == ["https://x/1.jpg", "https://x/1.jpg"]
+    always = Opener({"https://x/1.jpg": [(429, b"")]})
+    (world.tmp / "images" / "coco" / "001.jpg").unlink()
+    with pytest.raises(ImageError, match="HTTP 429 after 3 tries"):
+        loader(world, always)(world.source, world.line)
+    assert len(always.calls) == 3
+
+
 def test_a_picture_that_cannot_be_fetched_ahead_is_left_for_the_loader_to_report(world):
     manifest(
         world,

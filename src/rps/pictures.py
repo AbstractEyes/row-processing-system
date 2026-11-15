@@ -39,6 +39,9 @@ STORE_SCHEME = "store:"
 USER_AGENT = "row-processing-system"
 MANIFEST_REREAD_SECONDS = 60.0
 PREFETCH_WORKERS = 4  # how many missing pictures `prefetch` fetches side by side
+PREFETCH_REST_SECONDS = 600.0  # after a host refused or did not answer, `prefetch` does nothing for this long
+# What a failed fetch says when a host is refusing or struggling (not when one picture is simply not there).
+_REFUSAL_SIGNS = ("HTTP 429", "HTTP 403", " tries")
 
 # An opener takes a link and returns (status, body); a network failure or a timeout is raised as OSError.
 Opener = Callable[..., "tuple[int, bytes]"]
@@ -84,6 +87,7 @@ class FetchingImageLoader:
         self._manifest: dict[str, list[str]] = {}
         self._read_at: float | None = None
         self._manifest_lock = threading.Lock()  # `prefetch` fetches from several threads; one reads the manifest
+        self._prefetch_rests_until = float("-inf")
 
     # ------------------------------------------------------------ the loader
 
@@ -108,7 +112,14 @@ class FetchingImageLoader:
         a few at a time, so that the loader then finds them on the disk. A picture that cannot be fetched here is
         left alone: the loader meets it again for the call that needs it and reports it there, exactly as it does
         without this step. Each worker pauses after a fetch as the loader does.
+
+        A host is never pressed: when a fetch is refused (HTTP 403 or 429) or gets no answer after its tries, the
+        fetches not yet begun are dropped and nothing is fetched ahead for `PREFETCH_REST_SECONDS`; the loader goes
+        on meanwhile at its own pace, one picture at a time.
         """
+        if self._clock() < self._prefetch_rests_until:
+            return 0
+        refused = threading.Event()
         missing: dict[Path, tuple[str, Any]] = {}
         for source, line in items:
             image = getattr(line, "image", None)
@@ -121,13 +132,17 @@ class FetchingImageLoader:
 
         def one(pair: tuple[Path, tuple[str, Any]]) -> bool:
             target, (image, source) = pair
+            if refused.is_set():
+                return False
             try:
                 self._fetch(image, target)
                 load_picture(target, source.image_size)
-            except ImageError:
+            except ImageError as error:
                 # Not fetched, or what a link gave is not a picture: nothing is kept, and the loader goes through
                 # the same steps for the call that needs it and says what went wrong.
                 target.unlink(missing_ok=True)
+                if any(sign in str(error) for sign in _REFUSAL_SIGNS):
+                    refused.set()
                 return False
             return True
 
@@ -135,9 +150,13 @@ class FetchingImageLoader:
             return 0
         count = min(max(1, int(workers)), len(missing))
         if count < 2:
-            return sum(1 for pair in missing.items() if one(pair))
-        with ThreadPoolExecutor(max_workers=count, thread_name_prefix="rps-picture") as pool:
-            return sum(1 for fetched in pool.map(one, list(missing.items())) if fetched)
+            fetched = sum(1 for pair in missing.items() if one(pair))
+        else:
+            with ThreadPoolExecutor(max_workers=count, thread_name_prefix="rps-picture") as pool:
+                fetched = sum(1 for done in pool.map(one, list(missing.items())) if done)
+        if refused.is_set():
+            self._prefetch_rests_until = self._clock() + PREFETCH_REST_SECONDS
+        return fetched
 
     # ------------------------------------------------------------ the manifest
 
@@ -208,8 +227,9 @@ class FetchingImageLoader:
             else:
                 if status == 200:
                     return (None, f"larger than {self.max_bytes} bytes") if len(body) > self.max_bytes else (body, "")
-                if status < 500:
+                if status < 500 and status != 429:
                     return None, f"HTTP {status}"  # 404, 403 and the like: the next link
+                # (429, "too many requests", is worth another try after a pause, as a server error is)
                 why = f"HTTP {status}"
             if attempt + 1 < self.tries:
                 self._sleep(self.pause * (2**attempt))
