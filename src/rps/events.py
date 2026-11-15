@@ -279,11 +279,15 @@ def picture_read_workers(store: Store) -> int:
 def read_bytes_many(store: Store, paths: Iterable[str], *, workers: int = 0) -> list[bytes | None]:
     """Read several files and return their contents in the order given, None for a file that is not there.
 
-    With `workers` of 2 or more the reads run that many at a time; otherwise one after another. A read that
-    fails for any other reason raises its error, as a single read does, and the reads still under way are
-    not waited for.
+    A store that gives several files for one request (`batch_reads`) is asked once for all of them, whatever
+    `workers` says: against a service that counts requests, one request for ten files is the gentle way.
+    Otherwise, with `workers` of 2 or more the reads run that many at a time, else one after another. A read
+    that fails for any other reason than a missing file raises its error, as a single read does, and reads
+    still under way in a pool are not waited for.
     """
     wanted = list(paths)
+    if len(wanted) >= 2 and store.batch_reads:
+        return store.read_bytes_batch(wanted)
 
     def one(path: str) -> bytes | None:
         try:

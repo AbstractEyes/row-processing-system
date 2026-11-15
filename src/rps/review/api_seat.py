@@ -1168,17 +1168,31 @@ class ApiSeat:
         return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64_text(data)}}
 
     def _read_pictures_ahead(self, packet_id: str, entries: Sequence[Mapping[str, Any]]) -> None:
-        """Read the pictures of a packet's rows several at a time, before its requests are built one by one.
+        """Read the pictures of a packet's rows together, before its requests are built one by one.
 
         Only the reading changes: `_picture_block` takes each picture from here and reads any that is not
         here itself, so a picture that is missing or cannot be read is met there and reported as before.
-        A store that is not behind a network reads one by one, as it always did.
+        A store that gives several files for one request is asked once for the packet's pictures; another
+        store behind a network reads a few at a time; a store that is not behind a network reads one by one,
+        as it always did.
         """
         self._pictures = {}
         workers = picture_read_workers(self._store)
+        batch = bool(self._store.batch_reads)
         folder = layout.packet_dir(self.reviewer_id, packet_id)
         paths = list(dict.fromkeys(f"{folder}/{entry['image']}" for entry in entries if entry.get("image")))
-        if workers < 2 or len(paths) < 2:
+        if len(paths) < 2 or (workers < 2 and not batch):
+            return
+        if batch:
+            try:
+                contents = read_bytes_many(self._store, paths, workers=workers)
+            except StoreError:
+                # The one request failed after the store's own retries. The pass stops here, as it would at
+                # the first single read, and asks the store for nothing more; the next pass tries again.
+                raise
+            except Exception:  # noqa: BLE001 - a name the store refuses: `_picture_block` reports it as before
+                return
+            self._pictures = {path: data for path, data in zip(paths, contents) if data is not None}
             return
         if self._read_ahead_rests_until is not None and self._now() < self._read_ahead_rests_until:
             return  # a read ahead failed a short while ago: one by one for now

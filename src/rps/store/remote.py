@@ -203,6 +203,32 @@ class RemoteStore(Store):
             raise NotFound(path)
         return data
 
+    def read_bytes_batch(self, paths: Iterable[str]) -> "list[bytes | None]":
+        """Several files in the order given, None for a missing one; what is not sent yet is answered from here.
+
+        The files the remote side must give are asked for in one `_remote_read_batch` call, with the retry
+        and backoff of a single read.
+        """
+        wanted = list(paths)
+        found: "list[bytes | None]" = [None] * len(wanted)
+        ask: list[tuple[int, str]] = []
+        for place, path in enumerate(wanted):
+            normalize_path(path)
+            pending = self._pending.get(path)
+            if pending is None:
+                ask.append((place, path))
+            elif pending[0] != "delete":
+                found[place] = pending[1]
+        if ask:
+            contents = self._call(self._remote_read_batch, [path for _, path in ask])
+            for (place, _path), data in zip(ask, contents):
+                found[place] = data
+        return found
+
+    def _remote_read_batch(self, paths: list[str]) -> "list[bytes | None]":
+        """The bytes of several remote files, None for a missing one. One by one unless the service can do better."""
+        return [self._remote_read(path) for path in paths]
+
     def file_stamp(self, path: str) -> Any:
         normalize_path(path)
         if path in self._pending:

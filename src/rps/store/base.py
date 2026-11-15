@@ -67,6 +67,23 @@ class Store(ABC):
     def read_text(self, path: str) -> str:
         return self.read_bytes(path).decode("utf-8")
 
+    #: True for a store whose `read_bytes_batch` costs one request for all its files, not one request a file.
+    batch_reads = False
+
+    def read_bytes_batch(self, paths: Iterable[str]) -> "list[bytes | None]":
+        """Return the contents of several files in the order given, None for a file that is not there.
+
+        Here the files are read one after another; a store behind a network may fetch them in one request
+        (`batch_reads`). A read that fails for another reason than a missing file raises its error.
+        """
+        found: "list[bytes | None]" = []
+        for path in paths:
+            try:
+                found.append(self.read_bytes(path))
+            except NotFound:
+                found.append(None)
+        return found
+
     def file_stamp(self, path: str) -> Any:
         """A value that changes whenever the file's content changes, read without reading the file; None when
         this store cannot say. It compares with `==`. Raises NotFound for a file that does not exist."""
@@ -141,6 +158,13 @@ class ActorStore(Store):
 
     def read_bytes(self, path: str) -> bytes:
         return self._inner.read_bytes(path)
+
+    @property
+    def batch_reads(self) -> bool:  # type: ignore[override]
+        return bool(self._inner.batch_reads)
+
+    def read_bytes_batch(self, paths: Iterable[str]) -> "list[bytes | None]":
+        return self._inner.read_bytes_batch(paths)
 
     def file_stamp(self, path: str) -> Any:
         return self._inner.file_stamp(path)

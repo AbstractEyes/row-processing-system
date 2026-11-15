@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import shutil
 import tempfile
 import threading
 from pathlib import Path
@@ -29,7 +30,7 @@ from typing import Any
 
 from ..layout import parse_bucket
 from .base import NotFound, StoreError
-from .remote import RemoteStore, is_missing_file
+from .remote import RemoteStore, classify_error, is_missing_file
 
 
 class BucketStore(RemoteStore):
@@ -108,6 +109,45 @@ class BucketStore(RemoteStore):
                 target.unlink()
             except OSError:
                 pass
+
+    #: A bucket gives several files for one request: the service counts a read of one file as two requests
+    #: (the file's entry, then its download route) and a read of many files as the same two.
+    batch_reads = True
+
+    def _remote_read_batch(self, paths: list[str]) -> "list[bytes | None]":
+        """Several files in one download call; a file the bucket does not hold comes back as None."""
+        if not paths:
+            return []
+        if len(paths) == 1:
+            return [self._remote_read(paths[0])]
+        folder = self._cache_root / f"{secrets.token_hex(8)}.batch"
+        folder.mkdir(parents=True, exist_ok=True)
+        targets = [folder / f"{place}.download" for place in range(len(paths))]
+        # The same file asked for twice is fetched once and given twice.
+        first: dict[str, int] = {}
+        for place, path in enumerate(paths):
+            first.setdefault(path, place)
+        try:
+            try:
+                # The client warns once for each file the bucket does not hold; such a file is None here.
+                self._client().download_bucket_files(
+                    self.bucket_id,
+                    [(self._remote(path), str(targets[place])) for path, place in first.items()],
+                    raise_on_missing_files=False,
+                )
+            except Exception as exc:
+                if classify_error(exc) == "retry":
+                    raise  # a busy or unreachable service: the caller waits and asks again, for all the files at once
+                # Anything else that fails the files as a group (one that vanished while the call ran, say) is
+                # settled file by file: each read decides for itself, as it did before files were read together.
+                return [self._remote_read(path) for path in paths]
+            found: "list[bytes | None]" = []
+            for path in paths:
+                target = targets[first[path]]
+                found.append(target.read_bytes() if target.exists() else None)
+            return found
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
 
     def _remote_stamp(self, path: str) -> Any:
         remote = self._remote(path)

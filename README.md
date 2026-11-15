@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.6. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.7. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,16 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.7
+
+This release changes only how many requests a review seat makes of the store: it sends the same requests to the model, byte for byte, and writes the same verdict files.
+
+| Change | What happens now |
+|---|---|
+| A packet's pictures cost one request | A storage bucket counts requests (3,000 in five minutes for one account, shared by the controller and every seat), and it counts the read of one file as two of them. A seat that read ten pictures for a packet, and its reviewer client that read them again, spent about forty requests a packet, so the allowance, not the reading, set how many packets could be reviewed; 0.6.6, which read four pictures at a time, only reached that limit sooner. A store may now give several files for one request: `Store.read_bytes_batch(paths)` (one after another by default), `RemoteStore.read_bytes_batch` (what is not sent yet is answered locally; the rest is one `_remote_read_batch` call with a single read's retries), and `BucketStore`, whose `batch_reads` is true, fetches them in one download call. `rps.events.read_bytes_many` asks such a store once for all the files; the seat and the reviewer client use it for a packet's pictures |
+| A request that fails is not followed by ten more | When the service is busy or cannot be reached, the request for a packet's pictures is tried again by the store as a single read is, and if it keeps failing the pass stops, as it would have at the first single read, and the next pass tries again; the seat does not fall back to reading the pictures one by one against a service that is refusing. A group read that fails for any other reason (a file that vanished while the call ran, say) is settled file by file, so nothing fails as a group that would not fail alone. A missing picture is still met and reported by the single read, with the same words. Stores without batch reads keep the behaviour of 0.6.6 |
+| Version | `0.6.7`; the notebook installs @v0.6.7. The rule files, the rules version `f639f796fb9f`, the review brief and the profile versions are unchanged from 0.6.3 |
 
 ## What changed in 0.6.6
 

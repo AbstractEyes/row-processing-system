@@ -143,6 +143,7 @@ class FakeBucketApi:
         self.path_failures: dict[str, int] = {}  # path -> times its operation fails before succeeding
         self.created: list[dict[str, Any]] = []
         self.read_failures: list[Exception] = []
+        self.download_calls: list[list[str]] = []
 
     def batch_bucket_files(self, bucket_id, *, add=None, copy=None, delete=None, token=None):
         self.batch_calls.append({"bucket": bucket_id, "add": list(add or []), "delete": list(delete or [])})
@@ -179,6 +180,7 @@ class FakeBucketApi:
         return [SimpleNamespace(type="file", path=p, size=len(self.files[p]), xet_hash=_digest(self.files[p]), mtime=None, uploaded_at=None) for p in paths if p in self.files]
 
     def download_bucket_files(self, bucket_id, files, *, raise_on_missing_files=False, token=None):
+        self.download_calls.append([remote for remote, _local in files])  # one entry a call: the files it asked for
         if self.read_failures:
             raise self.read_failures.pop(0)
         for remote, local in files:

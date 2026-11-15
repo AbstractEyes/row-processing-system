@@ -13,10 +13,10 @@ from rps.events import PICTURE_READ_WORKERS, picture_read_workers, read_bytes_ma
 from rps.review import api_seat, client as client_module
 from rps.review.client import ReviewerClient
 from rps.store import ActorStore, LocalStore
-from rps.store.base import StoreUnavailableError
+from rps.store.base import StoreError, StoreUnavailableError
 from rps.store.bucket import BucketStore
 
-from fakes import FakeBucketApi
+from fakes import Clock as StoreClock, FakeBucketApi
 from seat_helpers import REVIEWER, FakeAnthropic, make_seat, publish
 
 
@@ -255,3 +255,148 @@ def test_after_a_copy_that_failed_the_reviewer_client_reads_one_by_one_for_a_whi
     remote.forget()
     _local, missing = desk.download(second.packet_id)
     assert missing == [] and 2 <= remote.most_at_once <= PICTURE_READ_WORKERS
+
+
+# ---------------------------------------------------------------------------- a store that gives many files for one request
+
+
+def bucket_pair(tmp_path, name="cache"):
+    """A bucket in memory and a maker of stores on it (the controller's and a seat's are separate objects)."""
+    bucket = FakeBucketApi()
+    clock = StoreClock()
+
+    def store():
+        return BucketStore("owner/state/test", api=bucket, clock=clock, sleep=clock.sleep, rng=lambda: 1.0, cache_dir=tmp_path / name)
+
+    return bucket, store
+
+
+def published(store_maker, **packets):
+    """Publish packets through a controller's store and send them."""
+    controller = store_maker()
+    made = [publish(controller, **settings) for settings in packets.values()]
+    controller.flush(force=True)
+    return made
+
+
+def picture_calls(bucket):
+    """The download calls that asked for pictures, as the number of files in each."""
+    return [len(files) for files in bucket.download_calls if any(path.endswith(".jpg") for path in files)]
+
+
+def test_a_bucket_gives_several_files_for_one_request_and_none_for_a_missing_one(tmp_path):
+    bucket, store_maker = bucket_pair(tmp_path)
+    store = store_maker()
+    for number in range(5):
+        store.write_bytes(f"a/{number}.bin", b"file-%d" % number)
+    store.flush(force=True)
+    assert store.batch_reads and ActorStore(store, layout.operator_actor()).batch_reads
+    assert not LocalStore(tmp_path / "local", fsync=False).batch_reads
+    bucket.download_calls.clear()
+    asked = ["a/3.bin", "a/0.bin", "a/9.bin", "a/3.bin", "a/1.bin"]
+    assert read_bytes_many(store, asked) == [b"file-3", b"file-0", None, b"file-3", b"file-1"]
+    assert [len(files) for files in bucket.download_calls] == [4]  # one request; the file asked for twice is fetched once
+    assert not list((tmp_path / "cache").rglob("*.download"))  # nothing is left in the cache folder
+    # what is written or deleted here and not sent yet is answered from here
+    store.write_bytes("a/0.bin", b"newer")
+    store.delete("a/1.bin")
+    bucket.download_calls.clear()
+    assert store.read_bytes_batch(["a/0.bin", "a/1.bin", "a/2.bin"]) == [b"newer", None, b"file-2"]
+    assert [len(files) for files in bucket.download_calls] == [1]
+    assert store.read_bytes_batch([]) == [] and read_bytes_many(store, ["a/2.bin"]) == [b"file-2"]
+
+
+def test_on_a_bucket_the_seat_asks_once_for_a_packets_pictures_and_sends_the_same_requests(tmp_path):
+    plain = LocalStore(tmp_path / "plain", fsync=False)
+    for line in ("001", "002"):
+        publish(plain, rows=6, pictures=True, line=line)
+    before, _ = requests_sent(plain, tmp_path, "one")
+    bucket, store_maker = bucket_pair(tmp_path)
+    published(store_maker, a={"rows": 6, "pictures": True, "line": "001"}, b={"rows": 6, "pictures": True, "line": "002"})
+    api = FakeAnthropic()
+    seat, _printed = make_seat(store_maker(), tmp_path / "two", api)
+    bucket.download_calls.clear()
+    seat.step()
+    assert json.dumps(api.batches.sent, sort_keys=True) == json.dumps(before, sort_keys=True)  # byte for byte the same requests
+    assert picture_calls(bucket) == [6, 6]  # one request a packet for its six pictures, where there were six a packet
+    api.batches.end()
+    bucket.download_calls.clear()
+    seat.step()  # the answers come in and the verdict files are written: the client copies each packet once
+    assert picture_calls(bucket) == [6, 6]
+    assert seat._pictures == {}
+
+
+def test_on_a_bucket_a_missing_picture_is_reported_as_before_and_the_other_packet_goes_out(tmp_path):
+    bucket, store_maker = bucket_pair(tmp_path)
+    first, second = published(store_maker, a={"rows": 4, "pictures": True, "line": "001"}, b={"rows": 4, "pictures": True, "line": "002"})
+    gone = f"test/{picture_paths(first)[2]}"
+    del bucket.files[gone]
+    api = FakeAnthropic()
+    seat, printed = make_seat(store_maker(), tmp_path / "work", api)
+    seat.step()
+    assert len(api.batches.sent) == 4
+    said = [line for line in printed if "cannot be read" in line]
+    assert len(said) == 1 and first.packet_id in said[0] and f"{first.rows[2].row_id}.jpg" in said[0]
+    assert second.packet_id not in said[0]
+
+
+def test_on_a_bucket_a_request_that_fails_stops_the_pass_and_asks_for_nothing_more(tmp_path):
+    bucket, store_maker = bucket_pair(tmp_path)
+    (packet,) = published(store_maker, a={"rows": 5, "pictures": True})
+    api = FakeAnthropic()
+    seat, printed = make_seat(store_maker(), tmp_path / "work", api)
+    real = bucket.download_bucket_files
+    refused = []
+
+    def download(bucket_id, files, **kwargs):
+        if len(refused) < 6 and len(files) > 1 and any(remote.endswith(".jpg") for remote, _local in files):
+            refused.append(len(files))
+            bucket.download_calls.append([remote for remote, _local in files])
+            raise TimeoutError("the service is busy")  # a kind that is tried again, here until the store gives up
+        return real(bucket_id, files, **kwargs)
+
+    bucket.download_bucket_files = download
+    bucket.download_calls.clear()
+    with pytest.raises(StoreError):
+        seat.step()
+    assert refused == [5] * 6 and picture_calls(bucket) == [5] * 6  # the store's own six tries, and no single reads after them
+    assert api.batches.sent == [] and not any("read ahead" in line for line in printed)
+    seat.step()  # the next pass tries again and goes through
+    assert len(api.batches.sent) == 5
+
+
+def test_on_a_bucket_a_group_read_that_fails_for_another_reason_is_settled_file_by_file(tmp_path):
+    bucket, store_maker = bucket_pair(tmp_path)
+    (packet,) = published(store_maker, a={"rows": 5, "pictures": True})
+    del bucket.files[f"test/{picture_paths(packet)[1]}"]
+    api = FakeAnthropic()
+    seat, printed = make_seat(store_maker(), tmp_path / "work", api)
+    real = bucket.download_bucket_files
+
+    def download(bucket_id, files, **kwargs):
+        if len(files) > 1:
+            bucket.download_calls.append([remote for remote, _local in files])
+            raise ValueError("a file vanished while the call ran")  # not a kind that is tried again
+        return real(bucket_id, files, **kwargs)
+
+    bucket.download_bucket_files = download
+    bucket.download_calls.clear()
+    seat.step()  # no failed pass: the files are read one by one, and the missing one is reported as always
+    assert picture_calls(bucket)[0] == 5 and picture_calls(bucket)[1:6] == [1, 1, 1, 1, 1]
+    said = [line for line in printed if "cannot be read" in line]
+    assert len(said) == 1 and f"{packet.rows[1].row_id}.jpg" in said[0]
+    assert api.batches.sent == []  # the packet with the missing picture is left alone, as before
+
+
+def test_on_a_bucket_the_reviewer_client_copies_a_packet_with_one_request_for_its_pictures(tmp_path):
+    bucket, store_maker = bucket_pair(tmp_path)
+    (packet,) = published(store_maker, a={"rows": 7, "pictures": True})
+    del bucket.files[f"test/{picture_paths(packet)[4]}"]
+    desk = ReviewerClient(REVIEWER, store_maker(), tmp_path / "desk", fsync=False)
+    bucket.download_calls.clear()
+    local, missing = desk.download(packet.packet_id)
+    assert missing == [f"images/{packet.rows[4].row_id}.jpg"]
+    assert picture_calls(bucket) == [7]
+    files = sorted(path.name for path in (local.folder / "images").iterdir())
+    assert files == sorted(f"{row.row_id}.jpg" for place, row in enumerate(packet.rows) if place != 4)
+    assert (local.folder / "images" / f"{packet.rows[0].row_id}.jpg").read_bytes() == b"picture-0"
