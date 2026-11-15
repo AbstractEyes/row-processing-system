@@ -111,6 +111,41 @@ def test_a_read_that_fails_surfaces_when_its_file_comes_up_and_the_files_before_
             replay_into(store, lambda event: None, workers=workers)
 
 
+class UnevenStore(SlowStore):
+    """A slow store whose reads take a time of their own for some paths."""
+
+    def __init__(self, root, **kwargs):
+        super().__init__(root, **kwargs)
+        self.delays: dict[str, float] = {}
+
+    def read_bytes(self, path):
+        extra = self.delays.get(path)
+        if extra is not None:
+            time.sleep(extra)
+        return super().read_bytes(path)
+
+
+def test_a_read_that_fails_does_not_wait_for_the_reads_still_under_way(tmp_path):
+    store = UnevenStore(tmp_path / "state", delay=0.0)
+    write_files(store, build_events(4), 8)
+    first = events_path("20261107T090000Z-aaaa", 0)
+    store.broken[first] = StoreUnavailableError("remote read kept failing after 6 attempts")
+    for part in range(1, 8):
+        store.delays[events_path("20261107T090000Z-aaaa", part)] = 1.5  # as if held in a retry's pause
+    started = time.perf_counter()
+    with pytest.raises(StoreUnavailableError, match="kept failing"):
+        replay_into(store, lambda event: None, workers=4)
+    assert time.perf_counter() - started < 0.75  # not the 1.5 s the other reads take
+    whole = UnevenStore(tmp_path / "state", delay=0.0)
+    whole.delays = dict(store.delays)
+    started = time.perf_counter()
+    seen = []
+    for path, _events, _problems in iter_event_files(whole, workers=4):
+        seen.append(path)
+        break  # a caller that stops early is not held either
+    assert seen == [first] and time.perf_counter() - started < 0.75
+
+
 def test_a_file_that_is_listed_and_gone_gives_no_events_in_a_pool_as_without_one(tmp_path):
     store = SlowStore(tmp_path / "state", delay=0.0)
     write_files(store, build_events(3), 6)

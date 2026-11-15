@@ -316,9 +316,12 @@ def iter_event_files(
                 del text
                 yield path, events, problems
     finally:
+        # Do not wait for the reads still under way: a read that failed, or an interrupt, reaches the caller at
+        # once, as it does without a pool. Reads not yet started are dropped; the few under way end by themselves
+        # and what they return is not used.
         for _path, future in waiting:
             future.cancel()
-        pool.shutdown(wait=True)
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def replay_into(
