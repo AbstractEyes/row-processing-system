@@ -83,12 +83,16 @@ Event kinds and their payloads:
 from __future__ import annotations
 
 import json
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 
 from .layout import Actor, events_path, parse_events_path, sort_event_paths
-from .store.base import NotFound, Store
+from .store.base import ActorStore, NotFound, Store
+from .store.local import LocalStore
+from .store.remote import RemoteStore
 
 EVENT_KINDS: tuple[str, ...] = (
     "controller_started",
@@ -195,6 +199,13 @@ class Replay:
     events: list[Event] = field(default_factory=list)
     problems: list[ReplayProblem] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)
+    # How many events were read, when they were handed on one file at a time and not kept in `events`.
+    event_total: int | None = None
+
+    @property
+    def count(self) -> int:
+        """How many events were read."""
+        return self.event_total if self.event_total is not None else len(self.events)
 
     @property
     def torn(self) -> list[ReplayProblem]:
@@ -202,8 +213,8 @@ class Replay:
 
     def report(self) -> str:
         if not self.problems:
-            return f"{len(self.events)} events from {len(self.paths)} file(s), nothing skipped"
-        lines = [f"{len(self.events)} events from {len(self.paths)} file(s); skipped {len(self.problems)} line(s):"]
+            return f"{self.count} events from {len(self.paths)} file(s), nothing skipped"
+        lines = [f"{self.count} events from {len(self.paths)} file(s); skipped {len(self.problems)} line(s):"]
         for problem in self.problems:
             kind = "torn last line" if problem.torn else "unreadable line"
             lines.append(f"  {problem.path}:{problem.line_number}: {kind} ({problem.reason})")
@@ -244,14 +255,101 @@ def read_event_file(store: Store, path: str) -> tuple[list[Event], list[ReplayPr
     return parse_event_text(text, path)
 
 
-def replay(store: Store, prefix: str = "events/") -> Replay:
+# How many event files are read at once from a store behind a network (a local folder is read one at a time).
+DEFAULT_REMOTE_READ_WORKERS = 6
+
+
+def default_read_workers(store: Store) -> int:
+    """How many reads to run at once for a store: a few for one behind a network, none for anything else."""
+    while isinstance(store, ActorStore):
+        store = store.inner
+    if isinstance(store, RemoteStore):
+        return DEFAULT_REMOTE_READ_WORKERS
+    return 0
+
+
+def iter_event_files(
+    store: Store, prefix: str = "events/", *, workers: int | None = None, lookahead: int | None = None
+) -> Iterator[tuple[str, list[Event], list[ReplayProblem]]]:
+    """Read the controller event files one by one, in replay order, as (path, events, problems).
+
+    With `workers` of 2 or more the store reads of the next files run in a pool while the file at hand is
+    handled, and each file is parsed here when its turn comes, so at most `lookahead` files of text (by default
+    twice the workers) are held at once. `workers` of None picks a number for the kind of store
+    (`default_read_workers`); 0 or 1 reads one file after another. A file that is missing gives no events, and a
+    read that fails (after the store's own retries) raises its error when that file's turn comes, as it does
+    without a pool.
+    """
+    paths = sort_event_paths(store.list(prefix))
+    count = default_read_workers(store) if workers is None else max(0, int(workers))
+    if count < 2 or len(paths) < 2:
+        for path in paths:
+            events, problems = read_event_file(store, path)
+            yield path, events, problems
+        return
+    window = max(1, lookahead if lookahead is not None else 2 * count)
+    pool = ThreadPoolExecutor(max_workers=count, thread_name_prefix="rps-read")
+    waiting: deque[tuple[str, Future[str | None]]] = deque()
+    upcoming = iter(paths)
+
+    def fetch(path: str) -> str | None:
+        try:
+            return store.read_text(path)
+        except NotFound:
+            return None
+
+    try:
+        while True:
+            while len(waiting) < window:
+                path = next(upcoming, None)
+                if path is None:
+                    break
+                waiting.append((path, pool.submit(fetch, path)))
+            if not waiting:
+                return
+            path, future = waiting.popleft()
+            text = future.result()
+            if text is None:
+                yield path, [], []
+            else:
+                events, problems = parse_event_text(text, path)
+                del text
+                yield path, events, problems
+    finally:
+        for _path, future in waiting:
+            future.cancel()
+        pool.shutdown(wait=True)
+
+
+def replay_into(
+    store: Store,
+    apply: Callable[[Event], None],
+    prefix: str = "events/",
+    *,
+    workers: int | None = None,
+) -> Replay:
+    """Read the event files in replay order and hand each event to `apply` as its file's turn comes.
+
+    The events are not kept: the result holds the problems, the paths and the number of events (`count`).
+    """
+    result = Replay(event_total=0)
+    for path, events, problems in iter_event_files(store, prefix, workers=workers):
+        for event in events:
+            apply(event)
+        result.event_total += len(events)
+        result.problems.extend(problems)
+        result.paths.append(path)
+    return result
+
+
+def replay(store: Store, prefix: str = "events/", *, workers: int | None = None) -> Replay:
     """Read every controller event file in replay order.
 
-    A torn or unreadable line is skipped and listed in `Replay.problems`.
+    A torn or unreadable line is skipped and listed in `Replay.problems`. `workers` is how many files are read
+    at once (see `iter_event_files`).
     """
     result = Replay()
-    for path in sort_event_paths(store.list(prefix)):
-        events, problems = read_event_file(store, path)
+    for path, events, problems in iter_event_files(store, prefix, workers=workers):
         result.events.extend(events)
         result.problems.extend(problems)
         result.paths.append(path)

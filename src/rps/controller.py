@@ -47,7 +47,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from . import __version__, ids, layout
 from .assess import AssessCallFn, AssessContext, AssessFn, Assessment, default_assess
 from .config import PURPOSES, ChainEntry, Config, ConfigError, ReviewerConfig, RouteConfig
-from .events import EventLog, Event, replay, utc_now
+from .events import EventLog, Event, replay_into, utc_now
 from .failures import (
     KIND_BAD_REQUEST,
     KIND_CANCELED,
@@ -379,8 +379,11 @@ class Controller:
         stop_check_seconds: float = 15.0,
         max_consecutive_failures: int = 5,
         tasks_check_seconds: float | None = None,
+        read_workers: int | None = None,
     ) -> None:
         self.config = config
+        # How many event files the start reads at once (None: a few for a store behind a network, none otherwise).
+        self.read_workers = read_workers
         self._now = now
         self.instance = instance or ids.instance_id(now())
         self.actor = controller_actor(self.instance)
@@ -519,8 +522,11 @@ class Controller:
                         f"route {name!r} keeps the writing rules in a provider cache, which is billed for the hours it is "
                         f"kept, but the price table has no cache_storage rate for model {route.model!r}"
                     )
-        replayed = replay(self.state_store)
-        self.state = State.from_events(replayed.events)
+        # Each file's events are folded into the state as its turn comes and then let go, so the start never
+        # holds the whole log as objects.
+        built = State()
+        replayed = replay_into(self.state_store, built.apply, workers=self.read_workers)
+        self.state = built
         self._lines_done_at_start = self.state.job_progress(self.config.max_attempts)["lines_done"]
         if replayed.problems:
             self.problems.append(replayed.report())
@@ -543,7 +549,7 @@ class Controller:
                 "version": __version__,
                 "config": self.config.digest(),
                 "price_table_date": self.prices.date,
-                "replayed_events": len(replayed.events),
+                "replayed_events": replayed.count,
                 "skipped_lines": len(replayed.problems),
             },
         )

@@ -171,6 +171,11 @@ class RemoteStore(Store):
     def _remote_read(self, path: str) -> bytes | None:
         """The file's bytes, or None if the file does not exist."""
 
+    def _remote_stamp(self, path: str) -> Any:
+        """A value that changes with the file's content (its size and hash or version), None when the service
+        cannot say, and a NotFound error when the file does not exist."""
+        return None
+
     @abstractmethod
     def _remote_exists(self, path: str) -> bool:
         """True if the file exists remotely."""
@@ -197,6 +202,12 @@ class RemoteStore(Store):
         if data is None:
             raise NotFound(path)
         return data
+
+    def file_stamp(self, path: str) -> Any:
+        normalize_path(path)
+        if path in self._pending:
+            return None  # a change not sent yet: the stamp of the remote file would not describe what is read
+        return self._call(self._remote_stamp, path)
 
     def exists(self, path: str) -> bool:
         normalize_path(path)

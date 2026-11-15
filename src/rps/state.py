@@ -267,6 +267,42 @@ class LineStatus:
     # to the route of its task.
     route: str | None = None
 
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for `feedback` on a status made with `lazy_status`, whose notes are built on the first read.
+        if name == "feedback":
+            build = self.__dict__.get("_build_feedback")
+            if build is not None:
+                value = tuple(build())
+                object.__setattr__(self, "feedback", value)
+                self.__dict__.pop("_build_feedback", None)
+                return value
+        raise AttributeError(name)
+
+
+# The class keeps no default value for `feedback` (the generated `__init__` has its own): a status made with
+# `lazy_status` has none in its own dictionary either, so the first read reaches `__getattr__` above.
+del LineStatus.feedback
+
+
+def lazy_status(build: Callable[[], Iterable[str]], **fields: Any) -> LineStatus:
+    """A `LineStatus` whose `feedback` is built by `build()` the first time it is read, and not before. Building
+    the notes and the row text of a call of the repair step is most of what a query over many rows in repair
+    costs, and only the calls that are going to be prepared ever read them."""
+    status = LineStatus(**fields)
+    status.__dict__.pop("feedback", None)
+    object.__setattr__(status, "_build_feedback", build)
+    return status
+
+
+def _renumbered(status: LineStatus, next_attempt: int) -> LineStatus:
+    """The same status with another attempt number, its notes still unbuilt when they were."""
+    if "feedback" in status.__dict__:
+        return replace(status, next_attempt=next_attempt)
+    copy = object.__new__(LineStatus)
+    copy.__dict__.update(status.__dict__)
+    object.__setattr__(copy, "next_attempt", next_attempt)
+    return copy
+
 
 @dataclass(frozen=True)
 class Spend:
@@ -322,6 +358,8 @@ class State:
         # not among the line's own attempts (`_lines`), but no later call of the line may take their numbers.
         self._repair_attempts: dict[tuple[str, str], set[int]] = {}
         self._screened: dict[tuple[str, str], dict[str, Any]] = {}  # (task id, line id) -> class, reason, route
+        # The last walk over the rows in repair, kept only while no event is applied (see `_repair_walk`).
+        self._walk_memo: tuple[int, int, int, list[tuple[RowState, str, Any]]] | None = None
 
     # ------------------------------------------------------------------ building
 
@@ -1006,6 +1044,8 @@ class State:
         attempt before when the checker refused it. A call that came back with no row (the writer set the item
         aside instead of writing it again) is never tried again. The attempts a row has used are read from its
         record: the calls on it that are not retries of an earlier call (`rps.repair.attempts_used`).
+
+        The notes and the row text a due call carries (`LineStatus.feedback`) are built when they are first read.
         """
         record = row.repair or {}
         route = record.get("route")  # the route the row was sent back to, as the event recorded it
@@ -1014,8 +1054,12 @@ class State:
             # The call the last request planned has not been prepared: after an attempt that came to nothing, the
             # request names the next attempt, and the checker's errors on the attempt before go with it.
             attempt = ids.parse_call_id(record["call_id"])[2]
-            errors = self._checker_errors(calls[-1]) if calls and calls[-1].status == "returned" else ()
-            status = LineStatus("repair", next_attempt=attempt, feedback=repair_feedback(row, errors), repair_of=row.row_id, route=route)
+            earlier = calls[-1] if calls and calls[-1].status == "returned" else None
+
+            def build() -> tuple[str, ...]:
+                return repair_feedback(row, self._checker_errors(earlier) if earlier is not None else ())
+
+            status = lazy_status(build, outcome="repair", next_attempt=attempt, repair_of=row.row_id, route=route)
             return "due", status
         last = calls[-1]
         if last.status in ("prepared", "submitted"):
@@ -1035,10 +1079,10 @@ class State:
                 return "due", status
             if used < attempts and not last.error.startswith(UNPREPARED_ERROR):
                 # (a call that could not be built fails for a reason another attempt does not change)
-                status = LineStatus(
-                    "repair",
+                status = lazy_status(
+                    lambda: repair_feedback(row),
+                    outcome="repair",
                     next_attempt=self.next_attempt(row.task_id, row.line),
-                    feedback=repair_feedback(row),
                     repair_of=row.row_id,
                     route=route,
                 )
@@ -1051,10 +1095,10 @@ class State:
             # Only a rejection by the checker asks for a rewrite; a set-aside is a finding about the item that no
             # rewrite changes, so the row goes to the owner at once.
             if used < attempts and any(item.status == "rejected" for item in written):
-                status = LineStatus(
-                    "repair",
+                status = lazy_status(
+                    lambda: repair_feedback(row, self._checker_errors(last)),
+                    outcome="repair",
                     next_attempt=self.next_attempt(row.task_id, row.line),
-                    feedback=repair_feedback(row, self._checker_errors(last)),
                     repair_of=row.row_id,
                     route=route,
                 )
@@ -1082,14 +1126,31 @@ class State:
             found.extend(str(text)[:300] for text in (row.rejection or {}).get("errors") or row.errors or [])
         return _unique(found)[:20]
 
+    def _repair_walk(self, max_attempts: int, attempts: int) -> list[tuple[RowState, str, Any]]:
+        """Where the repair of every row in repair stands, as (row, outcome, status or detail) in row-id order (see
+        `_repair_progress`; a row that is only waiting is left out). The two repair queries share this one walk, and it is kept until the next event is applied:
+        nothing it reads changes without one. The caller must not change the list."""
+        memo = self._walk_memo
+        if memo is not None and memo[0] == self.events_applied and memo[1] == max_attempts and memo[2] == attempts:
+            return memo[3]
+        walk = []
+        for row in self.rows_being_repaired():
+            outcome, detail = self._repair_progress(row, max_attempts, attempts)
+            if outcome != "waiting":
+                walk.append((row, outcome, detail))
+        self._walk_memo = (self.events_applied, max_attempts, attempts, walk)
+        return walk
+
     def repairs_needing_calls(self, max_attempts: int, attempts: int = 1) -> list[tuple[TaskState, LineState, LineStatus]]:
         """The calls of the repair step that are due: a row sent back to its writer whose call has not been
         made yet, or has to be made again. Each comes as (task, line, status) like a spec line that is due,
-        with `status.repair_of` set to the row, in row-id order."""
+        with `status.repair_of` set to the row, in row-id order. A status's `feedback` is built when it is first
+        read, so a caller that only counts or groups the due calls never pays for it."""
         due = []
         given: dict[tuple[str, str], int] = {}  # per line: how many fresh attempt numbers this query has handed out
-        for row in self.rows_being_repaired():
-            outcome, status = self._repair_progress(row, max_attempts, attempts)
+        for row, outcome, status in self._repair_walk(max_attempts, attempts):
+            if outcome != "due":
+                continue
             task = self.tasks.get(row.task_id)
             line = task.lines.get(row.line) if task is not None else None
             if outcome == "due" and task is not None and line is not None:
@@ -1098,7 +1159,7 @@ class State:
                     # A call that is not the one a request planned takes the next free number. Two rows of one line
                     # that are due together would both take the same one, so each takes the next after the rows
                     # before it, in row-id order: the numbers are the same on every read of the same events.
-                    status = replace(status, next_attempt=status.next_attempt + given.get(key, 0))
+                    status = _renumbered(status, status.next_attempt + given.get(key, 0))
                     given[key] = given.get(key, 0) + 1
                 due.append((task, line, status))
         return due
@@ -1118,12 +1179,8 @@ class State:
         set aside by the checker), each when the row has no attempt left (`attempts`: the most a row may use). Such a row
         goes back to the hand queue.
         """
-        failed = []
-        for row in self.rows_being_repaired():
-            outcome, detail = self._repair_progress(row, max_attempts, attempts)
-            if outcome == "failed":
-                failed.append((row, detail[0], detail[1]))
-        return failed
+        walk = self._repair_walk(max_attempts, attempts)
+        return [(row, detail[0], detail[1]) for row, outcome, detail in walk if outcome == "failed"]
 
     def job_progress(self, max_attempts: int) -> dict[str, int]:
         """Counts of lines by outcome, plus totals, for progress reports."""

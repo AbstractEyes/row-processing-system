@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
 
-from .base import ConcurrentWriterError, StoreError
+from .base import ConcurrentWriterError, NotFound, StoreError
 from .remote import RemoteStore, classify_error, is_missing_file
 
 
@@ -63,6 +64,7 @@ class HubStore(RemoteStore):
         self.repo_type = repo_type
         self.revision = revision
         self._api = api
+        self._api_lock = threading.Lock()  # the client is made once even when several reads start together
         self._token_env = token_env
         self._cache_root = Path(cache_dir) if cache_dir else Path(tempfile.gettempdir()) / "rps-hub-cache" / repo_id.replace("/", "__")
         self._head: str | None = None
@@ -73,12 +75,14 @@ class HubStore(RemoteStore):
 
     def _client(self) -> Any:
         if self._api is None:
-            token = os.environ.get(self._token_env, "")
-            if not token:
-                raise StoreError(f"{self._token_env} is not set; the dataset repository cannot be reached")
-            from huggingface_hub import HfApi
+            with self._api_lock:
+                if self._api is None:
+                    token = os.environ.get(self._token_env, "")
+                    if not token:
+                        raise StoreError(f"{self._token_env} is not set; the dataset repository cannot be reached")
+                    from huggingface_hub import HfApi
 
-            self._api = HfApi(token=token)
+                    self._api = HfApi(token=token)
         return self._api
 
     def ensure_exists(self, private: bool = True) -> None:
@@ -110,6 +114,13 @@ class HubStore(RemoteStore):
                 return None
             raise
         return Path(local).read_bytes()
+
+    def _remote_stamp(self, path: str) -> Any:
+        infos = self._client().get_paths_info(self.repo_id, [path], repo_type=self.repo_type, revision=self.revision)
+        for info in infos:
+            if info.path == path and not hasattr(info, "tree_id"):
+                return tuple(str(getattr(info, name, None)) for name in ("size", "blob_id"))
+        raise NotFound(path)
 
     def _remote_exists(self, path: str) -> bool:
         infos = self._client().get_paths_info(self.repo_id, [path], repo_type=self.repo_type, revision=self.revision)

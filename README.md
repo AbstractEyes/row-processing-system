@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.3. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.4. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,18 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.4
+
+This release changes speed and memory only: the same events give the same state, the same calls are due with the same attempt numbers in the same order, and every call carries the same text. The event format and every rule are as they were.
+
+| Change | What happens now |
+|---|---|
+| The start reads event files several at a time | `rps.events.replay` and the controller's start read the event files through a small pool of workers (6 by default for a store behind a network, none for a local folder; `Controller(read_workers=...)`, or `workers=` on `replay`) and parse each file when its turn comes, so the events come in the same order as before, with a look-ahead of twice the workers. A missing file, a torn line and a read that fails after the store's own retries are handled as before. The bucket and the hub store make their client once even when several reads start together |
+| The start does not hold the whole log | The controller folds each file's events into the state as that file is read and lets them go (`rps.events.replay_into`); it keeps the count, the problems and their report. `replay()` still returns every event for outside callers |
+| Cheaper repair queries | `State.repairs_needing_calls` and `State.lines_needing_calls` return the same statuses in the same order, but the notes and the row text of a due repair call (`LineStatus.feedback`) are built when first read, which only a call that is being prepared does. `repairs_failed` and `repairs_needing_calls` share one walk over the rows in repair, kept until the next event is applied |
+| The tasks file is not read again while it is unchanged | `rps.tasks.StorePlanner` asks the store for a stamp of the file (`Store.file_stamp`: size and modification time for a local folder, size and hash or version for the bucket and the hub) and reads and parses the file only when the stamp changed; a store that cannot say is read every time, as before. A task added from outside is still picked up within one interval |
+| Version | `0.6.4`; the notebook installs @v0.6.4. The rule files, the rules version `f639f796fb9f` and the profile versions are unchanged from 0.6.3 |
 
 ## What changed in 0.6.3
 

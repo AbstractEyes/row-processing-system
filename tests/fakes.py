@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 from huggingface_hub import CommitOperationAdd, CommitOperationDelete
+
+
+def _digest(data: bytes) -> str:
+    """What a service reports as the identity of a file's content."""
+    return hashlib.sha1(data).hexdigest()
 
 
 class FakeHttpError(Exception):
@@ -96,7 +102,7 @@ class FakeHubApi:
         return iter(entries)
 
     def get_paths_info(self, repo_id, paths, *, repo_type=None, revision=None, **kwargs):
-        return [SimpleNamespace(path=p, size=len(self.files[p]), blob_id="x") for p in paths if p in self.files]
+        return [SimpleNamespace(path=p, size=len(self.files[p]), blob_id=_digest(self.files[p])) for p in paths if p in self.files]
 
     def hf_hub_download(self, repo_id, filename, *, repo_type=None, revision=None, local_dir=None, **kwargs):
         if self.read_failures:
@@ -170,7 +176,7 @@ class FakeBucketApi:
         )
 
     def get_bucket_paths_info(self, bucket_id, paths, *, token=None):
-        return [SimpleNamespace(type="file", path=p, size=len(self.files[p])) for p in paths if p in self.files]
+        return [SimpleNamespace(type="file", path=p, size=len(self.files[p]), xet_hash=_digest(self.files[p]), mtime=None, uploaded_at=None) for p in paths if p in self.files]
 
     def download_bucket_files(self, bucket_id, files, *, raise_on_missing_files=False, token=None):
         if self.read_failures:

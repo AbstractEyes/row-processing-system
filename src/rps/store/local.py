@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import stat
 import threading
 import time
 from pathlib import Path
@@ -42,6 +43,17 @@ class LocalStore(Store):
             return target.read_bytes()
         except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
             raise NotFound(path) from None
+
+    def file_stamp(self, path: str) -> object:
+        """The file's size and modification time, which change when it is written or appended to."""
+        target = self._target(path)
+        try:
+            info = target.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            raise NotFound(path) from None
+        if not stat.S_ISREG(info.st_mode):
+            raise NotFound(path)
+        return (info.st_size, info.st_mtime_ns)
 
     def write_bytes(self, path: str, data: bytes) -> None:
         target = self._target(path)

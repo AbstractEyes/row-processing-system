@@ -23,11 +23,12 @@ from __future__ import annotations
 import os
 import secrets
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 from ..layout import parse_bucket
-from .base import StoreError
+from .base import NotFound, StoreError
 from .remote import RemoteStore, is_missing_file
 
 
@@ -58,17 +59,20 @@ class BucketStore(RemoteStore):
         self.bucket_id, self.folder = parse_bucket(bucket_id)  # a PathError (a ValueError) when it is not a bucket name
         self._root = f"{self.folder}/" if self.folder else ""  # where this store's paths start in the bucket
         self._api = api
+        self._api_lock = threading.Lock()  # the client is made once even when several reads start together
         self._token_env = token_env
         self._cache_root = Path(cache_dir) if cache_dir else Path(tempfile.gettempdir()) / "rps-bucket-cache"
 
     def _client(self) -> Any:
         if self._api is None:
-            token = os.environ.get(self._token_env, "")
-            if not token:
-                raise StoreError(f"{self._token_env} is not set; the bucket cannot be reached")
-            from huggingface_hub import HfApi
+            with self._api_lock:
+                if self._api is None:
+                    token = os.environ.get(self._token_env, "")
+                    if not token:
+                        raise StoreError(f"{self._token_env} is not set; the bucket cannot be reached")
+                    from huggingface_hub import HfApi
 
-            self._api = HfApi(token=token)
+                    self._api = HfApi(token=token)
         return self._api
 
     def ensure_exists(self, private: bool = True) -> None:
@@ -104,6 +108,13 @@ class BucketStore(RemoteStore):
                 target.unlink()
             except OSError:
                 pass
+
+    def _remote_stamp(self, path: str) -> Any:
+        remote = self._remote(path)
+        for info in self._client().get_bucket_paths_info(self.bucket_id, [remote]):
+            if getattr(info, "path", None) == remote:
+                return tuple(str(getattr(info, name, None)) for name in ("size", "xet_hash", "mtime", "uploaded_at"))
+        raise NotFound(path)
 
     def _remote_exists(self, path: str) -> bool:
         remote = self._remote(path)

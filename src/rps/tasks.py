@@ -123,6 +123,8 @@ class TaskSpec:
 
 Planner = Callable[[Any], Sequence[TaskSpec]]
 
+_MISSING = ("missing",)  # the stamp of a tasks file that does not exist
+
 
 def parse_task_specs(text: str, where: str) -> list[TaskSpec]:
     """The tasks in the text of a tasks file (a JSON list; see `TaskSpec.from_dict`). `where` names the file in errors."""
@@ -185,12 +187,21 @@ class StorePlanner:
         self._clock = clock
         self._last_read = float("-inf")
         self._last_specs: list[TaskSpec] = []
+        self._last_stamp: Any = None  # what the store said of the file when it was last read (None: nothing known)
 
     def __call__(self, state: Any) -> list[TaskSpec]:
         now = self._clock()
         if self.min_interval_seconds > 0 and now - self._last_read < self.min_interval_seconds:
             return list(self._last_specs)
         self._last_read = now
+        stamp = self._stamp()
+        if stamp is not None and stamp == self._last_stamp:
+            return list(self._last_specs)  # the file is as it was when it was read last
+        if stamp is _MISSING:
+            self._last_specs = []
+            self._last_stamp = _MISSING  # no file: nothing to read until one appears
+            return []
+        self._last_stamp = None
         try:
             text = self.store.read_text(self.path)
         except NotFound:
@@ -198,4 +209,15 @@ class StorePlanner:
             return []
         specs = parse_task_specs(text, f"tasks file {self.path!r} in the state store")
         self._last_specs = specs
+        self._last_stamp = stamp  # the stamp taken before the read: a change made since shows at the next look
         return list(specs)
+
+    def _stamp(self) -> Any:
+        """What the store says of the tasks file without reading it: a value that changes with the file, `_MISSING`
+        for no file, or None when the store cannot say (then the file is read every time, as it always was)."""
+        try:
+            return self.store.file_stamp(self.path)
+        except NotFound:
+            return _MISSING
+        except Exception:
+            return None

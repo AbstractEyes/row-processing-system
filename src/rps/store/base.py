@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Iterable
+from typing import Any, Iterable
 
 from ..layout import Actor, may_write, normalize_path, owner_of
 
@@ -66,6 +66,11 @@ class Store(ABC):
 
     def read_text(self, path: str) -> str:
         return self.read_bytes(path).decode("utf-8")
+
+    def file_stamp(self, path: str) -> Any:
+        """A value that changes whenever the file's content changes, read without reading the file; None when
+        this store cannot say. It compares with `==`. Raises NotFound for a file that does not exist."""
+        return None
 
     def write_text(self, path: str, text: str) -> None:
         self.write_bytes(path, text.encode("utf-8"))
@@ -136,6 +141,9 @@ class ActorStore(Store):
 
     def read_bytes(self, path: str) -> bytes:
         return self._inner.read_bytes(path)
+
+    def file_stamp(self, path: str) -> Any:
+        return self._inner.file_stamp(path)
 
     def write_bytes(self, path: str, data: bytes) -> None:
         self._check(path)
