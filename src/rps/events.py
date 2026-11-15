@@ -268,6 +268,39 @@ def default_read_workers(store: Store) -> int:
     return 0
 
 
+PICTURE_READ_WORKERS = 4
+
+
+def picture_read_workers(store: Store) -> int:
+    """How many of a packet's pictures to read at once: a few from a store behind a network, else one by one."""
+    return min(PICTURE_READ_WORKERS, default_read_workers(store))
+
+
+def read_bytes_many(store: Store, paths: Iterable[str], *, workers: int = 0) -> list[bytes | None]:
+    """Read several files and return their contents in the order given, None for a file that is not there.
+
+    With `workers` of 2 or more the reads run that many at a time; otherwise one after another. A read that
+    fails for any other reason raises its error, as a single read does, and the reads still under way are
+    not waited for.
+    """
+    wanted = list(paths)
+
+    def one(path: str) -> bytes | None:
+        try:
+            return store.read_bytes(path)
+        except NotFound:
+            return None
+
+    count = min(max(0, int(workers)), len(wanted))
+    if count < 2:
+        return [one(path) for path in wanted]
+    pool = ThreadPoolExecutor(max_workers=count, thread_name_prefix="rps-read")
+    try:
+        return list(pool.map(one, wanted))
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+
+
 def iter_event_files(
     store: Store, prefix: str = "events/", *, workers: int | None = None, lookahead: int | None = None
 ) -> Iterator[tuple[str, list[Event], list[ReplayProblem]]]:

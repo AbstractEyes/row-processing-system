@@ -26,13 +26,15 @@ import json
 import os
 import shlex
 import subprocess
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from .. import layout
+from ..events import picture_read_workers, read_bytes_many
 from ..layout import reviewer_actor
-from ..store.base import ActorStore, NotFound, Store
+from ..store.base import ActorStore, Store, StoreError
 from ..store.local import LocalStore
 from .packets import (
     UNSURE_STAGES,
@@ -42,6 +44,8 @@ from .packets import (
     parse_verdict_lines,
     validate_verdict,
 )
+
+PICTURE_REST_SECONDS = 600.0  # after a read of several pictures at a time failed, they are read one by one for this long
 
 
 class ReviewError(Exception):
@@ -281,6 +285,7 @@ class ReviewerClient:
         self.remote: Store | None = ActorStore(remote, reviewer_actor(reviewer_id)) if remote is not None else None
         self.root = Path(root)
         self._local = LocalStore(self.root, fsync=fsync)
+        self._pictures_rest_until = 0.0  # after a read of several pictures at a time failed (time.monotonic)
 
     # ------------------------------------------------------------ the shared store
 
@@ -348,15 +353,22 @@ class ReviewerClient:
         if document["reviewer_id"] != self.reviewer_id or document["packet_id"] != packet_id:
             raise ReviewError(f"packet {packet_id} does not belong to {self.reviewer_id}")
         missing = []
-        for entry in document["rows"]:
-            image = entry.get("image")
-            if not image:
-                continue
-            remote_path = f"{layout.packet_dir(self.reviewer_id, packet_id)}/{image}"
-            try:
-                self._local.write_bytes(f"{packet_id}/{image}", store.read_bytes(remote_path))
-            except NotFound:
+        images = [entry["image"] for entry in document["rows"] if entry.get("image")]
+        folder = layout.packet_dir(self.reviewer_id, packet_id)
+        # The packet's pictures are read several at a time from a store behind a network (one by one otherwise);
+        # they are written, and the missing ones named, in the packet's own order.
+        workers = picture_read_workers(store) if time.monotonic() >= self._pictures_rest_until else 0
+        try:
+            contents = read_bytes_many(store, [f"{folder}/{image}" for image in images], workers=workers)
+        except StoreError:
+            if workers >= 2:  # a store that refuses or fails is read one by one for a while
+                self._pictures_rest_until = time.monotonic() + PICTURE_REST_SECONDS
+            raise
+        for image, data in zip(images, contents):
+            if data is None:
                 missing.append(image)
+            else:
+                self._local.write_bytes(f"{packet_id}/{image}", data)
         self._local.write_text(f"{packet_id}/packet.json", text)
         packet = LocalPacket(packet_id, self.reviewer_id, self.root / packet_id, document)
         return packet, missing

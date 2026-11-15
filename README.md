@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.5. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.6. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,16 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.6
+
+This release changes speed only: a review seat sends the same requests, byte for byte, and writes the same verdict files.
+
+| Change | What happens now |
+|---|---|
+| A packet's pictures are read side by side | An API review seat read each row's picture from the store when it built that row's request, and the reviewer client read each again when it copied the packet before writing its verdict file: twenty reads for a packet of ten rows, one after another, which held a seat to about seven packets a minute against a store behind a network. Both now read a packet's pictures four at a time (`rps.events.read_bytes_many`, `PICTURE_READ_WORKERS`) when the store is behind a network, and one by one otherwise. The seat keeps what it read ahead only while that packet's requests are built. A picture that is missing or cannot be read is met by the same one-by-one read as before and reported with the same words; the copy of a packet holds the same files and names the missing pictures in the packet's order |
+| A store that fails is not pressed | When a read of several pictures at a time fails (a store that answers "rate limited", for example), the seat says so once and reads its pictures one at a time for the next ten minutes (`READ_AHEAD_REST_SECONDS`), and the reviewer client does the same after a copy that failed (`PICTURE_REST_SECONDS`). The failure itself reaches the caller exactly as a single read's failure did |
+| Version | `0.6.6`; the notebook installs @v0.6.6. The rule files, the rules version `f639f796fb9f`, the review brief and the profile versions are unchanged from 0.6.3 |
 
 ## What changed in 0.6.5
 

@@ -81,7 +81,7 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from .. import ids, layout
 from .. import rules as rule_pool
 from ..config import Config, ConfigError, _check_keys, _number, _reject_secret_values, _text
-from ..events import format_ts, utc_now
+from ..events import format_ts, picture_read_workers, read_bytes_many, utc_now
 from ..failures import KIND_AUTH, KIND_BAD_REQUEST
 from ..ids import canonical_json
 from ..ledger import EPSILON, MILLION, Rates, Usage
@@ -127,6 +127,7 @@ PICTURE_TOKENS = IMAGE_TOKENS
 RECOVER_WAIT = timedelta(minutes=2)
 # Passes in a row that may fail before a running seat stops.
 MAX_FAILED_STEPS = 10
+READ_AHEAD_REST_SECONDS = 600.0  # after a read ahead of pictures failed, they are read one by one for this long
 
 ROLE = (
     "You review rows for a dataset. Other AI models write the rows; you read one row at a time against the task it was "
@@ -788,6 +789,8 @@ class ApiSeat:
         self.ledger = SeatLedger(self._store, self.reviewer_id)
         self._step_lock = threading.Lock()
         self._packets: dict[str, dict[str, Any]] = {}  # packet.json documents, read once
+        self._pictures: dict[str, bytes] = {}  # the pictures of the packet being built, read ahead
+        self._read_ahead_rests_until: datetime | None = None  # after a read ahead that failed
         self._skipped: dict[str, str] = {}  # packets this process leaves alone, and why
         self._noticed: set[str] = set()  # notices already printed
         self._judged: dict[str, dict[str, dict[str, Any]]] = self._load_judged()
@@ -1156,11 +1159,40 @@ class ApiSeat:
         path = f"{layout.packet_dir(self.reviewer_id, packet_id)}/{name}"
         ext = str(name).rsplit(".", 1)[-1]
         try:
-            data = self._store.read_bytes(path)
+            data = self._pictures.pop(path, None)
+            if data is None:
+                data = self._store.read_bytes(path)
             media = mime_type(ext)
         except (NotFound, ValueError) as error:
             raise SeatError(f"packet {packet_id}: the picture {name!r} cannot be read ({error})") from None
         return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64_text(data)}}
+
+    def _read_pictures_ahead(self, packet_id: str, entries: Sequence[Mapping[str, Any]]) -> None:
+        """Read the pictures of a packet's rows several at a time, before its requests are built one by one.
+
+        Only the reading changes: `_picture_block` takes each picture from here and reads any that is not
+        here itself, so a picture that is missing or cannot be read is met there and reported as before.
+        A store that is not behind a network reads one by one, as it always did.
+        """
+        self._pictures = {}
+        workers = picture_read_workers(self._store)
+        folder = layout.packet_dir(self.reviewer_id, packet_id)
+        paths = list(dict.fromkeys(f"{folder}/{entry['image']}" for entry in entries if entry.get("image")))
+        if workers < 2 or len(paths) < 2:
+            return
+        if self._read_ahead_rests_until is not None and self._now() < self._read_ahead_rests_until:
+            return  # a read ahead failed a short while ago: one by one for now
+        try:
+            contents = read_bytes_many(self._store, paths, workers=workers)
+        except Exception as error:  # noqa: BLE001 - whatever failed here fails again, and is reported, in `_picture_block`
+            # A store that refuses or fails is not asked for several pictures at a time again for a while.
+            self._read_ahead_rests_until = self._now() + timedelta(seconds=READ_AHEAD_REST_SECONDS)
+            self._say(
+                f"the pictures of packet {packet_id} could not be read ahead ({describe_error(error)}); "
+                f"pictures are read one by one for the next {READ_AHEAD_REST_SECONDS / 60:g} minutes"
+            )
+            return
+        self._pictures = {path: data for path, data in zip(paths, contents) if data is not None}
 
     def _request(self, packet_id: str, ordinal: int, entry: Mapping[str, Any], attempt: int) -> Built | None:
         """The request for one row, or None when it cannot be priced (a prompt past the long-prompt limit).
@@ -1219,11 +1251,14 @@ class ApiSeat:
                 self._give_up(packet_id, exhausted[0])
                 continue
             self.ledger.gave_up.pop(packet_id, None)
+            self._read_pictures_ahead(packet_id, [entry for _, entry in todo])
             try:
                 built = [self._request(packet_id, place, entry, self.ledger.failed_attempts(packet_id, entry["row_id"]) + 1) for place, entry in todo]
             except SeatError as error:
                 self._skip(packet_id, str(error))
                 continue
+            finally:
+                self._pictures = {}
             if any(item is None for item in built):
                 self._skip(packet_id, f"a row is longer than {LONG_PROMPT_TOKENS:,} tokens, which the seat does not price")
                 continue
