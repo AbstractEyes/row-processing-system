@@ -86,7 +86,7 @@ from .provenance import (
 from .providers.base import CallResult, CallSpec, Handle, Request, RouteRejected, RouteUnavailable, Writer
 from .repair import candidates as repair_candidates
 from .repair import failure_reason as repair_failure_reason
-from .repair import repair_item, route_may_repair
+from .repair import UNPREPARED_ERROR, repair_item, route_may_repair
 from .amend import amend_problems, amend_values
 from .review.packets import AMEND_FIELD, UNSURE_FIELD, build_packet, parse_verdict_lines, publish_packet, validate_verdict
 from .review.policy import (
@@ -1339,7 +1339,7 @@ class Controller:
             {
                 "call_id": call_id,
                 "handle_id": None,
-                "error": redact(f"call could not be prepared: {problem}")[:300],
+                "error": redact(f"{UNPREPARED_ERROR}: {problem}")[:300],
                 "retryable": False,
                 "billed": False,
                 "kind": kind,

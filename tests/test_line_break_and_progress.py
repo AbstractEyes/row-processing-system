@@ -40,12 +40,13 @@ def broken(row, *, thought=None, wording=None, text=None):
 
 
 @pytest.mark.parametrize("name", sorted(PROMPTS))
-def test_every_writer_prompt_and_template_asks_for_one_line_after_the_quoting_sentences(name):
+def test_every_writer_prompt_and_template_asks_for_one_line_in_its_general_rules(name):
     for path in (PROMPTS[name], TEMPLATES[name]):
         text = path.read_text(encoding="utf-8")
         assert text.count(LINE_BREAK_RULE) == 1, path
-        assert text.index("(a mark that is part of the shown text stays inside the quotes).") < text.index(LINE_BREAK_RULE)
-        assert text.index(LINE_BREAK_RULE) < text.index("The caption quotes those words")
+        picture = text[text.index("Text is among the things you read from the picture") :]
+        picture = picture[: picture.index(chr(10))]
+        assert LINE_BREAK_RULE not in picture  # the sentence is in the rules every writer reads, not only the picture's
 
 
 def test_the_pool_lists_the_rule():

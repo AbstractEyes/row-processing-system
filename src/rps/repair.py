@@ -62,6 +62,7 @@ FAILED_CHECKER_REASON = "the repair failed the checker: the row waits for the ow
 NO_ROW_REASON = "the repair gave no row, the writer set it aside instead of writing it again: the row waits for the owner"
 SWITCHED_OFF_REASON = "the repair was not made, the step or the route's repair cap is switched off: the row waits for the owner"
 CALL_FAILED_REASON_START = "the repair call failed"
+UNPREPARED_ERROR = "call could not be prepared"  # how a call that could not be built is recorded as failed
 
 NO_NOTE = "The reviewer gave no note."
 
@@ -117,14 +118,30 @@ def may_repeat_after(reason: Any) -> bool:
     return reason == FAILED_CHECKER_REASON or str(reason).startswith(CALL_FAILED_REASON_START)
 
 
-def failed_repair_may_repeat(row: "RowState", calls: Mapping[str, Any] | None, attempts: int) -> bool:
-    """True for a row that waits in the hand queue because its repair failed the checker or its call failed, and that
-    has used fewer attempts than `attempts`. A row whose repair the writer declined, or was not made, stays."""
+def failed_repair_may_repeat(
+    row: "RowState",
+    calls: Mapping[str, Any] | None,
+    attempts: int,
+    rows: Mapping[str, "RowState"] | None = None,
+    rounds: int = 1,
+) -> bool:
+    """True for a row that waits in the hand queue because its repair failed the checker or its call failed, that
+    has used fewer attempts than `attempts`, and whose round is below `rounds`. A row whose repair the writer
+    declined, or was not made, stays; so does a row whose last attempt the checker set aside (a finding about the
+    item that no rewrite changes) or whose call could not be built (that does not change either)."""
     reason = (row.hand or {}).get("reason")
     if row.repair is None or row.repair.get("failed") != reason:
         return False
-    if not may_repeat_after(reason):
+    if not may_repeat_after(reason) or repair_round(row, rows) >= rounds:
         return False
+    listed = list(row.repair.get("calls", []))
+    last = calls.get(listed[-1]) if calls is not None and listed else None
+    if last is not None:
+        if str(getattr(last, "error", None) or "").startswith(UNPREPARED_ERROR):
+            return False
+        written = [rows[row_id] for row_id in getattr(last, "row_ids", []) if rows is not None and row_id in rows]
+        if written and not any(item.status == "rejected" for item in written):
+            return False
     return attempts_used(row, calls) < attempts
 
 
@@ -149,7 +166,7 @@ def is_candidate(
         return False
     if hand.get("reason") == FIX_TO_HAND_REASON:
         return row.repair is None and repair_round(row, rows) < rounds
-    return failed_repair_may_repeat(row, calls, attempts)
+    return failed_repair_may_repeat(row, calls, attempts, rows, rounds)
 
 
 def candidates(

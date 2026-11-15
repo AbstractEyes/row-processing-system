@@ -431,15 +431,15 @@ def test_the_same_events_read_again_give_the_same_state_and_no_call_is_prepared_
     assert Counter(e.payload["call_id"] for e in world.events_of("call_prepared")) == made
 
 
-def run_with_a_stop(tmp_path, *, crash_at=None, config, assess, verdict):
-    world = World(tmp_path, config=config, behavior=numbered)
+def run_with_a_stop(tmp_path, *, crash_at=None, config, assess, verdict, behavior=numbered, lines=LINES):
+    world = World(tmp_path, config=config, behavior=behavior)
     controller = world.controller(on_event=crash_after(crash_at) if crash_at else None, assess=assess)
     if crash_at:
         with pytest.raises(SimulatedCrash):
-            controller.add_task(task_spec(LINES))
+            controller.add_task(task_spec(lines))
             world.drive(controller, verdict)
         controller = world.controller(assess=assess)
-    controller.add_task(task_spec(LINES))
+    controller.add_task(task_spec(lines))
     world.drive(controller, verdict)
     return world, controller
 
@@ -480,3 +480,158 @@ def test_with_one_attempt_and_one_round_the_events_are_the_ones_the_step_always_
     wanted = {"fails_checker": 2, "fix_on_repair": 1, "plain": 1}[scenario]
     assert len(plain.events_of("repair_requested")) == wanted and len(repair_calls(plain)) == wanted
     assert Counter(e.kind for e in plain.events())["row_to_hand"] == {"fails_checker": 4, "fix_on_repair": 2, "plain": 1}[scenario]
+
+
+# ------------------------------------------------------------------ two rows of one line in repair at once
+
+
+def two_rows(payload):
+    """A writer whose first call writes two rows for the line (a and b); a repair writes one row naming its attempt."""
+    if payload.get("repair_of"):
+        return numbered(payload)
+    rows = [
+        {"id": f"{payload['line']}-a", "thoughts": [f"thought a about {payload['spec']}"]},
+        {"id": f"{payload['line']}-b", "thoughts": [f"thought b about {payload['spec']}"]},
+    ]
+    return FakeOutcome(output=json.dumps(rows))
+
+
+def fix_both(reviewer, item):
+    if item.row["thoughts"][0].startswith("repaired"):
+        return {"verdict": "keep"}
+    return {"verdict": "fix", "reasons": ["needs_work"], "notes": f"notes for {item.row['id']}"}
+
+
+def check_each_call_is_its_own_rows(world, state, per_row):
+    """Every call id is prepared once, and each repair call is built from, and recorded under, its own row."""
+    prepared = [e.payload for e in world.events_of("call_prepared")]
+    assert len({p["call_id"] for p in prepared}) == len(prepared)
+    originals = [r for r in state.rows.values() if r.repair_of is None]
+    assert len(originals) == 2
+    for row in originals:
+        mine = [p for p in prepared if p.get("repair_of") == row.row_id]
+        assert len(mine) == per_row and row.repair["calls"] == [p["call_id"] for p in mine]
+        marker = "thought a" if row.record["thoughts"][0].startswith("thought a") else "thought b"
+        for call in mine:
+            assert marker in call["feedback"][-1] and f"notes for {row.record['id']}" in call["feedback"][0]
+    attempts = [p["attempt"] for p in prepared if p.get("repair_of")]
+    assert len(set(attempts)) == len(attempts)
+    return originals
+
+
+def test_two_rows_of_one_line_that_both_need_a_later_attempt_get_calls_of_their_own(tmp_path):
+    world = World(tmp_path, config=repair_config(attempts=3), behavior=two_rows)
+    controller = world.controller(assess=fails_until(99))
+    controller.add_task(task_spec(("001",)))
+    world.drive(controller, fix_both)
+    originals = check_each_call_is_its_own_rows(world, controller.state, 3)
+    assert {r.status for r in originals} == {"hand"} and reasons(world).count(FAILED_CHECKER_REASON) == 2
+    assert controller.state.spend("fake-batch", "repair").calls == 6
+
+
+def test_two_rows_of_one_line_whose_repair_calls_fail_get_calls_of_their_own(tmp_path):
+    def behavior(payload):
+        return FakeOutcome(error="declined", retryable=False, kind="refused") if payload.get("repair_of") else two_rows(payload)
+
+    world = World(tmp_path, config=repair_config(attempts=3), behavior=behavior)
+    controller = world.controller()
+    controller.add_task(task_spec(("001",)))
+    world.drive(controller, fix_both)
+    prepared = [e.payload for e in world.events_of("call_prepared")]
+    assert len({p["call_id"] for p in prepared}) == len(prepared) == 7
+    for row in [r for r in controller.state.rows.values() if r.repair_of is None]:
+        assert len(row.repair["calls"]) == 3 and row.status == "hand"
+
+
+def test_two_transport_retries_on_one_line_get_calls_of_their_own(tmp_path):
+    def behavior(payload):
+        return FakeOutcome(error="overloaded", retryable=True) if payload.get("repair_of") else two_rows(payload)
+
+    world = World(tmp_path, config=repair_config(max_attempts=3), behavior=behavior)
+    controller = world.controller()
+    controller.add_task(task_spec(("001",)))
+    world.drive(controller, fix_both)
+    prepared = [e.payload for e in world.events_of("call_prepared")]
+    assert len({p["call_id"] for p in prepared}) == len(prepared) == 7  # the line's call, then three for each row
+    by_id = {p["call_id"]: p for p in prepared}
+    for p in prepared:
+        if p.get("retry_of"):
+            assert by_id[p["retry_of"]]["repair_of"] == p["repair_of"]
+
+
+def test_two_rows_of_one_line_in_repair_at_once_end_the_same_after_a_stop_at_any_event(tmp_path):
+    options = dict(config=repair_config(attempts=2), assess=fails_until(99), verdict=fix_both, behavior=two_rows, lines=("001",))
+    reference, _ = run_with_a_stop(tmp_path / "ref", **options)
+    expected, total = outcome(reference), len(reference.events())
+    for count in range(1, total):
+        world, controller = run_with_a_stop(tmp_path / f"stop-{count}", crash_at=count, **options)
+        where = f"a run stopped after event {count}"
+        assert outcome(world) == expected, where
+        made = Counter(e.payload["call_id"] for e in world.events_of("call_prepared"))
+        assert set(made.values()) == {1}, where
+        check_each_call_is_its_own_rows(world, controller.state, 2)
+        assert set(Counter(world.provider.submitted_calls).values()) == {1}, where
+
+
+# ------------------------------------------------------------------ what no further attempt can change
+
+
+def test_a_repair_the_checker_set_aside_goes_to_the_owner_at_once_and_is_not_tried_again(tmp_path):
+    def assess(row, context):
+        if repaired_attempt(row) is not None:
+            return Assessment(passed=True, set_aside={"class": "person", "reason": "a person in the seed"})
+        return Assessment(passed=True)
+
+    world, controller = drive(tmp_path, config=repair_config(attempts=3), assess=assess)
+    row = first_rows(controller)["001"]
+    assert len(repair_calls(world)) == 1 and row.status == "hand" and row.hand["reason"] == FAILED_CHECKER_REASON
+    world.config = repair_config(attempts=5)
+    later = world.controller(assess=assess)
+    for _ in range(3):
+        assert later.step() == 0
+    assert len(world.events_of("repair_requested")) == 1 and len(repair_calls(world)) == 1
+
+
+def test_a_repair_call_that_could_not_be_built_is_not_tried_again(tmp_path):
+    from rps.images import ImageError
+
+    world = World(tmp_path, config=repair_config(attempts=3), behavior=numbered)
+    loads = {"count": 0}
+
+    def loader(source, line):
+        loads["count"] += 1
+        if loads["count"] > 2:
+            raise ImageError("the picture is gone")
+        return b"picture", "jpg", 64
+
+    controller = world.controller(image_loader=loader)
+    controller.add_task(task_spec(("001", "002"), image="p.jpg"))
+    world.drive(controller, sends_back("001"))
+    row = first_rows(controller)["001"]
+    assert len(repair_calls(world)) == 1 and row.status == "hand"
+    assert row.hand["reason"] == "the repair call failed (bad_request): the row waits for the owner"
+    world.config = repair_config(attempts=5)
+    later = world.controller(image_loader=loader)
+    for _ in range(3):
+        assert later.step() == 0
+    assert len(world.events_of("repair_requested")) == 1
+
+
+def test_a_checker_rejection_that_asks_for_a_rewrite_still_earns_another_attempt(tmp_path):
+    world, controller = drive(tmp_path, config=repair_config(attempts=2), assess=fails_until(3))
+    assert first_rows(controller)["001"].status == "repaired" and len(repair_calls(world)) == 2
+
+
+# ------------------------------------------------------------------ the rounds lowered again
+
+
+def test_a_row_waiting_after_a_failed_repair_is_not_a_candidate_when_its_round_is_not_below_the_rounds():
+    reason = FAILED_CHECKER_REASON
+    first = hand_row("r1")
+    again = hand_row("r2", reason=reason, repair_record=failed_record(reason), repair_of="r1")
+    rows = {"r1": first, "r2": again}
+    calls = {"c2": Call()}
+    assert repair.is_candidate(again, rows=rows, calls=calls, attempts=2, rounds=2)
+    assert not repair.is_candidate(again, rows=rows, calls=calls, attempts=2, rounds=1)  # rounds lowered to 1: round 1 is the last
+    plain = hand_row("r3", reason=reason, repair_record=failed_record(reason))
+    assert repair.is_candidate(plain, rows={"r3": plain}, calls=calls, attempts=2, rounds=1)

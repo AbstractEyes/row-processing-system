@@ -38,7 +38,7 @@ is then read from the rows that repaired it, as if they were the row.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping
 
 from . import ids
@@ -46,7 +46,7 @@ from .events import Event
 from .failures import KIND_TRUNCATED
 from .ids import canonical_json
 from .repair import attempts_used as repair_attempts_used
-from .repair import correction_outcomes, may_repeat_after, repair_feedback
+from .repair import UNPREPARED_ERROR, correction_outcomes, may_repeat_after, repair_feedback
 from .review.policy import CHAIN_CONTESTED_REASONS, writer_verdicts
 
 # "repaired" is the end of a row that was written again: it never ships, and what stands for it is the rows its repair wrote.
@@ -1033,7 +1033,8 @@ class State:
                     route=route,
                 )
                 return "due", status
-            if used < attempts:
+            if used < attempts and not last.error.startswith(UNPREPARED_ERROR):
+                # (a call that could not be built fails for a reason another attempt does not change)
                 status = LineStatus(
                     "repair",
                     next_attempt=self.next_attempt(row.task_id, row.line),
@@ -1047,7 +1048,9 @@ class State:
         if not written:
             return "failed", ("no_row", "")
         if all(item.status in ("rejected", "set_aside") for item in written):
-            if used < attempts:
+            # Only a rejection by the checker asks for a rewrite; a set-aside is a finding about the item that no
+            # rewrite changes, so the row goes to the owner at once.
+            if used < attempts and any(item.status == "rejected" for item in written):
                 status = LineStatus(
                     "repair",
                     next_attempt=self.next_attempt(row.task_id, row.line),
@@ -1084,11 +1087,19 @@ class State:
         made yet, or has to be made again. Each comes as (task, line, status) like a spec line that is due,
         with `status.repair_of` set to the row, in row-id order."""
         due = []
+        given: dict[tuple[str, str], int] = {}  # per line: how many fresh attempt numbers this query has handed out
         for row in self.rows_being_repaired():
             outcome, status = self._repair_progress(row, max_attempts, attempts)
             task = self.tasks.get(row.task_id)
             line = task.lines.get(row.line) if task is not None else None
             if outcome == "due" and task is not None and line is not None:
+                key = (row.task_id, row.line)
+                if status.next_attempt == self.next_attempt(*key):
+                    # A call that is not the one a request planned takes the next free number. Two rows of one line
+                    # that are due together would both take the same one, so each takes the next after the rows
+                    # before it, in row-id order: the numbers are the same on every read of the same events.
+                    status = replace(status, next_attempt=status.next_attempt + given.get(key, 0))
+                    given[key] = given.get(key, 0) + 1
                 due.append((task, line, status))
         return due
 
