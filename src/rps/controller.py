@@ -168,10 +168,13 @@ def format_progress(
     held_usd: float | None = None,
     waiting: Mapping[str, int] | None = None,
     closed: int = 0,
+    lines_done_at_start: int = 0,
 ) -> str:
     """One progress line: job size, done, time spent and time left.
 
-    With `elapsed` of None (a status print that belongs to no run) the time parts are left out.
+    With `elapsed` of None (a status print that belongs to no run) the time parts are left out. The estimate of
+    the time to finish divides `elapsed` by the lines done since this run started (`lines_done_at_start` lines
+    were done before it): it is left out until this run has finished one.
     `spent_usd` is money paid; `held_usd` is money held for calls still in flight, shown beside
     it when there is any, so the two are never read as one.
     """
@@ -182,8 +185,9 @@ def format_progress(
     if elapsed is not None:
         parts.append(f"time spent {format_duration(elapsed)}")
         parts.append(f"time left {format_duration(budget - elapsed)}" if budget is not None else "time left no limit")
-        if lines_done and lines_total > lines_done:
-            parts.append(f"est. {format_duration(elapsed * (lines_total - lines_done) / lines_done)} to finish")
+        done_here = lines_done - lines_done_at_start
+        if done_here > 0 and lines_total > lines_done:
+            parts.append(f"est. {format_duration(elapsed * (lines_total - lines_done) / done_here)} to finish")
     if spent_usd is not None:
         parts.append(f"${spent_usd:.4f} spent")
     if held_usd:
@@ -421,6 +425,7 @@ class Controller:
         self.problems: list[str] = []
         self._reported: set[str] = set()
         self._started = False
+        self._lines_done_at_start = 0  # the lines done when this run started (the progress line's estimate counts from there)
         self._events = 0
         self._parked: set[str] = set()
         # The lines the screen has read and let through in this run: it reads a line once, and never a retry.
@@ -516,6 +521,7 @@ class Controller:
                     )
         replayed = replay(self.state_store)
         self.state = State.from_events(replayed.events)
+        self._lines_done_at_start = self.state.job_progress(self.config.max_attempts)["lines_done"]
         if replayed.problems:
             self.problems.append(replayed.report())
             self._print(f"[rps] {replayed.report()}")
@@ -1005,7 +1011,7 @@ class Controller:
         """The calls due, by the route they are made on: the route of the task of a spec line, and the route the
         row was sent back to for a call of the repair step."""
         grouped: dict[str, list[tuple[TaskState, LineState, Any]]] = {}
-        for item in self.state.lines_needing_calls(self.config.max_attempts):
+        for item in self.state.lines_needing_calls(self.config.max_attempts, self.config.repair.attempts):
             if self._repair_switched_off(item[0], item[2]) or self._is_closed(item[0], item[2]):
                 continue
             grouped.setdefault(self._call_route(item[0], item[2]), []).append(item)
@@ -2537,8 +2543,10 @@ class Controller:
         """Send the rows the reviewers sent back with a fix verdict to the route that is to write them again.
 
         The candidates are the rows in the hand queue for a fix verdict that the owner has not answered (the
-        owner's decisions were read first), that were never sent back before and are not themselves a repair
-        (`rps.repair.candidates`). A row is written again by the route that wrote it, or by the route
+        owner's decisions were read first), that were never sent back before and are not in the last round
+        `repair.rounds` allows (a row a repair wrote is a row of round 1, and with one round is never sent back), and
+        the rows that wait because their repair failed the checker or its call failed while the row has used fewer
+        attempts than `repair.attempts` allows (`rps.repair.candidates`). A row is written again by the route that wrote it, or by the route
         `repair.routes` names for that route, and that repairing route, not the route that wrote the row, has to
         be on and have a cap for the purpose `repair` (`_repair_allowed`): a row of a route that is switched off
         is repaired through the map. A repairing route's candidates, from every route it repairs for, go
@@ -2554,7 +2562,14 @@ class Controller:
         if not self.config.repair.enabled:
             return
         by_route: dict[str, list[RowState]] = {}
-        for row in repair_candidates(self.state.hand_queue()):
+        settings = self.config.repair
+        for row in repair_candidates(
+            self.state.hand_queue(),
+            all_rows=self.state.rows,
+            calls=self.state.calls,
+            attempts=settings.attempts,
+            rounds=settings.rounds,
+        ):
             repairing = self.config.repair.route_for(row.route)
             if self._repair_allowed(repairing):
                 by_route.setdefault(repairing, []).append(row)
@@ -2578,15 +2593,16 @@ class Controller:
         """Send back to the hand queue the rows whose repair came to nothing, each with the reason.
 
         A repair comes to nothing when its call failed and may not be tried again, when the writer answered with
-        no row, or when every row it wrote was rejected or set aside by the checker. A row whose call is still
-        to be made (the first, or a retry), and whose repairing route no longer repairs (the step was switched
-        off, or the route the row was sent back to was switched off or lost its repair cap, since the row was
-        sent back), goes back too. Either way the row had its one repair: it stays for the owner.
+        no row, or when every row it wrote was rejected or set aside by the checker, and the row has used the
+        attempts `repair.attempts` allows. A row whose call is still to be made (the first, or a retry), and whose
+        repairing route no longer repairs (the step was switched off, or the route the row was sent back to was
+        switched off or lost its repair cap, since the row was sent back), goes back too. Either way the row stays
+        for the owner.
         """
         sent = []
-        for row, code, detail in self.state.repairs_failed(self.config.max_attempts):
+        for row, code, detail in self.state.repairs_failed(self.config.max_attempts, self.config.repair.attempts):
             sent.append((row, repair_failure_reason(code, detail)))
-        for task, _line, status in self.state.repairs_needing_calls(self.config.max_attempts):
+        for task, _line, status in self.state.repairs_needing_calls(self.config.max_attempts, self.config.repair.attempts):
             if self._repair_switched_off(task, status):
                 sent.append((self.state.rows[status.repair_of], repair_failure_reason("switched_off")))
         for row, reason in sent:
@@ -2652,7 +2668,7 @@ class Controller:
         """
         status: dict[str, str] = {}
         due = []
-        for item in self.state.lines_needing_calls(self.config.max_attempts):
+        for item in self.state.lines_needing_calls(self.config.max_attempts, self.config.repair.attempts):
             task, line, line_status = item
             if self._is_closed(task, line_status):
                 continue
@@ -2983,7 +2999,7 @@ class Controller:
             return True
         if s.rows_awaiting_decision() or s.rows_with_audit_reject() or s.images_to_burn() or s.files_to_ship():
             return True
-        if s.repairs_failed(self.config.max_attempts):
+        if s.repairs_failed(self.config.max_attempts, self.config.repair.attempts):
             return True
         if self._calls_due():
             return True
@@ -3082,6 +3098,7 @@ class Controller:
             held_usd=sum(spend.reserved for spend in spends),
             waiting=self._waiting(),
             closed=self._closed_lines(),
+            lines_done_at_start=self._lines_done_at_start,
         )
 
     def status(self) -> dict[str, Any]:

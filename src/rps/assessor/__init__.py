@@ -55,6 +55,34 @@ QUOTE_COMMA_MESSAGE = (
     "the quotation holds only what the picture shows"
 )
 
+# A carriage return or a line feed inside a thought or a wording is an error on every row (rule 119): each is one line,
+# and the lines of a sign are written with " / " between them.
+LINE_BREAK_MESSAGE = (
+    "a line break inside a thought or a wording: keep every thought and every wording on one line, "
+    'and write " / " between the lines of a sign'
+)
+
+
+LINE_BREAK_MARKS = (chr(13), chr(10))
+
+
+def has_line_break(row: Mapping[str, Any]) -> bool:
+    """True when a thought's text or any wording of the row holds a carriage return or a line feed."""
+
+    def broken(value: Any) -> bool:
+        if isinstance(value, str):
+            return any(mark in value for mark in LINE_BREAK_MARKS)
+        if isinstance(value, Mapping):
+            return any(broken(item) for item in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(broken(item) for item in value)
+        return False
+
+    thoughts = row.get("thoughts")
+    texts = [t.get("text") for t in thoughts if isinstance(t, Mapping)] if isinstance(thoughts, list) else []
+    return broken(texts) or broken(row.get("wordings"))
+
+
 # A picture row quotes the text its picture shows (`shown_text`): a thought with the step "say" gives the words, and the
 # caption and the prompt quote them. That shown text is the picture's, not the row's prose, so a check reads the row
 # without it (`shown_text.own_prose`): what a sign says claims no detail, no mood and no name. Any other quotation is
@@ -98,7 +126,8 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
     On a picture row (see `is_picture_row`) the checks for a detail no record gives, and the checks for a sentence
     that says what a hint sentence says, only flag it; and the text the row quotes from its picture is not read as its
     prose (see `ROW_CHECK_GROUPS`). A picture row is read with straight quote marks, and a quoted text that ends with
-    a comma is refused (`quote_comma`). A text row is read whole by every check, quoted words and all.
+    a comma is refused (`quote_comma`). A line break inside a thought or a wording is refused on every row
+    (`line_break`). A text row is read whole by every check, quoted words and all.
     """
     picture = is_picture_row(row)
     if picture:  # as the controller stores it (`shown_text.straighten`): a row checked from elsewhere reads the same
@@ -121,6 +150,8 @@ def check_row(row: Mapping[str, Any], item: Mapping[str, Any] | None = None) -> 
         *validator.name_warnings(prose),
         *[p for group in ROW_CHECK_GROUPS for check in group for p in run(check)],
     ]
+    if has_line_break(row):
+        found.append(Problem("line_break", checks.row_id(row), LINE_BREAK_MESSAGE))
     if picture:
         found = _for_picture(found)
         if shown_text.comma_quotes(row):

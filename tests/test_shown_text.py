@@ -33,10 +33,12 @@ QUOTE_MARKS_RULE = (
     "Use plain straight double quotes, never curly ones, and keep your own sentence's punctuation outside them: "
     "write \"STOP\", then the comma, never \"STOP,\" (a mark that is part of the shown text stays inside the quotes)."
 )
+# 0.6.3: the sentence that follows the quoting sentence in every writer prompt (one line for every thought and wording)
+LINE_BREAK_RULE = 'Keep every thought and every wording on one line: never put a line break inside one, and write " / " between the lines of a sign.'
 TEXT_RULE = (
     "Text is among the things you read from the picture: when the picture shows text that can be read (a sign, a label, a screen, "
     "a page, lettering on clothing or on a vehicle, an inscription), the row reads it. One thought with the step \"say\" gives the words "
-    "in double quotes, exactly as written: the same spelling and letter case, with \" / \" between lines. " + QUOTE_MARKS_RULE + " The caption quotes those words "
+    "in double quotes, exactly as written: the same spelling and letter case, with \" / \" between lines. " + QUOTE_MARKS_RULE + " " + LINE_BREAK_RULE + " The caption quotes those words "
     "in double quotes, and so does the prompt where the row has one; the tags quote nothing. A hint may quote or list text that the "
     "picture shows; it helps with spelling only. Quote a word only when you can read it in the picture yourself, in the form you see it. "
     "Never quote a hinted word you cannot find in the picture. A word cut off by the frame or by something in front of it is given only "

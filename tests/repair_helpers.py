@@ -44,18 +44,26 @@ def repair_config(
     policy: dict[str, Any] | None = None,
     route: dict[str, Any] | None = None,
     routes: dict[str, dict[str, Any]] | None = None,
+    attempts: int | None = None,
+    rounds: int | None = None,
     **extra: Any,
 ):
     """A configuration with the repair step on, `fix_to_hand` on, and a route that has a cap for `repair`.
 
-    `route` replaces the one route (`fake-batch`); `routes` replaces all of them.
+    `route` replaces the one route (`fake-batch`); `routes` replaces all of them. `attempts` and `rounds` set the
+    keys of the same names in the `repair` section when given (the section is as before when they are not).
     """
+    section: dict[str, Any] = {"enabled": enabled, "min_rows": min_rows}
+    if attempts is not None:
+        section["attempts"] = attempts
+    if rounds is not None:
+        section["rounds"] = rounds
     return review_config(
         reviewers,
         writer_family=writer_family,
         policy={"fix_to_hand": True, **(policy or {})},
         routes=routes if routes is not None else {"fake-batch": route if route is not None else repair_route(caps)},
-        repair={"enabled": enabled, "min_rows": min_rows},
+        repair=section,
         **extra,
     )
 

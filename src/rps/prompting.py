@@ -72,7 +72,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .config import DEFAULT_PROFILE, ConfigError, RulesConfig
 from .ids import canonical_json
-from .repair import LIGHT_LINE_STARTS
+from .repair import CHECK_LINE_START, LIGHT_LINE_STARTS
 
 DEFAULT_SYSTEM_FILE = "writer_system.md"
 DEFAULT_SCHEMA_FILE = "row_schema.json"
@@ -495,6 +495,7 @@ REPAIR_INTRO = (
     "that was right. Change nothing the notes do not mention, and add no fact the item does not give."
 )
 REPAIR_NOTES_HEAD = "The notes from the review:"
+REPAIR_CHECK_HEAD = "The checker refused your previous attempt at this row, for these reasons:"
 REPAIR_ROW_HEAD = "The earlier row, as it was written:"
 REPAIR_CLOSING = (
     "Answer in the form the task above asks for, with the problems fixed: "
@@ -506,7 +507,8 @@ def repair_text(feedback: Sequence[str]) -> str:
     """The block that sends a row back to its writer to be written again (empty when there is no feedback).
 
     `feedback` is what a repair call carries (`rps.repair.repair_feedback`): the reviewers' notes, one item
-    each, then the row as it was written (JSON text) as the last item. The block tells the writer that a
+    each, then the checker's errors on the previous attempt when there were any, then the row as it was written
+    (JSON text) as the last item. The block tells the writer that a
     reviewer sent the earlier row back, lists the notes, shows the earlier row, and asks for the row again with
     exactly those problems fixed and everything else that was right kept.
     """
@@ -514,7 +516,10 @@ def repair_text(feedback: Sequence[str]) -> str:
     if not items:
         return ""
     *notes, earlier = items
-    corrections: list[str] = []  # the lines about a reviewer's correction of the light stand just before the row
+    refused: list[str] = []  # for an attempt after one the checker refused: its errors stand just before the row
+    while notes and notes[-1].startswith(CHECK_LINE_START):
+        refused.insert(0, notes.pop()[len(CHECK_LINE_START) :])
+    corrections: list[str] = []  # the lines about a reviewer's correction of the light stand before them
     while notes and notes[-1].startswith(LIGHT_LINE_STARTS):
         corrections.insert(0, notes.pop())
     parts = [REPAIR_INTRO]
@@ -522,6 +527,8 @@ def repair_text(feedback: Sequence[str]) -> str:
         parts.append(REPAIR_NOTES_HEAD + "\n" + "\n".join("- " + note.replace("\n", "\n  ") for note in notes))
     if corrections:
         parts.append("\n".join(corrections))
+    if refused:
+        parts.append(REPAIR_CHECK_HEAD + "\n" + "\n".join("- " + error.replace("\n", "\n  ") for error in refused))
     parts.append(REPAIR_ROW_HEAD + "\n" + earlier)
     parts.append(REPAIR_CLOSING)
     return "\n\n".join(parts)

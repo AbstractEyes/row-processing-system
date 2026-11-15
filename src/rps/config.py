@@ -784,18 +784,30 @@ class ReviewConfig:
 
 # How many candidates a route gathers before its repairs are sent, unless it has nothing else to do.
 DEFAULT_REPAIR_MIN_ROWS = 20
+DEFAULT_REPAIR_ATTEMPTS = 1
+DEFAULT_REPAIR_ROUNDS = 1
 
 
 @dataclass(frozen=True)
 class RepairConfig:
-    """The repair step: a row a reviewer sent back with a "fix" verdict is written again, once, by its own writer.
+    """The repair step: a row a reviewer sent back with a "fix" verdict is written again by its own writer.
 
     Reviewers never edit a row. With `review.policy.fix_to_hand` on, a row with a fix verdict waits in the hand
-    queue for the owner; with `enabled` on, such a row is instead sent back, once, to the route that wrote it,
-    together with the reviewers' notes and the row as it was written. The new row goes through the checker and a
-    first review like any row; a row that came out of a repair and is sent back again goes to the owner, never to
-    a second repair (see `rps.repair`). A route is repaired through only when it is switched on and its
+    queue for the owner; with `enabled` on, such a row is instead sent back to the route that wrote it, together
+    with the reviewers' notes and the row as it was written. The new row goes through the checker and a first
+    review like any row; a row that came out of a repair and is sent back again goes to the owner (see
+    `rps.repair`), unless `rounds` allows another round. A route is repaired through only when it is switched on and its
     `purpose_caps` name a cap for the purpose `repair`; every repair call is charged to that purpose.
+
+    `attempts` is how many repair calls one row gets in a round (default 1). With more, a repair whose row fails the
+    checker, or whose call fails, is tried again for the same row until the attempts are used, a later attempt
+    being told the checker's errors on the one before; only then does the row go to the hand queue. A repair the
+    writer declined is not tried again. A row that waits in the hand queue because its repair failed, and that has
+    used fewer attempts than this allows, is sent back again.
+
+    `rounds` is how many times a row may be sent back, counted along the chain of rows that repair one another
+    (default 1). With 2, a row a repair wrote that is sent back with a fix verdict is sent back once more; a fix
+    verdict on a row of the last round goes to the owner. `attempts` applies within each round.
 
     `min_rows` is how many candidates a route gathers before its repairs are sent, so that the repairs of a
     batch route go out in batches. When the controller has nothing else to do for a route, a smaller batch is sent.
@@ -812,6 +824,8 @@ class RepairConfig:
     enabled: bool = False
     min_rows: int = DEFAULT_REPAIR_MIN_ROWS
     routes: Mapping[str, str] = field(default_factory=dict)
+    attempts: int = DEFAULT_REPAIR_ATTEMPTS
+    rounds: int = DEFAULT_REPAIR_ROUNDS
 
     def route_for(self, route_name: str) -> str:
         """The route that repairs the rows `route_name` wrote: the route the map names, else the route itself."""
@@ -822,6 +836,10 @@ class RepairConfig:
         if self.routes:
             # Left out when empty, so that a configuration with no map reads (and hashes) as it did without the setting.
             data["routes"] = {name: self.routes[name] for name in sorted(self.routes)}
+        if self.attempts != DEFAULT_REPAIR_ATTEMPTS:
+            data["attempts"] = self.attempts  # likewise left out at its default
+        if self.rounds != DEFAULT_REPAIR_ROUNDS:
+            data["rounds"] = self.rounds
         return data
 
     @classmethod
@@ -829,7 +847,7 @@ class RepairConfig:
         where = "repair"
         if not isinstance(data, Mapping):
             _fail(f"{where}: expected an object")
-        _check_keys(data, {"enabled", "min_rows", "routes"}, where)
+        _check_keys(data, {"enabled", "min_rows", "routes", "attempts", "rounds"}, where)
         default = cls()
         routes_in = data.get("routes", {})
         if not isinstance(routes_in, Mapping):
@@ -851,6 +869,8 @@ class RepairConfig:
             enabled=_flag(data.get("enabled", default.enabled), f"{where}.enabled"),
             min_rows=_number(data.get("min_rows", default.min_rows), f"{where}.min_rows", minimum=1, integer=True),
             routes=routes,
+            attempts=_number(data.get("attempts", default.attempts), f"{where}.attempts", minimum=1, integer=True),
+            rounds=_number(data.get("rounds", default.rounds), f"{where}.rounds", minimum=1, integer=True),
         )
 
     def check_routes(self, configured: Collection[str]) -> None:

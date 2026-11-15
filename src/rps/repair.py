@@ -1,12 +1,24 @@
 """The repair step, as pure functions: which rows go back to their writer, and what the writer is told.
 
 Reviewers never edit a row. With `review.policy.fix_to_hand` on, a row with a "fix" verdict waits in the hand
-queue for the owner. With `repair.enabled` on, such a row is sent back instead, once, to the route that wrote it
-(the `repair_requested` event), so that the writer writes it again:
+queue for the owner. With `repair.enabled` on, such a row is sent back instead to the route that wrote it
+(the `repair_requested` event), so that the writer writes it again. A repair is made in at most `repair.attempts`
+calls (one by default) and a row may be repaired in at most `repair.rounds` rounds (one by default):
+
+    attempts       a repair whose row fails the checker, or whose call fails, is tried again for the same
+                   original row, with the checker's errors on the previous attempt added to the notes, until
+                   `repair.attempts` attempts are used; a repair the writer declined (it gave no row) is never
+                   tried again. The attempts a row has used are the calls on its record that are not retries
+                   of an earlier call (`attempts_used`)
+    rounds         a row that is itself a repair (its `repair_of` chain is one link long) may be sent back once
+                   more when `repair.rounds` is 2; the round of a row is the length of its `repair_of` chain
+                   (`repair_round`). A row in its last round that is sent back again goes to the owner
 
     which rows     a row in the hand queue for a fix verdict that the owner has not answered, that was never
-                   sent back before, that is not itself a repair, and whose repairing route is on and has a
-                   cap for the purpose `repair` (`candidates`, `route_may_repair`). The repairing route is
+                   sent back before and is not in its last round, or a row that waits because its repair
+                   failed the checker or its call failed and that has used fewer attempts than are allowed
+                   now; and whose repairing route is on and has a cap for the purpose `repair`
+                   (`candidates`, `route_may_repair`). The repairing route is
                    the route that wrote the row, or the route `repair.routes` names for it
                    (`RepairConfig.route_for`), so the rows of a route that is switched off can be repaired
                    by another
@@ -17,7 +29,7 @@ queue for the owner. With `repair.enabled` on, such a row is sent back instead, 
     what comes     a new row with an id of its own, written by the repairing route (its writer label is that
     back           route's), linked to the row it repairs in the events and the state (never as a column of
                    a stored or shipped row), checked and reviewed like any row. A row that is sent back
-                   again is never repaired again: it goes to the owner
+                   again in its last round is not repaired again: it goes to the owner
     a correction   a reviewer whose configuration lists `may_amend` may give the light with a fix verdict
     of the light   (`rps.amend`). When the row's fix verdicts hold exactly one distinct value, the call is built from
                    the line's item with that record set as a given record (for "none", with any given `shot light`
@@ -41,10 +53,15 @@ if TYPE_CHECKING:  # pragma: no cover
     from .config import Config
     from .state import RowState
 
+# The words that open a checker's error among the lines a later attempt is given (`repair_feedback`); `rps.prompting.repair_text`
+# sets those lines apart from the notes by how they begin.
+CHECK_LINE_START = "The checker refused your previous attempt: "
+
 # Why a row whose repair came to nothing is in the hand queue again (the reason the owner reads).
 FAILED_CHECKER_REASON = "the repair failed the checker: the row waits for the owner"
 NO_ROW_REASON = "the repair gave no row, the writer set it aside instead of writing it again: the row waits for the owner"
 SWITCHED_OFF_REASON = "the repair was not made, the step or the route's repair cap is switched off: the row waits for the owner"
+CALL_FAILED_REASON_START = "the repair call failed"
 
 NO_NOTE = "The reviewer gave no note."
 
@@ -68,25 +85,87 @@ def failure_reason(code: str, detail: str = "") -> str:
 # ---------------------------------------------------------------------------- which rows
 
 
-def is_candidate(row: "RowState") -> bool:
+def repair_round(row: "RowState", rows: Mapping[str, "RowState"] | None = None) -> int:
+    """The round a row is in: the length of its `repair_of` chain (0 for a row no repair wrote, 1 for the row a first
+    repair wrote, 2 for the row of a second round). Without `rows` the chain is read as far as the row itself."""
+    length, seen, current = 0, {row.row_id}, row
+    while current.repair_of is not None:
+        length += 1
+        if rows is None or current.repair_of in seen:
+            break
+        seen.add(current.repair_of)
+        current = rows.get(current.repair_of)  # type: ignore[assignment]
+        if current is None:
+            break
+    return length
+
+
+def attempts_used(row: "RowState", calls: Mapping[str, Any] | None = None) -> int:
+    """How many attempts the repair of a row has used: the calls on its repair record that are not retries of an
+    earlier call (a call made again after a failure belongs to the attempt it repeats). Without `calls` every call
+    on the record counts as an attempt."""
+    ids = list((row.repair or {}).get("calls", []))
+    if calls is None:
+        return len(ids)
+    return sum(1 for call_id in ids if call_id in calls and getattr(calls[call_id], "retry_of", None) is None)
+
+
+def may_repeat_after(reason: Any) -> bool:
+    """True when `reason` is one a row waits in the hand queue for after a repair that failed the checker or whose
+    call failed: the repair may be made again. The reasons for a repair the writer declined, or that was not made,
+    are not among them."""
+    return reason == FAILED_CHECKER_REASON or str(reason).startswith(CALL_FAILED_REASON_START)
+
+
+def failed_repair_may_repeat(row: "RowState", calls: Mapping[str, Any] | None, attempts: int) -> bool:
+    """True for a row that waits in the hand queue because its repair failed the checker or its call failed, and that
+    has used fewer attempts than `attempts`. A row whose repair the writer declined, or was not made, stays."""
+    reason = (row.hand or {}).get("reason")
+    if row.repair is None or row.repair.get("failed") != reason:
+        return False
+    if not may_repeat_after(reason):
+        return False
+    return attempts_used(row, calls) < attempts
+
+
+def is_candidate(
+    row: "RowState",
+    *,
+    rows: Mapping[str, "RowState"] | None = None,
+    calls: Mapping[str, Any] | None = None,
+    attempts: int = 1,
+    rounds: int = 1,
+) -> bool:
     """True for a row that may be sent back to its writer, whatever route it came from.
 
-    It is in the hand queue (so the owner has not answered it) for a fix verdict, it was never sent back
-    before, and it is not itself the result of a repair.
+    It is in the hand queue (so the owner has not answered it), and either
+      - it is there for a fix verdict, it was never sent back before, and it is in a round before the last
+        (`repair_round` < `rounds`: with one round, a row that is itself a repair is never sent back), or
+      - its repair failed the checker or its call failed, and it has used fewer attempts than `attempts`.
+    With the defaults (one attempt, one round) this is the rule of the releases before the two settings.
     """
     hand = row.hand or {}
-    return (
-        row.status == "hand"
-        and hand.get("reason") == FIX_TO_HAND_REASON
-        and "decision" not in hand
-        and row.repair is None
-        and row.repair_of is None
+    if row.status != "hand" or "decision" in hand:
+        return False
+    if hand.get("reason") == FIX_TO_HAND_REASON:
+        return row.repair is None and repair_round(row, rows) < rounds
+    return failed_repair_may_repeat(row, calls, attempts)
+
+
+def candidates(
+    rows: Iterable["RowState"],
+    *,
+    all_rows: Mapping[str, "RowState"] | None = None,
+    calls: Mapping[str, Any] | None = None,
+    attempts: int = 1,
+    rounds: int = 1,
+) -> list["RowState"]:
+    """The rows of `rows` that may be sent back to their writer, in row-id order (`all_rows`: every row of the
+    state, to read the chains; `calls`: every call, to count the attempts)."""
+    return sorted(
+        (row for row in rows if is_candidate(row, rows=all_rows, calls=calls, attempts=attempts, rounds=rounds)),
+        key=lambda row: row.row_id,
     )
-
-
-def candidates(rows: Iterable["RowState"]) -> list["RowState"]:
-    """The rows of `rows` that may be sent back to their writer, in row-id order."""
-    return sorted((row for row in rows if is_candidate(row)), key=lambda row: row.row_id)
 
 
 def route_may_repair(config: "Config", route_name: str) -> bool:
@@ -130,12 +209,23 @@ def written_row_text(record: Mapping[str, Any]) -> str:
     return json.dumps(body, ensure_ascii=False)
 
 
-def repair_feedback(row: "RowState") -> tuple[str, ...]:
+def checker_lines(errors: Iterable[str]) -> list[str]:
+    """The checker's errors on a previous attempt, one item each, in the words a later attempt is given."""
+    return [CHECK_LINE_START + str(error).strip() for error in errors if str(error).strip()]
+
+
+def repair_feedback(row: "RowState", checker_errors: Iterable[str] = ()) -> tuple[str, ...]:
     """The feedback a repair call carries: the notes of every fix verdict on the row, one item each, then the
-    lines about a correction of the light (when a reviewer gave one: `light_lines`), then the row as it was
+    lines about a correction of the light (when a reviewer gave one: `light_lines`), then, for an attempt after
+    one the checker refused, the checker's errors on that attempt (`checker_errors`), then the row as it was
     written (JSON text) as the last item. `rps.prompting.repair_text` turns it into words."""
     verdicts = row.writer_verdicts()  # all the live verdicts, or for a row under a review chain the ones whose notes go back
-    return (*fix_notes(verdicts, every=row.under_chain), *light_lines(light_amendment(verdicts)), written_row_text(row.record))
+    return (
+        *fix_notes(verdicts, every=row.under_chain),
+        *light_lines(light_amendment(verdicts)),
+        *checker_lines(checker_errors),
+        written_row_text(row.record),
+    )
 
 
 # ---------------------------------------------------------------------------- a reviewer's correction of the light
