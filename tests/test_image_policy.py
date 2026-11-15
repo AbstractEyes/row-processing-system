@@ -172,6 +172,78 @@ def test_a_museum_picture_is_fetched_from_the_museums_own_host_and_may_go_to_eve
         assert picture_for(call, provider) == (call.image, "jpg")  # every adapter may send it
 
 
+def test_the_pictures_of_a_group_of_calls_are_fetched_side_by_side_and_each_call_gets_its_own(tmp_path):
+    import threading
+    import time
+
+    from PIL import Image
+
+    from rps.pictures import MANIFEST_PREFIX, FetchingImageLoader
+
+    def picture(shade):
+        buffer = io.BytesIO()
+        Image.new("RGB", (40, 20), (shade, 90, 60)).save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    config = make_config(sources={"museum-open": dict(MUSEUM_SOURCE, images_dir=str(tmp_path / "images"))})
+    world = World(tmp_path / "run", config=config, writer_class=RecordingWriter)
+    bodies = {f"{MUSEUM_LINK}?n={n}": picture(20 * n) for n in range(1, 7)}
+    entries = [{"image": f"museum-open/{n:06d}.jpg", "urls": [f"{MUSEUM_LINK}?n={n}"]} for n in range(1, 7)]
+    world.state_store.write_bytes(f"{MANIFEST_PREFIX}museum.jsonl", "".join(json.dumps(e) + "\n" for e in entries).encode())
+    lock = threading.Lock()
+    seen = {"now": 0, "most": 0, "asked": []}
+
+    def opener(url, *, timeout, max_bytes):
+        with lock:
+            seen["now"] += 1
+            seen["most"] = max(seen["most"], seen["now"])
+            seen["asked"].append(url)
+        time.sleep(0.05)
+        with lock:
+            seen["now"] -= 1
+        return 200, bodies[url]
+
+    loader = FetchingImageLoader(config, world.state_store, opener=opener, pause=0, sleep=lambda seconds: None)
+    controller = world.controller(image_loader=loader)
+    lines = tuple(
+        SpecLine(f"{n:03d}", f"spec for {n:03d}", item_id=f"object-{n:06d}", image=f"museum-open/{n:06d}.jpg") for n in range(1, 7)
+    )
+    controller.add_task(TaskSpec(source="museum-open", batch="1", route="fake-batch", lines=lines))
+    world.drive(controller)
+    calls = {call.line: call for call in controller.writers["fake-batch"].calls}
+    assert sorted(seen["asked"]) == sorted(bodies) and seen["most"] > 1  # each link once, several at a time
+    for n in range(1, 7):
+        assert calls[f"{n:03d}"].image == bodies[f"{MUSEUM_LINK}?n={n}"]  # every call carries its own picture
+
+
+def test_a_fetch_ahead_that_goes_wrong_leaves_the_calls_to_the_loader(tmp_path):
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (40, 20), (120, 90, 60)).save(buffer, format="JPEG")
+    config = make_config(sources={"museum-open": dict(MUSEUM_SOURCE, images_dir=str(tmp_path / "images"))})
+    world = World(tmp_path / "run", config=config, writer_class=RecordingWriter)
+
+    class Loader:
+        def __init__(self):
+            self.asked = []
+
+        def prefetch(self, items):
+            raise RuntimeError("the fetch ahead broke")
+
+        def __call__(self, source, line):
+            self.asked.append(line.image)
+            return buffer.getvalue(), "jpg", 40
+
+    loader = Loader()
+    controller = world.controller(image_loader=loader)
+    lines = tuple(SpecLine(f"{n:03d}", f"spec for {n:03d}", image=f"museum-open/{n:06d}.jpg") for n in range(1, 4))
+    controller.add_task(TaskSpec(source="museum-open", batch="1", route="fake-batch", lines=lines))
+    world.drive(controller)
+    assert len(controller.writers["fake-batch"].calls) == 3 and len(loader.asked) == 3  # the pass went on
+    assert any("fetched ahead" in problem for problem in controller.problems)
+
+
 @pytest.mark.parametrize("family", ["anthropic", "openai", "google", "deepseek"])
 def test_a_review_packet_carries_a_museum_picture_to_every_family(tmp_path, family):
     entry = first_packet_entry(tmp_path, family, image_class="museum")

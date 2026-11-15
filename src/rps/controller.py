@@ -924,6 +924,29 @@ class Controller:
         )
         return spec, size
 
+    def _prefetch_pictures(self, route: RouteConfig, group: Sequence[tuple[TaskState, LineState, Any]]) -> None:
+        """Have the pictures of a group of calls fetched side by side before the calls are built, when the image
+        loader can do that (it has a `prefetch`). Only pictures the routing table allows for the route are asked
+        for. This step changes nothing but time: whatever goes wrong in it is left to the loader, which meets the
+        same picture again when the call is built and reports it there."""
+        prefetch = getattr(self.image_loader, "prefetch", None)
+        if prefetch is None or len(group) < 2:
+            return
+        try:
+            wanted = []
+            for task, line, _status in group:
+                if not line.image:
+                    continue
+                try:
+                    self.config.check_image_allowed(line.image_class, route.provider)
+                except ImageRoutingError:
+                    continue
+                wanted.append((self.config.source(task.source), line))
+            if len(wanted) > 1:
+                prefetch(wanted)
+        except Exception as error:  # a step that only saves time must never stop a pass
+            self._note_problem(f"pictures could not be fetched ahead ({type(error).__name__}: {redact(str(error))[:200]})")
+
     def _item_for(self, line: LineState, repair_of: str | None) -> Any:
         """The spec item a call is built from, and its rows are checked against: the line's own item, except for a
         call of the repair step, whose item holds the light a reviewer corrected as a given record (`rps.repair`)."""
@@ -1194,6 +1217,7 @@ class Controller:
         lines behind it in the same (route, purpose) wait with it. A call that could not fit even then is
         refused for good (`budget_refused`) and set aside for this run.
         """
+        self._prefetch_pictures(route, group)
         specs: list[CallSpec] = []
         sizes: dict[str, int | None] = {}
         retry_of: dict[str, str | None] = {}

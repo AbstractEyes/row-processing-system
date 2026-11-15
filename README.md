@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.4. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.5. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,15 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.5
+
+This release changes speed only: every call is built from the same picture and carries the same text.
+
+| Change | What happens now |
+|---|---|
+| The pictures of a group of calls are fetched side by side | On a runtime that holds no picture files, the fetching image loader fetched a missing picture when its call was built, one picture at a time, inside the pass. Before a group of calls is built the controller now hands the group's lines to the loader's `prefetch` (`rps.pictures.FetchingImageLoader.prefetch`, four at a time by default, each worker pausing after a fetch as the loader does), so the pictures are on the disk when the calls are built. Only pictures the routing table allows for the route are asked for. A picture that cannot be fetched ahead, or bytes that are not a picture, are left to the loader, which reports them for the call that needs them exactly as before; a loader without `prefetch` is used as before; a fetch ahead that fails as a whole is noted once and the pass goes on |
+| Version | `0.6.5`; the notebook installs @v0.6.5. The rule files, the rules version `f639f796fb9f` and the profile versions are unchanged from 0.6.3 |
 
 ## What changed in 0.6.4
 

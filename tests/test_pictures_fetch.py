@@ -173,3 +173,59 @@ def test_a_store_link_goes_on_to_a_web_link_and_one_over_the_limit_is_refused(wo
     manifest(world, "b", {"image": "coco/002.jpg", "urls": ["store:private/big.jpg"]})
     with pytest.raises(ImageError, match="larger than 100 bytes"):
         loader(world, Opener({}), max_bytes=100)(world.source, SimpleNamespace(image="coco/002.jpg"))
+
+
+def test_missing_pictures_are_fetched_ahead_side_by_side_and_the_loader_then_finds_them(world):
+    import threading
+    import time
+
+    names = [f"coco/{n:03d}.jpg" for n in range(1, 9)]
+    manifest(world, "a", *({"image": name, "urls": [f"https://x/{name}"]} for name in names))
+    lock = threading.Lock()
+    seen = {"now": 0, "most": 0, "asked": []}
+
+    def opener(url, *, timeout, max_bytes):
+        with lock:
+            seen["now"] += 1
+            seen["most"] = max(seen["most"], seen["now"])
+            seen["asked"].append(url)
+        time.sleep(0.05)
+        with lock:
+            seen["now"] -= 1
+        return 200, jpeg()
+
+    load = loader(world, opener)
+    (world.tmp / "images" / "coco").mkdir(parents=True)
+    (world.tmp / "images" / "coco" / "001.jpg").write_bytes(jpeg())  # one is on the disk already
+    items = [(world.source, SimpleNamespace(image=name)) for name in names + names[:3]]  # some asked for twice
+    items.append((world.source, SimpleNamespace(image=None)))  # a line without a picture
+    assert load.prefetch(items, workers=4) == 7
+    assert sorted(seen["asked"]) == [f"https://x/{name}" for name in names[1:]] and 1 < seen["most"] <= 4
+    for name in names:
+        assert load(world.source, SimpleNamespace(image=name))[2] == 40
+    assert len(seen["asked"]) == 7  # the loader fetched nothing again
+    assert load.prefetch(items) == 0 and len(seen["asked"]) == 7  # nothing is missing any more
+
+
+def test_a_picture_that_cannot_be_fetched_ahead_is_left_for_the_loader_to_report(world):
+    manifest(
+        world,
+        "a",
+        {"image": "coco/001.jpg", "urls": ["https://x/gone.jpg"]},
+        {"image": "coco/002.jpg", "urls": ["https://x/page.jpg"]},
+        {"image": "coco/003.jpg", "urls": ["https://x/3.jpg"]},
+    )
+    script = {"https://x/gone.jpg": [(404, b"")], "https://x/page.jpg": [(200, b"<html>not a picture</html>")], "https://x/3.jpg": [(200, jpeg())]}
+    load = loader(world, Opener(script))
+    lines = [SimpleNamespace(image=f"coco/00{n}.jpg") for n in (1, 2, 3)]
+    lines.append(SimpleNamespace(image="coco/004.jpg"))  # not in the manifest at all
+    assert load.prefetch([(world.source, line) for line in lines], workers=3) == 1
+    folder = world.tmp / "images" / "coco"
+    assert sorted(p.name for p in folder.iterdir()) == ["003.jpg"]  # nothing else was kept, no half-written file
+    with pytest.raises(ImageError, match="every link failed"):
+        load(world.source, lines[0])
+    with pytest.raises(ImageError, match="is not a picture that can be read"):
+        load(world.source, lines[1])
+    with pytest.raises(ImageError, match="has no link for it"):
+        load(world.source, lines[3])
+    assert load(world.source, lines[2])[2] == 40

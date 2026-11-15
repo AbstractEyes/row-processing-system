@@ -22,11 +22,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from . import layout
 from .images import ImageError, load_picture
@@ -36,6 +38,7 @@ MANIFEST_PREFIX = f"{layout.CONTROL_DIR}/pictures/"
 STORE_SCHEME = "store:"
 USER_AGENT = "row-processing-system"
 MANIFEST_REREAD_SECONDS = 60.0
+PREFETCH_WORKERS = 4  # how many missing pictures `prefetch` fetches side by side
 
 # An opener takes a link and returns (status, body); a network failure or a timeout is raised as OSError.
 Opener = Callable[..., "tuple[int, bytes]"]
@@ -80,6 +83,7 @@ class FetchingImageLoader:
         self._sleep = sleep
         self._manifest: dict[str, list[str]] = {}
         self._read_at: float | None = None
+        self._manifest_lock = threading.Lock()  # `prefetch` fetches from several threads; one reads the manifest
 
     # ------------------------------------------------------------ the loader
 
@@ -94,6 +98,46 @@ class FetchingImageLoader:
         except ImageError as error:
             target.unlink(missing_ok=True)  # what a link gave was not a picture: do not keep it
             raise ImageError(f"picture {line.image!r} was fetched but is not a picture that can be read ({error})") from None
+
+    def prefetch(self, items: Iterable[tuple[Any, Any]], *, workers: int = PREFETCH_WORKERS) -> int:
+        """Fetch the missing pictures of several lines side by side and keep them on the disk. Returns how many
+        were fetched.
+
+        The loader fetches a missing picture when it is asked for it, one picture at a time. Called with the
+        (source, line) pairs of a group of calls before they are built, this fetches the group's missing pictures
+        a few at a time, so that the loader then finds them on the disk. A picture that cannot be fetched here is
+        left alone: the loader meets it again for the call that needs it and reports it there, exactly as it does
+        without this step. Each worker pauses after a fetch as the loader does.
+        """
+        missing: dict[Path, tuple[str, Any]] = {}
+        for source, line in items:
+            image = getattr(line, "image", None)
+            if not image:
+                continue
+            folder = Path(source.images_dir) if source.images_dir else self.config.work_path("images")
+            target = folder / image
+            if target not in missing and not target.is_file():
+                missing[target] = (image, source)
+
+        def one(pair: tuple[Path, tuple[str, Any]]) -> bool:
+            target, (image, source) = pair
+            try:
+                self._fetch(image, target)
+                load_picture(target, source.image_size)
+            except ImageError:
+                # Not fetched, or what a link gave is not a picture: nothing is kept, and the loader goes through
+                # the same steps for the call that needs it and says what went wrong.
+                target.unlink(missing_ok=True)
+                return False
+            return True
+
+        if not missing:
+            return 0
+        count = min(max(1, int(workers)), len(missing))
+        if count < 2:
+            return sum(1 for pair in missing.items() if one(pair))
+        with ThreadPoolExecutor(max_workers=count, thread_name_prefix="rps-picture") as pool:
+            return sum(1 for fetched in pool.map(one, list(missing.items())) if fetched)
 
     # ------------------------------------------------------------ the manifest
 
@@ -118,11 +162,12 @@ class FetchingImageLoader:
         self._read_at = self._clock()
 
     def _links(self, image: str) -> list[str] | None:
-        if self._read_at is None:
-            self._read_manifest()
-        if image not in self._manifest and self._clock() - (self._read_at or 0.0) >= MANIFEST_REREAD_SECONDS:
-            self._read_manifest()
-        return self._manifest.get(image)
+        with self._manifest_lock:
+            if self._read_at is None:
+                self._read_manifest()
+            if image not in self._manifest and self._clock() - (self._read_at or 0.0) >= MANIFEST_REREAD_SECONDS:
+                self._read_manifest()
+            return self._manifest.get(image)
 
     # ------------------------------------------------------------ fetching
 
