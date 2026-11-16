@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "ef18554724a0"
+TODAYS_VERSION = "4e18dd58ee74"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -180,9 +180,10 @@ def test_the_form_examples_of_the_prompt_agree_with_the_checks(profile):
     assert "eye level" not in "an eye-level view"  # why the value is copied as the thought spells it
     # the kinds are named by what each key asks for, never as a list of keys to ask; a recorded key is no chain key
     assert "shot framing a framing" not in system and "a framing for shot framing" in system
-    if profile == "default":  # the default prompt looks back at the written records; the OpenAI profile picks the key first
-        assert "its key must be absent from every record above, your own included" in system
-        assert "if shot framing is among the records" not in system
+    if profile == "default":  # the default prompt picks the key first and shows its value coming from a thought
+        assert "Pick the chain key before you add records of your own, keep that key out of your records" in system
+        assert "look back" not in system and "if shot framing is among the records" not in system
+        assert "seen at eye level" not in system  # no worked pair of real words to copy into every row
     else:
         assert "if shot framing is among the records, the chain question cannot be shot framing" in system
     held = {"id": "r", "spec": {"shot": {"framing": "wide"}}, "questions": [{"key": "shot framing", "needs": "chain", "value": "wide"}]}
@@ -216,6 +217,7 @@ RECORD_EXAMPLES = (
     ("form palette", "muted earth tones", False),
     ("form palette", "red and gold", True),
     ("form palette", "red yellow white", False),
+    ("form palette", "yellow and brown", False),
     ("thing state", "worn", True),
     ("thing state", "worn and weathered", False),
     ("thing position", "center", True),
@@ -228,6 +230,7 @@ RECORD_EXAMPLES = (
     *(("mood feeling", feeling, False) for feeling in ("solemn", "pensive", "quiet")),
     ("thing colour", "grey", True),
     ("thing colour", "gray", False),
+    ("thing colour", "grey and black", False),
     ("form medium", "watercolour", True),
     ("form medium", "watercolor", False),
     ("body pose", "reaching", True),
@@ -284,17 +287,128 @@ def test_the_short_record_examples_keep_the_margin_the_prompt_asks_for():
             words = value.split()
             joined = key == "form palette" and len(words) == 3 and words[1] == "and"
             assert len(value) <= SHORT_RECORD_TARGET and (len(words) <= 2 or joined), (key, value)
-    assert "a short value of 12 bytes or fewer, as a rule two short words (two colors may be joined by and)" in system
+    assert "a short value of 12 bytes or fewer, as a rule two short words (form palette alone may join two colors by and)" in system
+    # the palette's two colors must fit; a color record holds one listed color, whatever its system
+    assert "form palette = red and gold, never yellow and brown (16 bytes: name one color)" in system
+    assert len("yellow and brown") == 16 > tp.REC_MAX - len("form palette")
+    assert "A color record (thing colour, wear colour) holds one listed color: grey, never grey and black" in system
+    assert "thing colour" in tp.KEY_LIST and tp.KEY_LIST["thing colour"] == tp.KEY_LIST["wear colour"]
     # the limits the prompt states for the five open records are the validator's
     for key, limit in (("story before", 15), ("story after", 16), ("story cause", 16), ("form palette", 15), ("thing state", 16)):
         assert tp.REC_MAX - len(key) == limit
     assert tp.REC_MAX - len("thing position") == 13 and "thing position leaves 13 bytes for its value" in system
     # the feelings offered for a grave or still picture are printed values; the words named as no feelings are not
     assert "solemn, pensive and quiet are no feelings" in system
-    # the chain sentence names one key as its example and no list of keys to ask
-    chain = next(line for line in system.splitlines() if "look back before you write a chain question" in line)
-    sentence = chain[chain.index("The questions come after the records"):].split(". ")[0]
-    assert [key for key in tp.keys() if key in sentence] == ["shot framing"]
+    # the chain sentence plans the key first, says where its value comes from, and names no key and no value of its own
+    chain = next(line for line in system.splitlines() if line.startswith('- needs "chain"'))
+    sentence = chain[chain.index("Pick the chain key"):].split(". ")[0]
+    assert sentence == (
+        "Pick the chain key before you add records of your own, keep that key out of your records, "
+        "and write its value into a thought in the very words the question will copy"
+    )
+    assert [key for key in tp.keys() if key in sentence] == []
+
+
+def _deep_example_row():
+    """The package's own deep example row, as the assessor reads it, with the item it was written for."""
+    from rps.rules import form
+
+    example = next(e for e in pool.examples() if e["name"] == "painting_deep")
+    item = example["item"]
+    return item, form.to_row(copy.deepcopy(example["output"]["rows"][-1]), item, "test-model")
+
+
+def _with_chain(row, key, value, thought=None):
+    """The row with its chain question asking `key` = `value`, and one thought rewritten when `thought` is given."""
+    row = copy.deepcopy(row)
+    chain = next(q for q in row["questions"] if q["needs"] == "chain")
+    chain.update(key=key, value=value)
+    if thought is not None:
+        row["thoughts"][0]["text"] = thought
+    return row
+
+
+def test_a_chain_value_a_thought_states_passes_the_checks_and_a_list_word_no_thought_states_fails():
+    """The checker's behavior behind the chain sentence, on the package's own example row: the value must come from a thought."""
+    from thought_seeds.core import HELD, tp
+
+    from rps.assessor import reading_checks, review_checks
+    from rps.assessor.validator import validate_row
+
+    printed = tp.lists_for(HELD, "train")[tp.KEY_LIST["shot angle"]]
+    assert "eye level" in printed and "frontal" in printed  # both sides are list words; only one is in a thought
+    item, row = _deep_example_row()
+    assert "shot" in row["spec"] and "angle" not in row["spec"]["shot"]  # the key is kept out of the records
+    thought = f"{row['thoughts'][0]['text'].rstrip('.')}, seen at eye level."
+
+    def rule_four(r):
+        return [p.message for p in validate_row(r) if p.code == "rule_4"]
+
+    right = _with_chain(row, "shot angle", "eye level", thought)
+    assert rule_four(right) == []
+    assert reading_checks.chain_kind_check(right) == [] and review_checks.chain_held_key_check(right) == []
+    assert "frontal" not in " ".join(t["text"] for t in right["thoughts"]).lower()
+    wrong = _with_chain(row, "shot angle", "frontal", thought)
+    assert rule_four(wrong) == ["chain question 'shot angle' = 'frontal': the thoughts never state the value"]
+    # the value is copied from the thought: without the thought, the right value fails too
+    assert rule_four(_with_chain(row, "shot angle", "eye level")) != []
+    # and a key the row records is no chain key
+    recorded = copy.deepcopy(right)
+    recorded["spec"]["shot"]["angle"] = "eye level"
+    assert [p.code for p in review_checks.chain_held_key_check(recorded)] == ["question_held_key"]
+
+
+# the position prose the default prompt gives as wrong on a print or a drawing, and its right form
+SURFACE_NEVER = ("the center of the sheet", "the center of the page", "the center of the paper", "the center of a pale sheet")
+SURFACE_SAID = ('"the center of the sheet"', '"of the page"', '"of the paper"', '"of a pale sheet"')
+
+
+def test_the_position_prose_on_a_sheet_is_judged_by_the_position_check_as_the_prompt_says():
+    from rps.assessor import review_checks
+
+    system = base_rules().system
+    line = next(l for l in system.splitlines() if "On a print or a drawing call the sheet the frame" in l)
+    for said in SURFACE_SAID:
+        assert said in line, said
+    _, row = _deep_example_row()
+    row["spec"].setdefault("thing", {})["position"] = "center"  # the check reads prose only on a row with a position record
+
+    def judged(text):
+        r = copy.deepcopy(row)
+        r["thoughts"][0]["text"] = f"A small print sits {text}."
+        return [p.code for p in review_checks.position_as_place_check(r)]
+
+    for wrong in SURFACE_NEVER:
+        assert judged(wrong) == ["position_as_place"], wrong
+    assert judged("at the center of the frame") == []
+
+
+def test_the_medium_tag_pair_of_the_default_prompt_is_judged_by_the_sealed_rule_as_the_prompt_says():
+    from thought_seeds.core import HELD, tp
+
+    from rps import assessor
+    from rps.assessor.validator import validate_row
+
+    system = base_rules().system
+    assert "the medium (a sealed word is no tag: an etching is tagged traditional media, never etching)" in system
+    sealed = tp.sealed_all(HELD)
+    assert "etching" in sealed and "traditional media" not in sealed and not set("traditional media".split()) & sealed
+    item, row = _deep_example_row()
+
+    def tagged(tag):
+        r = copy.deepcopy(row)
+        r["wordings"]["tags"] = f"{r['wordings']['tags']}, {tag}"
+        return r
+
+    def rule_seven(r):
+        return [p.message for p in validate_row(r) if p.code == "rule_7"]
+
+    assert rule_seven(row) == []
+    assert rule_seven(tagged("etching")) == ["a training row's tags carry sealed values: ['etching'] (prose may say the word; the tag list is a layout)"]
+    assert rule_seven(tagged("traditional media")) == []
+    # no other check of the row refuses or flags the right tag
+    before = {p.code for p in assessor.check_row(row, item)}
+    assert {p.code for p in assessor.check_row(tagged("traditional media"), item)} == before
 
 
 UNKNOWN_HEAD = "When the unknown key is one of these, the checker refuses these words anywhere in the row: "

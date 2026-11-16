@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.13. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.14. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,20 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.14
+
+Four places of the default writer prompt are reworded, where sentences of 0.6.13 were read in a way they did not mean. No rule changes, the checker is unchanged, and the provider profiles and the retry text are unchanged.
+
+| Change | What happens now |
+|---|---|
+| The chain question's key | 0.6.13 asked for a look back at the records when the question is written. A chain value must be stated word for word in a thought, and the thoughts come before the questions, so a key chosen that late has no value in them. The prompt again asks for the chain key to be picked before the writer adds records of its own and kept out of them, and now also that its value be written into a thought in the very words the question will copy. The sentence names no key and no value of its own (a pair of real words would be copied into many rows); the bullet's existing example of copying a value as the thought spells it carries on |
+| The position prose on a print or a drawing | The never-examples of "center of" gain the surface of a work on paper: "the center of the sheet", "of the page", "of the paper" and "of a pale sheet" (an adjective between), beside the right form "at the center of the frame" |
+| One color in a color record; a palette that fits | The clause that let two colors be joined by "and" now names `form palette` alone; `form palette` = red and gold, never yellow and brown (16 bytes, over the palette's 15); a color record (`thing colour`, `wear colour`) holds one listed color (grey, never grey and black), and a second color goes in the thoughts and tags |
+| A sealed word is no tag | The tags sentence asks for the medium and now says that a sealed word is not tagged: an etching is tagged traditional media, never etching |
+| A test of the examples | The table of the prompt's own examples gains the new records (right ones pass the record rule and lists and hold no sealed word; wrong ones fail). The checker's chain behavior is tested on the package's own deep example row: a value a thought states passes rule 4, `chain_kind` and `question_held_key`, and a list word no thought states fails rule 4. The position never-examples are refused by the position check and the right form is not. The wrong medium tag is refused by rule 7, and the right one is refused or flagged by no check |
+| The rules version is new | `4e18dd58ee74` (it was `ef18554724a0` in 0.6.13). A review seat started on this release answers packets made under the earlier version only when its `also_brief_versions` names `ef18554724a0`. Install between runs, with no call in flight. The profile versions are unchanged: OpenAI `6540598d25c1`, DeepSeek `4d5fd18c6158`, Gemini `08caa7631cf0` |
+| Version | `0.6.14`; the notebook installs @v0.6.14 |
 
 ## What changed in 0.6.13
 
