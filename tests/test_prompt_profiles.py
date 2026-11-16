@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "5e67c03d4cd8"
+TODAYS_VERSION = "2403fba47e16"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -178,6 +178,19 @@ def test_the_form_examples_of_the_prompt_agree_with_the_checks(profile):
     for right in ("eye level", "high angle", "eye-level view"):
         assert angle.search(right)
     assert "eye level" not in "an eye-level view"  # why the value is copied as the thought spells it
+    # the kinds are named by what each key asks for, never as a list of keys to ask; a recorded key is no chain key
+    assert "shot framing a framing" not in system and "a framing for shot framing" in system
+    assert "if shot framing is among the records, the chain question cannot be shot framing" in system
+    held = {"id": "r", "spec": {"shot": {"framing": "wide"}}, "questions": [{"key": "shot framing", "needs": "chain", "value": "wide"}]}
+    assert [p.code for p in review_checks.chain_held_key_check(held)] == ["question_held_key"]
+    # a series of quotations keeps every comma outside its closing mark
+    from rps.assessor import shown_text
+
+    raw = rules_of(profile).system
+    right, wrong = '"OPEN", "24 HOURS" and "EXIT"', '"OPEN," "24 HOURS," and "EXIT"'
+    assert f"In a series every comma stays outside its closing mark: {right}, never {wrong}." in raw
+    say = lambda text: {"thoughts": [{"step": "say", "text": f"The sign reads {text}."}], "wordings": {}}  # noqa: E731
+    assert shown_text.comma_quotes(say(right)) == [] and shown_text.comma_quotes(say(wrong)) == ["OPEN,", "24 HOURS,"]
     # the deep counts the prompt repeats are the validator's
     assert tp.COUNTS["deep"]["records"][0] == 14 and tp.COUNTS["deep"]["thoughts"][1] == 10 and tp.COUNTS["deep"]["questions"] == (5, 8)
 

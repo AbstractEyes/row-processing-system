@@ -48,6 +48,18 @@ TEXT_RULE = (
     "is described as such, without the name; brand names and place names may be quoted. A picture that shows no text gets no \"say\" "
     "thought for text."
 )
+# 0.6.12: the default prompt and the OpenAI profile follow the quoting sentence with a series of quotations
+QUOTE_SERIES_RULE = 'In a series every comma stays outside its closing mark: "OPEN", "24 HOURS" and "EXIT", never "OPEN," "24 HOURS," and "EXIT".'
+SERIES_PROMPTS = ("default", "openai")
+
+
+def text_rule(name):
+    """The rule on shown text as the named prompt words it (with the series of quotations where the prompt has it)."""
+    if name in SERIES_PROMPTS:
+        return TEXT_RULE.replace(QUOTE_MARKS_RULE, QUOTE_MARKS_RULE + " " + QUOTE_SERIES_RULE)
+    return TEXT_RULE
+
+
 REASON_CODES = (
     "gloss", "invented", "hint_copy", "contradicts_picture", "should_skip", "person", "minor", "real_name", "mood", "voice", "relation",
     "record_missing", "genre", "wording", "garment", "padding", "stock", "question", "advice", "other",
@@ -89,8 +101,9 @@ def found(row, item=None, severity=None):
 @pytest.mark.parametrize("name", sorted(PROMPTS))
 def test_every_writer_prompt_tells_a_writer_with_the_picture_to_read_the_text_it_shows(name):
     text = PROMPTS[name].read_text(encoding="utf-8")
-    assert text.count(TEXT_RULE) == 1 and TEMPLATES[name].read_text(encoding="utf-8").count(TEXT_RULE) == 1
-    assert text.index("WHEN THE PICTURE IS ATTACHED") < text.index(TEXT_RULE) < text.index("These stay as they are")
+    rule = text_rule(name)
+    assert text.count(rule) == 1 and TEMPLATES[name].read_text(encoding="utf-8").count(rule) == 1
+    assert text.index("WHEN THE PICTURE IS ATTACHED") < text.index(rule) < text.index("These stay as they are")
     # a brand may now be quoted, so only a person's name stays out of what is copied from writing in the picture
     assert "never copy a person's name from writing in the picture" in text
     assert "never copy a name or a brand" not in text

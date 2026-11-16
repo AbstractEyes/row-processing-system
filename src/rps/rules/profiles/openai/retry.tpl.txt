@@ -8,7 +8,7 @@ A replacement that mends these faults and makes a new one is refused too. Before
 - spec_kept: every supplied record exactly as supplied, and no thing record for another object.
 - rule_3: records plus relations 14-30, thoughts 6-10, questions 5-8 for deep.
 - rule_2, rule_7: each key and value together at most 27 bytes; values from S12's lists; no sealed value in a record or a tag; no invented key.
-- rule_4, question_value, chain_kind, question_held_key: the chain key is one the row does not record; its value is at most 3 words, of the key's kind, copied letter for letter from a thought.
+- rule_4, question_value, chain_kind, question_held_key: the chain key is one the row does not record (if shot framing is recorded, the chain key is not shot framing); its value is at most 3 words, of the key's kind, copied letter for letter from a thought.
 - unknown_stated: no word in the row answers the unknown question.
 - position_as_place, relation_side, spec_talk: after center of or middle of only the frame or the picture; no to its left or to his right anywhere; no record key written as words.
 

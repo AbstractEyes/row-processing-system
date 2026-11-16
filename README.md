@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.11. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.12. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,17 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.12
+
+Two sentences of the writer prompts are reworded, in the default prompt and in the OpenAI profile. Both changes concern how a sentence was read, not what the rules are: no rule changes and the checker is unchanged.
+
+| Change | What happens now |
+|---|---|
+| The chain question's key | 0.6.11 named the kind of answer each of five keys asks for ("shot framing a framing, shot angle an angle, ..."). That sentence read as a list of keys to ask, and a deep row usually records some of those keys, so the chain question asked for a key the row already held (`question_held_key`, and `rule_4` "is a record of the spec"). The prompts now say to pick the chain key before adding records of one's own and to keep that key out of the records ("if shot framing is among the records, the chain question cannot be shot framing"), and name each kind by its key the other way round ("a framing for shot framing, an angle for shot angle, ..."), for whatever key is asked. In the default prompt the first sentence joins the bullet that already says a chain key is one the row holds no record for. The OpenAI retry block's line on the chain key says the same |
+| A series of quotations | Series of quoted words were written with the commas inside the closing marks (`quote_comma`). Beside the rule that keeps a sentence's punctuation outside the quotes, the prompts now show a series: `"OPEN", "24 HOURS" and "EXIT"`, never `"OPEN," "24 HOURS," and "EXIT"`. A test checks both forms against the checker |
+| The rules version is new | `2403fba47e16` (it was `5e67c03d4cd8` in 0.6.11). The review brief's text is unchanged, but its version is the rules version: a review seat started on this release answers packets made under the earlier version only when its `also_brief_versions` names `5e67c03d4cd8`. A seat that does not name it skips such a packet and says so in its own log and status only: nothing is written to the store, the controller does not take the packet back from a seat that is switched on, and the packet's rows wait until the seat is started with the earlier version named. Rows of a batch that was sent under one rules version and collected under the next are labelled with the version at collection, so install between runs, with no call in flight. The profile versions: OpenAI `6540598d25c1` (it was `a5f837b703a8`); DeepSeek `4d5fd18c6158` and Gemini `08caa7631cf0` unchanged |
+| Version | `0.6.12`; the notebook installs @v0.6.12 |
 
 ## What changed in 0.6.11
 
