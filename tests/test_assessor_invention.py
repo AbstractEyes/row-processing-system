@@ -315,9 +315,12 @@ def test_every_person_tag_the_writers_are_told_to_use_passes_the_tag_checks():
         row = _row(spec={"person": {"count": "2"}}, tags=f"{tag}, red kayak")
         found = {p.code for p in rd.person_tag_check(row) + rv.tag_booru_check(row)}
         assert not found & {"tag_person", "tag_booru"}, tag
-    for profile in ("openai", "deepseek"):
-        text = (Path(pool.__file__).parent / "profiles" / profile / "writer_system.md").read_text(encoding="utf-8")
-        assert "one tag must name the person" in text and "multiple others" in text
+    rules_dir = Path(pool.__file__).parent
+    prompts = {"default": rules_dir / "writer_system.md"}
+    prompts.update({profile: rules_dir / "profiles" / profile / "writer_system.md" for profile in ("openai", "deepseek", "gemini")})
+    for profile, path in prompts.items():  # the default prompt is the one a route without a profile gets
+        text = path.read_text(encoding="utf-8")
+        assert "one tag must name the person" in text and "multiple others" in text, profile
         for tag in ("1girl", "1boy", "1other", "2girls", "2boys", "multiple girls", "multiple boys"):
             assert tag in text, (profile, tag)
 

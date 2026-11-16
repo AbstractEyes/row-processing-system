@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.8. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.9. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,16 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.9
+
+0.6.8 put the sentence on person tags into the OpenAI and DeepSeek prompt profiles. A route gets a profile only when its configuration names one; a route without a `profile` gets the default prompt, and that prompt still carried the old sentence. This release changes the default prompt, so it changes the rules version.
+
+| Change | What happens now |
+|---|---|
+| The default prompt says that a person tag is required | `templates/writer_system.tpl.md` (compiled to `writer_system.md`) carries the sentence of the 0.6.8 profiles: when the records hold a person, one tag must name the person, with each form (`1girl`, `1boy`, `1other`, the plurals, `multiple others` where no gender is recorded) and never a gender the records do not hold. The Gemini profile carries it too, so every prompt of the package now says the same |
+| The rules version is new | `f7e9e8ed296b` (it was `f639f796fb9f` from 0.6.3 to 0.6.8). The review brief's text is unchanged, but its version is the rules version: a review seat started on this release answers packets made under the earlier version only when its `also_brief_versions` names `f639f796fb9f`. A seat that does not name it skips such a packet and says so in its own log and status only: nothing is written to the store, the controller does not take the packet back from a seat that is switched on, and the packet's rows wait until the seat is started with the earlier version named. Rows of a batch that was sent under one rules version and collected under the next are labelled with the version at collection, so install between runs, with no call in flight. The profile versions: OpenAI `09fe4c3e53bb` and DeepSeek `4d5fd18c6158` as in 0.6.8, Gemini `08caa7631cf0` |
+| Version | `0.6.9`; the notebook installs @v0.6.9 |
 
 ## What changed in 0.6.8
 
