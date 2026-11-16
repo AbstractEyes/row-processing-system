@@ -76,7 +76,7 @@ def person_tag_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     has_person = bool(spec.get("person"))
     out: list[Problem] = []
     if has_person and not any(PERSON_TAGS.match(t.replace(" ", "") if t[:1].isdigit() else t) for t in tags):
-        out.append(Problem("tag_person", _rid(row), "a person is recorded but no tag names the person; add 1girl, 1boy or 1other (or 2girls, multiple boys and the like)"))
+        out.append(Problem("tag_person", _rid(row), "a person is recorded but no tag names the person; add 1girl or 1boy for a recorded woman or man, 1other when no gender is recorded (2girls, multiple boys or multiple others for more than one)"))
     if "solo" in tags and not has_person:
         out.append(Problem("tag_solo", _rid(row), "the tag 'solo' is for a picture of one person; none is recorded, so remove 'solo'"))
     return out

@@ -256,6 +256,72 @@ def test_a_thought_that_repeats_a_hint_sentence_is_an_error():
     assert "thought_hint_copy" not in {c for c, _ in codes(assessor.check_row(own, item))}
 
 
+HINT_DESK = "A cat sitting on the floor, there is a laptop in front of the cat, behind the cat there is a bottle. A wire hangs at the top right corner. A cloth lies at the top left."
+DESK_SPEC = {"thing": {"name": "laptop"}, "relation": [{"a": "laptop", "rel": "in front of", "b": "cat"}, {"a": "bottle", "rel": "behind", "b": "cat"}]}
+
+
+def test_a_sentence_made_of_the_rows_records_is_no_copy_of_the_hint():
+    """A row has to state its records and relations, and the hint they were taken from states them too."""
+    item = {"kind": "single", "hint": HINT_DESK, "spec": {}}
+    sentence = "The laptop is in front of the cat, while a bottle sits behind it."
+    stated = _row(spec=copy.deepcopy(DESK_SPEC), thoughts=[("relate", sentence)])
+    found = codes(assessor.check_row(stated, item))
+    assert ("thought_hint_copy", FLAG) in found and ("thought_hint_copy", ERROR) not in found  # flagged for a reader, not refused
+    # the same sentence on a row whose records hold none of its words is the hint's sentence again
+    bare = _row(spec={"scene": {"setting": "room"}}, thoughts=[("relate", sentence)])
+    assert ("thought_hint_copy", ERROR) in codes(assessor.check_row(bare, item))
+
+
+def test_the_writers_own_words_are_still_measured_beside_the_records():
+    """Record values aside, four words or more with seven in ten from one hint sentence is a copy, as before."""
+    item = {"kind": "single", "hint": HINT_DESK, "spec": {}}
+    carried = _row(spec=copy.deepcopy(DESK_SPEC), thoughts=[("see", "A wire hangs at the top right corner beside the laptop.")])
+    assert ("thought_hint_copy", ERROR) in codes(assessor.check_row(carried, item))
+
+
+def test_a_flagged_sentence_does_not_hide_a_copy_further_on():
+    """Every sentence is read: the records said again first, the hint's sentence after it, in one thought or in two."""
+    item = {"kind": "single", "hint": HINT_DESK, "spec": {}}
+    stated, copied = "The laptop is in front of the cat, while a bottle sits behind it.", "A wire hangs at the top right corner."
+    one = _row(spec=copy.deepcopy(DESK_SPEC), thoughts=[("relate", f"{stated} {copied}")])
+    two = _row(spec=copy.deepcopy(DESK_SPEC), thoughts=[("relate", stated), ("see", copied)])
+    for row in (one, two):
+        found = codes(assessor.check_row(row, item))
+        assert ("thought_hint_copy", ERROR) in found and ("thought_hint_copy", FLAG) not in found
+
+
+def test_a_hint_sentence_taken_over_as_it_stands_is_an_error_whatever_the_records_hold():
+    """Ten words in a row as the hint has them are the hint's sentence, not the records said again."""
+    hint = "A woman in a red coat walks along a wet street under grey sky. A tram waits at the far corner."
+    item = {"kind": "single", "hint": hint, "spec": {}}
+    spec = {"person": {"gender": "woman"}, "outer": {"name": "coat", "colour": "red"}, "scene": {"setting": "street", "weather": "wet grey sky"}}
+    lifted = _row(spec=copy.deepcopy(spec), thoughts=[("see", "A woman in a red coat walks along a wet street under grey sky.")])
+    assert ("thought_hint_copy", ERROR) in codes(assessor.check_row(lifted, item))
+    # the same records said in the writer's own order are flagged for a reader, not refused
+    said = _row(spec=copy.deepcopy(spec), thoughts=[("see", "Under a grey sky the wet street carries one woman, her coat red.")])
+    found = codes(assessor.check_row(said, item))
+    assert ("thought_hint_copy", ERROR) not in found
+    assert ic.HINT_RUN == 10
+
+
+def test_every_person_tag_the_writers_are_told_to_use_passes_the_tag_checks():
+    """The two live writer profiles name the person tags a row needs, and the checker takes each of them."""
+    from pathlib import Path
+
+    from rps import rules as pool
+    from rps.assessor import review_checks as rv
+
+    for tag in ("1girl", "1boy", "1other", "2girls", "2boys", "multiple girls", "multiple boys", "multiple others"):
+        row = _row(spec={"person": {"count": "2"}}, tags=f"{tag}, red kayak")
+        found = {p.code for p in rd.person_tag_check(row) + rv.tag_booru_check(row)}
+        assert not found & {"tag_person", "tag_booru"}, tag
+    for profile in ("openai", "deepseek"):
+        text = (Path(pool.__file__).parent / "profiles" / profile / "writer_system.md").read_text(encoding="utf-8")
+        assert "one tag must name the person" in text and "multiple others" in text
+        for tag in ("1girl", "1boy", "1other", "2girls", "2boys", "multiple girls", "multiple boys"):
+            assert tag in text, (profile, tag)
+
+
 def test_a_caption_that_compresses_a_one_sentence_hint_is_a_flag():
     item = {"kind": "single", "hint": "A heron stands in the shallows beside a red kayak.", "spec": {}}
     row = _row(caption="A heron stands in the shallows beside a red kayak.")

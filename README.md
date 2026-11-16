@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.7. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.8. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,18 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.8
+
+This release is about rows the checker refuses for a reason the writer was never plainly told, or could not avoid. Measured on one day of production: the checker refused about half of the rows written, and a missing person tag alone was the only fault on one refused row in seven.
+
+| Change | What happens now |
+|---|---|
+| The writers are told that a person tag is required | The OpenAI and DeepSeek prompt profiles said that `1girl`, `1boy`, `1other` and `solo` may be used "only when person records agree", which reads as a caution, while the checker (`tag_person`) refuses a row with a recorded person and no tag that names the person. The profiles now state the requirement and each form: `1girl` for one recorded woman or girl, `1boy` for one recorded man or boy, `1other` for one person with no recorded gender; `2girls`, `2boys`, `multiple girls` or `multiple boys` for more than one of a recorded gender, `multiple others` where none is recorded; never a gender the records do not hold |
+| The OpenAI profile names the two wordings the checker refuses most after that | A side given from a person's or a thing's own point of view ("to his right", "to its left", "to the woman's left": `relation_side`), with the wordings to use instead; and a position record read as a place in the scene ("the center of the table", "the middle of the road": `position_as_place`), with "at the center of the frame" as the wording for a recorded centre |
+| A sentence made of the row's own records is no copy of the hint | `thought_hint_copy` measured a thought's sentence against the hint's sentences with every content word counted. A row has to state its records and its relations, and the hint they were taken from states them too, so a short sentence that only states a relation ("The laptop is in front of the cat, while a bottle sits behind it.") was refused on every attempt. The error is now measured on the words the writer chose: the sentence's content words without the values of the row's records, four or more of them, seven in ten from one hint sentence. A sentence that matches only when the record values are counted is refused when it takes over ten words in a row as the hint has them (the hint's sentence itself: `HINT_RUN`, the run of `hint_copy_check`), and is otherwise flagged for a reader and no longer refused. Every sentence of every thought is read, so a flagged sentence does not hide a copy further on. On rows written with a picture in view the finding was a flag already and stays one |
+| The checker's line on a missing person tag names the form for each case | `tag_person` told the writer to "add 1girl, 1boy or 1other". On rows with no recorded gender a quarter of the rewrites then carried `1boy` or `1girl`, a gender no record holds. The line now says `1girl` or `1boy` for a recorded woman or man, `1other` when no gender is recorded, and the plural forms |
+| Version | `0.6.8`; the notebook installs @v0.6.8. The rules version `f639f796fb9f`, the default prompt, the Gemini profile and the review brief are unchanged; the OpenAI profile is `09fe4c3e53bb` and the DeepSeek profile `4d5fd18c6158`. The default prompt and the Gemini profile keep the older wording on person tags until the rules version next changes |
 
 ## What changed in 0.6.7
 

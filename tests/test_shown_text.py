@@ -347,13 +347,18 @@ def hint_findings(row, item=ITEM):
 
 def test_words_the_row_and_the_hint_both_quote_do_not_count_toward_hint_copying():
     says = ("say", 'The sign reads "NO PARKING ANY TIME".')
-    assert hint_findings(_row(says, picture=False)) == {("thought_hint_copy", ERROR)}  # a text row: every word counts, as before
+    # a text row: the quoted words count as before; the sign is the row's recorded thing, so three words are the writer's own
+    # and the sentence is flagged for a reader, not refused
+    assert hint_findings(_row(says, picture=False)) == {("thought_hint_copy", FLAG)}
     assert hint_findings(_row(says)) == set()
     own = ("say", 'Black capitals spell "NO PARKING ANY TIME" across the board.')
     assert hint_findings(_row(own)) == set() and hint_findings(_row(own, picture=False)) == set()
     # a hint that quotes in single quotes is read the same way
     single = dict(ITEM, hint=HINT.replace('"', "'"))
-    assert hint_findings(_row(says), single) == set() and hint_findings(_row(says, picture=False), single) == {("thought_hint_copy", ERROR)}
+    assert hint_findings(_row(says), single) == set() and hint_findings(_row(says, picture=False), single) == {("thought_hint_copy", FLAG)}
+    # with five words of the writer's own from the hint's sentence, the text row is refused as before
+    more = ("see", "Black text is attached to a gray pole beside a road.")
+    assert hint_findings(_row(more, picture=False)) >= {("thought_hint_copy", ERROR)}
 
 
 def test_a_run_of_ten_words_that_is_all_quoted_text_is_not_a_copied_run():

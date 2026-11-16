@@ -396,21 +396,56 @@ def hint_order_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
     return []
 
 
+HINT_RUN = 10  # words in a row, as they stand in the hint, that make a sentence the hint's own (the run of `hint_copy_check`)
+
+
+def _run_tokens(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
 def thought_hint_copy_check(row: Mapping[str, Any], item: Any = None) -> list[Problem]:
-    """A thought sentence that is mostly one hint sentence's content words (error), or a caption that compresses a one-sentence hint (flag)."""
-    hint = _sentences(_hint(item))
+    """A thought sentence that is mostly one hint sentence's content words (error), or a caption that compresses a one-sentence hint (flag).
+
+    A row has to state its records and its relations, and the hint they were taken from states them too. So the
+    error is measured on the words the writer chose: the sentence's content words without the values of the row's
+    records, four or more of them, seven in ten from one hint sentence. A sentence that is the hint's only when the
+    record values are counted is an error when it takes over a run of `HINT_RUN` words of the hint as they stand (the
+    hint's sentence itself, not the records said again), and is otherwise flagged for a reader, not refused. Every
+    sentence is read: a flagged sentence does not hide a copy further on.
+    """
+    hint_text = _hint(item)
+    hint = _sentences(hint_text)
     if not hint:
         return []
     hint_sets = [_content(s) for s in hint]
+    recorded = {_stem(w) for value in _spec_values(row) for w in _words(str(value))}
+    hint_tokens = _run_tokens(hint_text)
+    runs = {tuple(hint_tokens[i : i + HINT_RUN]) for i in range(len(hint_tokens) - HINT_RUN + 1)}
+
+    def taken(words: set[str]) -> bool:
+        return len(words) >= 4 and max(len(words & h) for h in hint_sets) / len(words) >= 0.7
+
+    def lifted(sentence: str) -> bool:
+        tokens = _run_tokens(sentence)
+        return any(tuple(tokens[i : i + HINT_RUN]) in runs for i in range(len(tokens) - HINT_RUN + 1))
+
     out: list[Problem] = []
+    flagged: Problem | None = None
     for index, (_, text) in enumerate(_thoughts(row), 1):
         for sentence in _sentences(text):
             words = _content(sentence)
-            if len(words) >= 4 and max(len(words & h) for h in hint_sets) / len(words) >= 0.7:
-                out.append(Problem("thought_hint_copy", _rid(row), f"thought {index} repeats one of the hint's sentences; say what the picture shows in your own words, or what it means"))
+            if not taken(words):
+                continue
+            message = f"thought {index} repeats one of the hint's sentences; say what the picture shows in your own words, or what it means"
+            if taken(words - recorded) or lifted(sentence):
+                out.append(Problem("thought_hint_copy", _rid(row), message))
                 break
+            if flagged is None:
+                flagged = Problem("thought_hint_copy", _rid(row), message + " (the words it shares are mostly this row's own records, so it is flagged, not refused)", FLAG)
         if out:
             break
+    if not out and flagged is not None:
+        out.append(flagged)
     caption = _content(str(_wordings(row).get("caption") or ""))
     if len(hint) == 1 and len(caption) >= 6 and len(caption & hint_sets[0]) / len(caption) >= 0.8:
         out.append(Problem("caption_compresses_hint", _rid(row), "the caption compresses the hint's one sentence; describe the picture in your own words", FLAG))
