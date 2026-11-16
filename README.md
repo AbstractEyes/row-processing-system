@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.10. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.11. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,18 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.11
+
+This release is about deep rows the checker refuses for a fault of form: rules the prompts stated loosely or not at all. The default prompt and the OpenAI profile now state those rules in terms a writer can act on, each with a short right-and-wrong pair; no rule is weakened and the checker is unchanged. This release changes the default prompt, so it changes the rules version.
+
+| Change | What happens now |
+|---|---|
+| The default prompt and the OpenAI profile state the rules behind the frequent refusals | `templates/writer_system.tpl.md` (compiled to `writer_system.md`, the prompt of every route that names no `profile`) and `profiles/openai` carry the same sentences, each placed where the prompt speaks of its subject. The default prompt also takes two the OpenAI profile already had: a recorded centre is written "at the center of the frame" or "in the middle of the picture", and a side named from a thing's own point of view ("to its left", "to the woman's left") can flip, so the reference thing or the frame's side is named instead. Records: a row holds one set of thing records, so the supplied thing keeps its name, count, colour and position and another object gets no thing records (`spec_kept`); the keys with open values are listed (filled from the validator by the new `{{OPEN_KEYS}}` placeholder of `rps.rules.compile`), and no other key exists; the 27 bytes of key and value are counted with the key's space (`story before = rain fell`, not `story before = cups were filled`); the closed lists are complete (`rule_2`). Counts: a deep row has records plus relations at least 14, thoughts at most 10, questions 5 to 8 (`rule_3`). Prose: after "center of" or "middle of" comes only the frame or the picture (`position_as_place`); a side named from a thing's own point of view is refused in the caption and the prompt too (`relation_side`); two words that read as a record key ("body pose", "lower line", "full-body framing") are refused even by chance (`spec_talk`). Questions: a chain value is at most three words, copied as the thought spells it, of its key's kind (a framing for `shot framing`, never "frontal view") (`rule_4`, `question_value`, `chain_kind`); an unknown question is answered by no word of the row, with every word the checker reads as an answer listed for each of the eight keys it checks; a test keeps the prompts' lists and the checker's patterns the same (`unknown_stated`) |
+| The OpenAI retry block keeps the whole row in view | After the checker's lines, the block says that a rewrite that makes a new fault is refused too, and lists the checks a deep row fails most, by their codes. A route on the default prompt keeps its retry text as it was: that text is written by `rps.prompting.feedback_text`, not by the rule pool |
+| A review seat on a background thread survives an interrupt | `ApiSeat.run` caught only `Exception`. A KeyboardInterrupt, or another exception that is not an ordinary error (a cancellation raised by a library whose work an interrupt cut short), that reached a pass of a seat started with `start_in_thread` ended the thread with nothing said: not alive, `halted` and `last_error` empty. On any thread but the main one, a pass ended that way now counts as a failed pass: said, tried again at the next poll and counted towards the limit of failed passes in a row; a wait between polls that a KeyboardInterrupt ends is cut short. `SystemExit` and `GeneratorExit` pass through on every thread. A seat run on the main thread (`python -m rps.review.api_seat`, or `run()` in the foreground) stops on Ctrl-C as before |
+| The rules version is new | `5e67c03d4cd8` (it was `f7e9e8ed296b` in 0.6.9 and 0.6.10). The review brief's text is unchanged, but its version is the rules version: a review seat started on this release answers packets made under the earlier version only when its `also_brief_versions` names `f7e9e8ed296b`. A seat that does not name it skips such a packet and says so in its own log and status only: nothing is written to the store, the controller does not take the packet back from a seat that is switched on, and the packet's rows wait until the seat is started with the earlier version named. Rows of a batch that was sent under one rules version and collected under the next are labelled with the version at collection, so install between runs, with no call in flight. The profile versions: OpenAI `a5f837b703a8` (it was `09fe4c3e53bb`); DeepSeek `4d5fd18c6158` and Gemini `08caa7631cf0` as in 0.6.10 |
+| Version | `0.6.11`; the notebook installs @v0.6.11 |
 
 ## What changed in 0.6.10
 

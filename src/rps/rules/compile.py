@@ -58,6 +58,11 @@ def list_text(tp, held) -> str:
     return "\n".join(lines)
 
 
+def open_keys_text(tp) -> str:
+    """The record keys whose values are open (no closed list), relations aside, in the validator's order."""
+    return ", ".join(key for key in tp.keys() if key not in tp.KEY_LIST and key != "relation")
+
+
 def genres(tp, held) -> str:
     from rps.assessor.checks import EXTRA_GENRES
 
@@ -85,6 +90,7 @@ def fill_template(template: str, example: str | None = EXAMPLE_FOR_PROMPT) -> st
         .replace("{{STEPS}}", ", ".join(tp.STEPS))
         .replace("{{GENRES}}", genres(tp, held))
         .replace("{{LISTS}}", list_text(tp, held))
+        .replace("{{OPEN_KEYS}}", open_keys_text(tp))
     )
     if example is None:
         text = text.replace("{{EXAMPLE_NOTE}}\n", "").replace("{{EXAMPLE_BLOCK}}\n", "").replace("{{EXAMPLE_BLOCK}}", "")

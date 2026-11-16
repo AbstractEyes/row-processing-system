@@ -135,6 +135,8 @@ PICTURE_SCALE_MAX = 4.0
 RECOVER_WAIT = timedelta(minutes=2)
 # Passes in a row that may fail before a running seat stops.
 MAX_FAILED_STEPS = 10
+# What a pass ended by a KeyboardInterrupt on a seat's background thread is said as (see `ApiSeat.run`).
+INTERRUPTED_PASS = "interrupted: a KeyboardInterrupt reached the seat's thread"
 READ_AHEAD_REST_SECONDS = 600.0  # after a read ahead of pictures failed, they are read one by one for this long
 
 ROLE = (
@@ -162,6 +164,11 @@ EXIT_OK, EXIT_INVALID, EXIT_REFUSED, EXIT_FAILED = 0, 1, 2, 3
 PROG = "python -m rps.review.api_seat"
 
 PLANNED, SUBMITTED, SETTLED, DROPPED = "planned", "submitted", "settled", "dropped"
+
+
+def _on_main_thread() -> bool:
+    """Whether the caller runs on the interpreter's main thread (where Ctrl-C is meant to stop a seat)."""
+    return threading.current_thread() is threading.main_thread()
 
 
 class SeatError(Exception):
@@ -883,6 +890,14 @@ class ApiSeat:
 
         Returns why it ended: "stopped", "halted" or "failing". A pass that fails (a dropped connection, a
         store that did not answer) is said and tried again on the next poll.
+
+        A KeyboardInterrupt stops a seat that runs on the main thread (a shell, or `run()` called in the
+        foreground), as Ctrl-C always did. On any other thread (`start_in_thread`) the interrupt was meant for
+        the main thread's work, not for the seat: a pass it ends counts as a failed pass, said and tried again at
+        the next poll, and a wait it ends is a wait cut short. The same holds for any other exception that is not
+        an ordinary error and reaches a pass on such a thread (a cancellation raised by a library whose work the
+        interrupt cut short): without this the thread would end with nothing said. SystemExit and GeneratorExit
+        always pass through.
         """
         stop = stop if stop is not None else threading.Event()
         failed = 0
@@ -901,14 +916,24 @@ class ApiSeat:
                     break
                 except Exception as error:  # the next poll tries again; a seat that keeps failing stops
                     failed += 1
-                    self.last_error = describe_error(error)
-                    self._say(f"pass failed ({self.last_error}); {failed} in a row")
-                    if failed >= MAX_FAILED_STEPS:
-                        self.halted = f"{failed} passes in a row failed (last: {self.last_error})"
-                        self._say(f"stopped: {self.halted}")
+                    if self._pass_failed(describe_error(error), failed):
                         why = "failing"
                         break
-                stop.wait(self.config.poll_seconds)
+                except (SystemExit, GeneratorExit):
+                    raise
+                except BaseException as error:  # an interrupt, or a cancellation that is not an ordinary error
+                    if _on_main_thread():
+                        raise
+                    failed += 1
+                    reason = INTERRUPTED_PASS if isinstance(error, KeyboardInterrupt) else f"cut short: {describe_error(error)}"
+                    if self._pass_failed(reason, failed):
+                        why = "failing"
+                        break
+                try:
+                    stop.wait(self.config.poll_seconds)
+                except KeyboardInterrupt:
+                    if _on_main_thread():
+                        raise
         finally:
             self.running = False
             try:
@@ -916,6 +941,16 @@ class ApiSeat:
             except StoreError as error:
                 self._say(f"the store did not take the last writes ({describe_error(error)})")
         return why
+
+    def _pass_failed(self, reason: str, failed: int) -> bool:
+        """Say a failed pass; True when it is one too many in a row and the seat stops (`halted` then says why)."""
+        self.last_error = reason
+        self._say(f"pass failed ({reason}); {failed} in a row")
+        if failed < MAX_FAILED_STEPS:
+            return False
+        self.halted = f"{failed} passes in a row failed (last: {reason})"
+        self._say(f"stopped: {self.halted}")
+        return True
 
     # ------------------------------------------------------------ what the store holds
 

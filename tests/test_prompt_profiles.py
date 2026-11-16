@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "f7e9e8ed296b"
+TODAYS_VERSION = "5e67c03d4cd8"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -126,6 +126,140 @@ def test_every_profile_compiles_with_no_placeholder_left(profile):
         assert filled in rules.system
     template = (RULES_DIR / "profiles" / profile / "writer_system.tpl.md").read_text(encoding="utf-8")
     assert rules.system.count(rules_compile.sealed_text(tp, HELD)) == template.count("{{SEALED}}")
+
+
+def test_the_default_and_openai_prompts_list_the_keys_with_open_values_and_only_validator_keys():
+    from thought_seeds.core import tp
+
+    listed = rules_compile.open_keys_text(tp)
+    keys = listed.split(", ")
+    assert keys and all(key in tp.keys() and key not in tp.KEY_LIST for key in keys) and "relation" not in keys
+    for rules in (base_rules(), rules_of("openai")):
+        assert f"The keys with open values are {listed};" in rules.system, rules.profile
+    for profile in ("gemini", "deepseek"):  # these profiles do not use the placeholder
+        assert listed not in rules_of(profile).system
+    for invented in ("thing material", "thing size", "scene activity", "text content"):  # named in the prompt as keys that do not exist
+        assert invented not in tp.keys()
+
+
+@pytest.mark.parametrize("profile", ("default", "openai"))
+def test_the_form_examples_of_the_prompt_agree_with_the_checks(profile):
+    """Each right-and-wrong pair the default and OpenAI prompts give is judged by the checker as the prompt says."""
+    from thought_seeds.core import HELD, tp
+
+    from rps.assessor import reading_checks, review_checks
+
+    system = rules_of(profile).system.replace('"', "")  # the default prompt quotes its examples, the profile does not
+    form_line = next(line for line in rules_compile.list_text(tp, HELD).splitlines() if line.startswith("form line: "))
+    # a position record is read against the frame, with no word between
+    assert review_checks.PLACE_OF_FRAME.search("at the center of the frame") is None
+    for wrong, said in (("the center of a crowd", "the center of a crowd"), ("the center of the wide view", "or of the wide view"), ("the center of the table", "the center of the table")):
+        assert review_checks.PLACE_OF_FRAME.search(wrong) and said in system
+    # a side named from the thing's own point of view
+    assert review_checks.OWN_SIDE.search("right of the spider") is None and review_checks.OWN_SIDE.search("never to its right")
+    # two words that read as a record key
+    for wrong in ("body pose", "shot light", "scene time", "full-body framing", "lower line", "lower angle"):
+        assert reading_checks.SPEC_TALK.search(wrong) and wrong in system
+    for right in ("the pose", "the light", "a full-length view", "the line below", "a lower viewpoint"):
+        assert reading_checks.SPEC_TALK.search(right) is None and right in system
+    # a record's key and value together
+    assert len("story before") + len("rain fell") <= tp.REC_MAX < len("story before") + len("cups were filled") == 28
+    # a value the closed lists do not print
+    assert "horizontal" not in form_line and "form line horizontal" in system
+    assert "living room" not in rules_compile.list_text(tp, HELD) and "scene setting living room" in system
+    # a chain value: at most three words, of its key's kind, as the thought spells it
+    assert len("eye lands on cheese".split()) > 3 and "eye lands on cheese is a sentence" in system
+    framing, _ = reading_checks.KIND["shot framing"]
+    angle, _ = reading_checks.KIND["shot angle"]
+    for right in ("close-up", "wide", "medium shot"):
+        assert framing.search(right)
+    for wrong in ("frontal view", "rear view"):
+        assert framing.search(wrong) is None and wrong in system
+    for right in ("eye level", "high angle", "eye-level view"):
+        assert angle.search(right)
+    assert "eye level" not in "an eye-level view"  # why the value is copied as the thought spells it
+    # the deep counts the prompt repeats are the validator's
+    assert tp.COUNTS["deep"]["records"][0] == 14 and tp.COUNTS["deep"]["thoughts"][1] == 10 and tp.COUNTS["deep"]["questions"] == (5, 8)
+
+
+UNKNOWN_HEAD = "When the unknown key is one of these, the checker refuses these words anywhere in the row: "
+UNKNOWN_TAIL = " (such a row gives no place in the frame at all)."
+
+
+def _top_level_branches(pattern):
+    """A regular expression's text split at its top-level '|' (the ones outside any group)."""
+    branches, depth, start = [], 0, 0
+    for index, char in enumerate(pattern):
+        if char == "\\":
+            continue
+        if char == "(" and pattern[index - 1] != "\\":
+            depth += 1
+        elif char == ")" and pattern[index - 1] != "\\":
+            depth -= 1
+        elif char == "|" and depth == 0:
+            branches.append(pattern[start:index])
+            start = index + 1
+    branches.append(pattern[start:])
+    return branches
+
+
+def _cue_alternatives(pattern):
+    """For each top-level branch of a cue, the alternatives of each of its required groups (an optional group, such as
+    a leading "in the ", is left out). The cues are words in non-capturing groups between word boundaries."""
+    found = []
+    for branch in _top_level_branches(pattern):
+        groups = [alts.split("|") for alts, optional in re.findall(r"\(\?:([^()]*)\)(\?)?", branch) if not optional]
+        assert groups and re.fullmatch(r"(\\b|\(\?:[^()]*\)\??| )+", branch), branch  # a shape this reader knows
+        found.append(groups)
+    return found
+
+
+def _listed_unknown_words(system):
+    """The words the prompt lists for each unknown key: {key: [word, ...]}, and for thing position the words that go
+    with a frame part as their own entry {"thing position+": (firsts, seconds)}."""
+    text = system.replace('"', "").split(UNKNOWN_HEAD, 1)[1].split(UNKNOWN_TAIL, 1)[0]
+    listed = {}
+    for part in text.split("; "):
+        key, _, words = part.partition(": ")
+        if key == "thing position":
+            singles, _, combined = words.partition(", and ")
+            firsts, _, seconds = combined.partition(" with ")
+            listed[key] = singles.split(", ")
+            listed[key + "+"] = tuple(re.split(r", | or ", side) for side in (firsts, seconds))
+        else:
+            listed[key] = words.split(", ")
+    return listed
+
+
+@pytest.mark.parametrize("profile", ("default", "openai"))
+def test_the_prompt_lists_exactly_the_words_the_unknown_check_refuses(profile):
+    from rps.assessor import review_checks
+
+    listed = _listed_unknown_words(rules_of(profile).system)
+    assert {key for key in listed if not key.endswith("+")} == set(review_checks.UNKNOWN_CUES)
+    for key, cue in review_checks.UNKNOWN_CUES.items():
+        branches = _cue_alternatives(cue.pattern)
+        if key == "thing position":  # one branch of single words, one of a side and a frame part
+            (singles,), (firsts, seconds) = branches
+            assert listed[key] == singles and listed[key + "+"] == (firsts, seconds)
+            for first in firsts:
+                for second in seconds:
+                    assert cue.fullmatch(f"{first} {second}"), (first, second)
+        else:
+            ((alternatives,),) = branches  # one branch of one group
+            assert sorted(listed[key]) == sorted(alternatives), key  # every alternative named, and nothing more
+        for word in listed[key]:
+            assert cue.fullmatch(word), (key, word)  # every word the prompt lists is one the check refuses
+
+
+def test_the_openai_retry_block_names_the_frequent_checks_of_a_deep_row():
+    retry = rules_of("openai").retry
+    for code in (
+        "spec_kept", "rule_2", "rule_3", "rule_4", "rule_7", "question_value", "chain_kind", "question_held_key",
+        "unknown_stated", "position_as_place", "relation_side", "spec_talk",
+    ):
+        assert f"{code}" in retry, code
+    assert "makes a new one is refused too" in retry and retry.count("{check_messages}") == 1
 
 
 def test_the_gemini_prompt_carries_its_sealed_list_at_each_of_its_three_places():

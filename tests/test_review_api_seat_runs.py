@@ -714,6 +714,105 @@ def test_a_seat_that_keeps_failing_stops_after_a_run_of_failed_passes(remote, tm
     assert "3 passes in a row failed" in seat.status()["halted"] and "boom" in seat.status()["last_error"]
 
 
+def _interrupt_first_steps(seat, times, after=None, error=KeyboardInterrupt):
+    """Make the seat's first `times` passes end with a KeyboardInterrupt (or `error`); later passes run as usual, then call `after`."""
+    real_step = seat.step
+    calls = []
+
+    def step():
+        calls.append(threading.current_thread().name)
+        if len(calls) <= times:
+            raise error
+        result = real_step()
+        if after is not None:
+            after()
+        return result
+
+    seat.step = step
+    return calls
+
+
+def _run_on_a_thread(seat, stop):
+    outcome = {}
+
+    def target():
+        try:
+            outcome["why"] = seat.run(stop)
+        except BaseException as error:  # noqa: BLE001 - the test reads what ended the thread
+            outcome["raised"] = error
+
+    thread = threading.Thread(target=target, name="seat-under-test", daemon=True)
+    thread.start()
+    thread.join(30)
+    assert not thread.is_alive()
+    return outcome
+
+
+def test_an_interrupt_on_a_background_thread_is_a_failed_pass_and_the_next_pass_runs(remote, tmp_path, api):
+    publish(remote, rows=2)
+    stop = threading.Event()
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 1, after=stop.set)
+    outcome = _run_on_a_thread(seat, stop)
+    assert outcome == {"why": "stopped"} and calls == ["seat-under-test", "seat-under-test"]
+    assert any(f"pass failed ({api_seat.INTERRUPTED_PASS}); 1 in a row" in line for line in printed)
+    assert seat.halted is None and seat.last_error is None and seat.running is False
+    assert seat.status()["in_flight"]["batches"] == 1  # the second pass did its work
+
+
+def test_interrupts_on_a_background_thread_count_towards_the_limit_of_failed_passes(remote, tmp_path, api, monkeypatch):
+    monkeypatch.setattr(api_seat, "MAX_FAILED_STEPS", 3)
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 100)
+    outcome = _run_on_a_thread(seat, threading.Event())
+    assert outcome == {"why": "failing"} and len(calls) == 3
+    assert len([line for line in printed if "pass failed" in line]) == 3
+    assert "3 passes in a row failed" in seat.halted and api_seat.INTERRUPTED_PASS in seat.last_error
+
+
+def test_an_interrupt_still_stops_a_seat_run_on_the_main_thread(remote, tmp_path, api):
+    assert threading.current_thread() is threading.main_thread()
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 1)
+    with pytest.raises(KeyboardInterrupt):
+        seat.run(threading.Event())
+    assert len(calls) == 1 and seat.running is False and seat.halted is None
+    assert not any("pass failed" in line for line in printed)
+
+
+class _Cancelled(BaseException):
+    """A stand-in for a library's cancellation that is not an ordinary error (it does not derive from Exception)."""
+
+
+def test_a_cancellation_that_is_no_ordinary_error_is_a_failed_pass_on_a_background_thread(remote, tmp_path, api):
+    publish(remote, rows=2)
+    stop = threading.Event()
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 1, after=stop.set, error=_Cancelled("the read was cancelled"))
+    outcome = _run_on_a_thread(seat, stop)
+    assert outcome == {"why": "stopped"} and calls == ["seat-under-test", "seat-under-test"]
+    assert any("pass failed (cut short: _Cancelled: the read was cancelled); 1 in a row" in line for line in printed)
+    assert seat.halted is None and seat.last_error is None and seat.running is False
+    assert seat.status()["in_flight"]["batches"] == 1  # the second pass did its work
+
+
+def test_such_a_cancellation_still_ends_a_seat_run_on_the_main_thread(remote, tmp_path, api):
+    assert threading.current_thread() is threading.main_thread()
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 1, error=_Cancelled("cancelled"))
+    with pytest.raises(_Cancelled):
+        seat.run(threading.Event())
+    assert len(calls) == 1 and seat.running is False and not any("pass failed" in line for line in printed)
+
+
+def test_a_system_exit_passes_through_a_seat_on_a_background_thread(remote, tmp_path, api):
+    seat, printed = make_seat(remote, tmp_path, api)
+    calls = _interrupt_first_steps(seat, 1, error=SystemExit(3))
+    outcome = _run_on_a_thread(seat, threading.Event())
+    assert isinstance(outcome.get("raised"), SystemExit) and len(calls) == 1
+    assert seat.running is False and not any("pass failed" in line for line in printed)
+
+
 def test_start_in_thread_runs_the_seat_beside_the_caller_and_stop_ends_it(remote, tmp_path, api):
     api.batches.auto_end = True
     packet = publish(remote, rows=2)
