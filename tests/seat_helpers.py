@@ -54,11 +54,13 @@ def publish(
     brief_version: str | None = None,
     pictures: bool = False,
     texts: list[str] | None = None,
+    picture: bytes | None = None,
 ):
     """Publish a packet of `rows` rows to a store the way the controller does, and return it.
 
     Each row carries its writer label (the packet's blind view drops it) and a `source.model` the view blanks. Packets
-    built with different `line` values have different rows and so different ids.
+    built with different `line` values have different rows and so different ids. With `pictures` each row has a
+    picture: the bytes given as `picture`, or a few bytes that name the row's place and are no real picture.
     """
     builder = Builder()
     call = ids.call_id(TASK, line, 1)
@@ -71,7 +73,10 @@ def publish(
         reviewer_id=reviewer,
         brief_version=brief_version if brief_version is not None else rules.rules_version(),
         created="2026-11-08T11:00:00.000000Z",
-        rows=[(row, {**LINE, "line_id": line}, b"picture-%d" % number if pictures else None, "jpg") for number, row in enumerate(stored)],
+        rows=[
+            (row, {**LINE, "line_id": line}, (picture if picture is not None else b"picture-%d" % number) if pictures else None, "jpg")
+            for number, row in enumerate(stored)
+        ],
     )
     publish_packet(ActorStore(remote, controller_actor("20261108T110000Z-aaaa")), packet)
     return packet

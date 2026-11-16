@@ -17,7 +17,10 @@ the seat exists: it is a reviewer in the configuration, like the others.
                line saying what to return. A row whose packet entry holds a picture (the packet builder
                leaves it out for a family the routing table refuses, and says so with `image_withheld`) is
                sent with the picture as an image block before the text, read from the packet's folder; a
-               row without one is sent as text only, exactly as before
+               row without one is sent as text only, exactly as before. A seat whose configuration names
+               `picture_scale` above 1 is sent each picture enlarged that many times (no side past 2,576
+               pixels): more pixels a letter for a reader that settles what small lettering reads, and
+               no new information. The estimate then counts the enlarged picture's own size
     answer     the answer is bound to {verdict, reasons, notes} by `output_config.format` (the reasons to
                the codes the brief lists), and the seat adds the row id itself. `temperature`, `top_p`,
                `top_k`, a prefill, a forced `tool_choice` and `thinking` are never sent; the effort goes
@@ -84,6 +87,7 @@ from ..config import Config, ConfigError, _check_keys, _number, _reject_secret_v
 from ..events import format_ts, picture_read_workers, read_bytes_many, utc_now
 from ..failures import KIND_AUTH, KIND_BAD_REQUEST
 from ..ids import canonical_json
+from ..images import ImageError, enlarge_image
 from ..ledger import EPSILON, MILLION, Rates, Usage
 from ..providers.anthropic_api import (
     API_KEY_ENV,
@@ -122,6 +126,10 @@ CACHE_TTL = "1h"
 LONG_PROMPT_TOKENS = 100_000
 # What one picture counts as in the estimate and in the budget check: the adapter's figure for a picture.
 PICTURE_TOKENS = IMAGE_TOKENS
+# An enlarged picture counts by its own size when that is more: a token for every this many pixels (the provider's
+# older and dearer count; its newer one, a token for a patch of 28 by 28 pixels, is always below it).
+PICTURE_PIXELS_A_TOKEN = 750
+PICTURE_SCALE_MAX = 4.0
 
 # A batch that was planned and has no recorded id is looked for for this long before it is dropped.
 RECOVER_WAIT = timedelta(minutes=2)
@@ -203,7 +211,7 @@ def _usd(value: float) -> str:
 
 _SEAT_KEYS = {
     "reviewer_id", "model", "effort", "max_tokens", "budget_usd", "packets_per_batch", "poll_seconds", "max_attempts",
-    "extra_instructions", "prices", "work_dir", "run_config", "also_brief_versions",
+    "extra_instructions", "prices", "work_dir", "run_config", "also_brief_versions", "picture_scale",
 }
 
 
@@ -222,6 +230,9 @@ class SeatConfig:
     `also_brief_versions` lists earlier brief versions whose packets the seat still judges, by the brief this
     package renders: after a change of the rules, packets made just before it would otherwise never be answered.
     The owner names a version there only when the newer brief judges those rows the same way.
+    `picture_scale` (1 to 4, 1 unless named) enlarges each picture that many times before it is sent, no side
+    past 2,576 pixels: for a seat that settles what small lettering reads. The picture in the store is not
+    touched, and a seat that does not name the option sends every picture as it always did, byte for byte.
     """
 
     reviewer_id: str
@@ -237,11 +248,14 @@ class SeatConfig:
     work_dir: str | None = None
     run_config: str | None = None
     also_brief_versions: tuple[str, ...] = ()
+    picture_scale: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         data = self._base_dict()
         if self.also_brief_versions:  # only when set, so that a seat without it reads as it always did
             data["also_brief_versions"] = list(self.also_brief_versions)
+        if self.picture_scale != 1.0:  # only when set, for the same reason
+            data["picture_scale"] = self.picture_scale
         return data
 
     def _base_dict(self) -> dict[str, Any]:
@@ -302,6 +316,9 @@ class SeatConfig:
             work_dir=_text(data.get("work_dir"), f"{where}.work_dir", allow_none=True),
             run_config=_text(data.get("run_config"), f"{where}.run_config", allow_none=True),
             also_brief_versions=tuple(dict.fromkeys(v.strip() for v in also)),
+            picture_scale=float(
+                _number(data.get("picture_scale", 1.0), f"{where}.picture_scale", minimum=1, maximum=PICTURE_SCALE_MAX)
+            ),
         )
 
 
@@ -1146,26 +1163,35 @@ class ApiSeat:
 
     # ------------------------------------------------------------ send
 
-    def _picture_block(self, packet_id: str, entry: Mapping[str, Any]) -> dict[str, Any] | None:
-        """The image block for a row whose packet entry holds a picture, or None for a text-only row.
+    def _picture_block(self, packet_id: str, entry: Mapping[str, Any]) -> tuple[dict[str, Any], int] | None:
+        """The image block for a row whose packet entry holds a picture and the input tokens it is counted
+        as, or None for a text-only row.
 
         The picture is read from the packet's folder in the store. A picture the entry names that cannot be
         read is an error, never a silent fall back to the text: the row would be judged without what it is
-        judged against.
+        judged against. With `picture_scale` above 1 the picture is enlarged before it is sent (the store's
+        copy is not touched) and counted by its enlarged size when that is more than `PICTURE_TOKENS`; a
+        picture that cannot be enlarged is an error too, never a silent fall back to the small one.
         """
         name = entry.get("image")
         if not name:
             return None
         path = f"{layout.packet_dir(self.reviewer_id, packet_id)}/{name}"
         ext = str(name).rsplit(".", 1)[-1]
+        tokens = PICTURE_TOKENS
         try:
             data = self._pictures.pop(path, None)
             if data is None:
                 data = self._store.read_bytes(path)
+            if self.config.picture_scale > 1.0:
+                data, ext, (width, height) = enlarge_image(data, self.config.picture_scale)
+                tokens = max(PICTURE_TOKENS, -(-width * height // PICTURE_PIXELS_A_TOKEN))
             media = mime_type(ext)
+        except ImageError as error:
+            raise SeatError(f"packet {packet_id}: the picture {name!r} cannot be enlarged ({error})") from None
         except (NotFound, ValueError) as error:
             raise SeatError(f"packet {packet_id}: the picture {name!r} cannot be read ({error})") from None
-        return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64_text(data)}}
+        return {"type": "image", "source": {"type": "base64", "media_type": media, "data": base64_text(data)}}, tokens
 
     def _read_pictures_ahead(self, packet_id: str, entries: Sequence[Mapping[str, Any]]) -> None:
         """Read the pictures of a packet's rows together, before its requests are built one by one.
@@ -1211,13 +1237,15 @@ class ApiSeat:
     def _request(self, packet_id: str, ordinal: int, entry: Mapping[str, Any], attempt: int) -> Built | None:
         """The request for one row, or None when it cannot be priced (a prompt past the long-prompt limit).
 
-        A picture is counted as `PICTURE_TOKENS` input tokens, a generous fixed figure for each picture.
+        A picture is counted as `PICTURE_TOKENS` input tokens, a generous fixed figure for each picture, and
+        an enlarged one by its own size when that is more (see `_picture_block`).
         """
         text = user_text(entry)
-        picture = self._picture_block(packet_id, entry)
+        pictured = self._picture_block(packet_id, entry)
+        picture, picture_tokens = pictured if pictured is not None else (None, 0)
         unsure = may_unsure(entry)
         base = self._base_tokens_unsure if unsure else self._base_tokens
-        tokens = base + estimate_text_tokens(text) + (PICTURE_TOKENS if picture is not None else 0)
+        tokens = base + estimate_text_tokens(text) + picture_tokens
         if tokens > LONG_PROMPT_TOKENS:
             return None
         custom_id = request_custom_id(packet_id, ordinal, attempt)

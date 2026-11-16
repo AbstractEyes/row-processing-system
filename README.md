@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.9. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.10. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,17 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.10
+
+A review seat can be sent its pictures enlarged. A reader model that judges a row's quoted lettering at the size the writer was sent can misread small lettering or call legible lettering unreadable; a seat that settles such claims reads more of it right with more pixels a letter. Nothing changes for a seat that does not name the option.
+
+| Change | What happens now |
+|---|---|
+| `picture_scale` in a seat's configuration | A number from 1 to 4, 1 unless named. Above 1, each picture is enlarged that many times before it is sent: the proportions kept, the LANCZOS filter, saved as a JPEG of quality 95, no side past 2,576 pixels (a JPEG or PNG already that large is sent as it is). The enlargement adds no information. The pixels are enlarged as they are stored: the picture is not turned, and an EXIF orientation mark is carried over, so the seat is shown what the other seats are shown. The picture in the store is not touched. A seat that does not name the option sends every picture byte for byte as before, and its configuration reads as before |
+| The estimate counts the enlarged picture | An enlarged picture counts as its width times its height over 750 input tokens when that is more than the fixed 1,600 a picture counts as otherwise, so the budget check stays an upper bound. A batch is still cut at 240 MB by the size of its requests, enlarged pictures included, so larger pictures make smaller batches. An enlarged picture is held under 3.5 MB, below a provider's limit for one picture: one that is larger at quality 95 is saved at 90, 80 or 70 |
+| A picture that cannot be enlarged | The packet is left alone and the seat says so, as for a picture that cannot be read: a row is never judged against a smaller picture than its seat was told to use |
+| Version | `0.6.10`; the notebook installs @v0.6.10. The rules version is unchanged (`f7e9e8ed296b`) |
 
 ## What changed in 0.6.9
 
