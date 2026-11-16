@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.12. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.13. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,22 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.13
+
+Six places of the default writer prompt are reworded, for the records of deep rows that the record rule (`rule_2`) refuses most and for the chain question's key. Each says what to write instead of only what not to write. No rule changes, the checker is unchanged, and the provider profiles and the retry text are unchanged.
+
+| Change | What happens now |
+|---|---|
+| The feeling | The feeling sentence forbade words and offered nothing in their place. It now names printed feeling values for a grave, formal or still picture (stern, proud, gentle, tender, wistful, mournful, grim, awed, nostalgic, lonely) and says that solemn, pensive and quiet are no feelings |
+| The position record | The position sentence gave the thoughts' wording ("at the center of the frame"), and that wording was copied into the record, past the record's length. It now says the record holds one or two short words (center, left third, upper right), that `thing position` leaves 13 bytes for its value (`center`, never `center of frame`), and that the longer wording belongs in the thoughts |
+| The open records' length | Story, palette and state records landed a few bytes over their limits. The prompt now asks for a short value of 12 bytes or fewer, as a rule two short words (two colors may be joined by "and"), for `story before`, `story after`, `story cause`, `form palette` (limit 15) and `thing state` (limit 16), with right-and-wrong pairs (`train came` against `train approached`; `earth tones` against `muted earth tones`; two colors against three). The story sentence says two short words where it said two or three, and its own examples are two short words each (`bus left`, `rain stops`, `letter came`), none of whose words is a sealed value |
+| Near misses of the lists | One sentence: the lists' own spellings (grey, watercolour); reaching and arms raised are body poses, not gestures; `scene layout` takes crowd, and crowded is `form space`; a medium the writer would add that the list does not print is named in a thought (a given record is still copied as given) |
+| Keys that do not exist | `outer pattern` joins the named keys that do not exist, and the sentence says where a material or a coat's pattern goes (the thoughts and the tags) |
+| The chain question's key | 0.6.12 asked the writer to pick the chain key before adding records of its own. The questions are written after the records, so the prompt now asks for a look back: the chain key must be absent from every record above, the writer's own included, and when the key wanted is recorded, another key the row does not record is asked. No list of keys is named |
+| A test of the examples | Every record the new sentences give as right passes the record rule and is a printed, unsealed value where its key has a list, and no word of it is a sealed value; every record they give as wrong fails |
+| The rules version is new | `ef18554724a0` (it was `2403fba47e16` in 0.6.12). A review seat started on this release answers packets made under the earlier version only when its `also_brief_versions` names `2403fba47e16`. Install between runs, with no call in flight. The profile versions are unchanged: OpenAI `6540598d25c1`, DeepSeek `4d5fd18c6158`, Gemini `08caa7631cf0` |
+| Version | `0.6.13`; the notebook installs @v0.6.13 |
 
 ## What changed in 0.6.12
 

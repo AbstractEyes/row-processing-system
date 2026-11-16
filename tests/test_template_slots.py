@@ -27,13 +27,22 @@ def test_the_story_examples_fit_the_record_size_they_teach():
     assert "never a moment word (instant before, instant after)" in line
 
 
-def test_the_named_tone_words_are_tones_and_not_feelings():
+def test_the_feelings_offered_are_printed_feelings_and_the_words_refused_are_not():
+    from thought_seeds.core import HELD
+
     text = rules.writer_system()
     line = next(l for l in text.splitlines() if l.startswith("- mood feeling takes"))
-    named = re.search(r"\((\w+) and (\w+) are on the tone list", line).groups()
-    feeling, tone = tp.VOCAB[tp.KEY_LIST["mood feeling"]], tp.VOCAB[tp.KEY_LIST["mood tone"]]
-    for word in named:
-        assert word in tone and word not in feeling, word
+    offered = re.search(r"the feeling is ([a-z, ]+) or (\w+);", line)
+    offered = [w.strip() for w in offered.group(1).split(",")] + [offered.group(2)]
+    refused = re.search(r"; (\w+), (\w+) and (\w+) are no feelings", line).groups()
+    feeling = tp.VOCAB[tp.KEY_LIST["mood feeling"]]
+    printed = tp.lists_for(HELD, "train")[tp.KEY_LIST["mood feeling"]]
+    sealed = tp.sealed_all(HELD)
+    assert len(offered) >= 5
+    for word in offered:
+        assert word in feeling and word in printed and word not in sealed, word
+    for word in refused:
+        assert word not in feeling, word
 
 
 def test_a_given_record_is_copied_even_with_a_sealed_value():

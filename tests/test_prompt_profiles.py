@@ -45,7 +45,7 @@ ITEMS = json.loads((DATA / "items.json").read_text(encoding="utf-8"))
 GOLDEN = json.loads((DATA / "default_texts.json").read_text(encoding="utf-8"))
 RULES_DIR = Path(pool.__file__).parent
 PROFILES = ("openai", "gemini", "deepseek")
-TODAYS_VERSION = "2403fba47e16"
+TODAYS_VERSION = "ef18554724a0"
 GEMINI_MODEL = "gemini-3.8-flash"
 
 
@@ -138,7 +138,7 @@ def test_the_default_and_openai_prompts_list_the_keys_with_open_values_and_only_
         assert f"The keys with open values are {listed};" in rules.system, rules.profile
     for profile in ("gemini", "deepseek"):  # these profiles do not use the placeholder
         assert listed not in rules_of(profile).system
-    for invented in ("thing material", "thing size", "scene activity", "text content"):  # named in the prompt as keys that do not exist
+    for invented in ("thing material", "outer pattern", "thing size", "scene activity", "text content"):  # named in the prompt as keys that do not exist
         assert invented not in tp.keys()
 
 
@@ -180,7 +180,11 @@ def test_the_form_examples_of_the_prompt_agree_with_the_checks(profile):
     assert "eye level" not in "an eye-level view"  # why the value is copied as the thought spells it
     # the kinds are named by what each key asks for, never as a list of keys to ask; a recorded key is no chain key
     assert "shot framing a framing" not in system and "a framing for shot framing" in system
-    assert "if shot framing is among the records, the chain question cannot be shot framing" in system
+    if profile == "default":  # the default prompt looks back at the written records; the OpenAI profile picks the key first
+        assert "its key must be absent from every record above, your own included" in system
+        assert "if shot framing is among the records" not in system
+    else:
+        assert "if shot framing is among the records, the chain question cannot be shot framing" in system
     held = {"id": "r", "spec": {"shot": {"framing": "wide"}}, "questions": [{"key": "shot framing", "needs": "chain", "value": "wide"}]}
     assert [p.code for p in review_checks.chain_held_key_check(held)] == ["question_held_key"]
     # a series of quotations keeps every comma outside its closing mark
@@ -193,6 +197,104 @@ def test_the_form_examples_of_the_prompt_agree_with_the_checks(profile):
     assert shown_text.comma_quotes(say(right)) == [] and shown_text.comma_quotes(say(wrong)) == ["OPEN,", "24 HOURS,"]
     # the deep counts the prompt repeats are the validator's
     assert tp.COUNTS["deep"]["records"][0] == 14 and tp.COUNTS["deep"]["thoughts"][1] == 10 and tp.COUNTS["deep"]["questions"] == (5, 8)
+
+
+# The records the default prompt gives as examples of form: (key, value, True when the prompt gives it as right).
+# Each value is written in the prompt as shown; the right ones pass the validator's record rule and are printed values
+# where the key has a list, the wrong ones fail one of the two.
+RECORD_EXAMPLES = (
+    ("story before", "rain fell", True),
+    ("story before", "cups were filled", False),
+    ("story before", "train came", True),
+    ("story before", "train approached", False),
+    ("story after", "train came", True),
+    ("story before", "bus left", True),
+    ("story after", "rain stops", True),
+    ("story cause", "letter came", True),
+    ("story cause", "train came", True),
+    ("form palette", "earth tones", True),
+    ("form palette", "muted earth tones", False),
+    ("form palette", "red and gold", True),
+    ("form palette", "red yellow white", False),
+    ("thing state", "worn", True),
+    ("thing state", "worn and weathered", False),
+    ("thing position", "center", True),
+    ("thing position", "left third", True),
+    ("thing position", "upper right", True),
+    ("thing position", "foreground", True),
+    ("thing position", "right edge", True),
+    ("thing position", "center of frame", False),
+    *(("mood feeling", feeling, True) for feeling in ("stern", "proud", "gentle", "tender", "wistful", "mournful", "grim", "awed", "nostalgic", "lonely")),
+    *(("mood feeling", feeling, False) for feeling in ("solemn", "pensive", "quiet")),
+    ("thing colour", "grey", True),
+    ("thing colour", "gray", False),
+    ("form medium", "watercolour", True),
+    ("form medium", "watercolor", False),
+    ("body pose", "reaching", True),
+    ("body pose", "arms raised", True),
+    ("body gesture", "reaching", False),
+    ("body gesture", "arms raised", False),
+    ("scene layout", "crowd", True),
+    ("scene layout", "crowded", False),
+    ("form space", "crowded", True),
+)
+# the respellings the prompt rules out by asking for the lists' own spellings (grey, watercolour) without printing them
+RESPELLED = ("gray", "watercolor")
+# the twelve bytes the prompt asks for on the open records it names, under their own limits
+SHORT_RECORD_TARGET = 12
+
+
+def _record_faults(key, value):
+    """What the validator and the printed lists say of one record: the record rule's messages, and whether the value is printed."""
+    from thought_seeds.core import HELD, tp
+
+    system, attribute = key.split(" ", 1)
+    faults = [message for _, message in tp.record_problems({system: {attribute: value}})]
+    if value in tp.sealed_all(HELD):
+        faults.append(f"{value!r} is sealed")
+    name = tp.KEY_LIST.get(key)
+    if name and value not in tp.lists_for(HELD, "train").get(name, ()):
+        faults.append(f"{value!r} is not printed for {key!r}")
+    return faults
+
+
+@pytest.mark.parametrize("key,value,right", RECORD_EXAMPLES, ids=[f"{k}={v}" for k, v, _ in RECORD_EXAMPLES])
+def test_the_record_examples_of_the_default_prompt_are_judged_as_the_prompt_says(key, value, right):
+    system = base_rules().system
+    assert value in system or value in RESPELLED  # the example is in the prompt as the table has it
+    faults = _record_faults(key, value)
+    if right:
+        assert faults == []
+        # no word of a right example is a sealed value either, though the checker compares whole values
+        from thought_seeds.core import HELD, tp
+
+        sealed = tp.sealed_all(HELD)
+        assert [word for word in value.split() if word in sealed] == []
+    else:
+        assert faults
+
+
+def test_the_short_record_examples_keep_the_margin_the_prompt_asks_for():
+    from thought_seeds.core import tp
+
+    system = base_rules().system
+    for key, value, right in RECORD_EXAMPLES:
+        if right and key in ("story before", "story after", "story cause", "form palette", "thing state"):
+            # a short value: two short words as a rule, and two colors of a palette may be joined by and
+            words = value.split()
+            joined = key == "form palette" and len(words) == 3 and words[1] == "and"
+            assert len(value) <= SHORT_RECORD_TARGET and (len(words) <= 2 or joined), (key, value)
+    assert "a short value of 12 bytes or fewer, as a rule two short words (two colors may be joined by and)" in system
+    # the limits the prompt states for the five open records are the validator's
+    for key, limit in (("story before", 15), ("story after", 16), ("story cause", 16), ("form palette", 15), ("thing state", 16)):
+        assert tp.REC_MAX - len(key) == limit
+    assert tp.REC_MAX - len("thing position") == 13 and "thing position leaves 13 bytes for its value" in system
+    # the feelings offered for a grave or still picture are printed values; the words named as no feelings are not
+    assert "solemn, pensive and quiet are no feelings" in system
+    # the chain sentence names one key as its example and no list of keys to ask
+    chain = next(line for line in system.splitlines() if "look back before you write a chain question" in line)
+    sentence = chain[chain.index("The questions come after the records"):].split(". ")[0]
+    assert [key for key in tp.keys() if key in sentence] == ["shot framing"]
 
 
 UNKNOWN_HEAD = "When the unknown key is one of these, the checker refuses these words anywhere in the row: "
