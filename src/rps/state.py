@@ -38,6 +38,8 @@ is then read from the rows that repaired it, as if they were the row.
 from __future__ import annotations
 
 import json
+import sys
+import zlib
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping
 
@@ -218,6 +220,95 @@ class RowState:
     def reviewers_used(self) -> set[str]:
         return {a.reviewer_id for a in self.assignments}
 
+    # -- how the record is held
+
+    @property
+    def record_packed(self) -> bool:
+        """True while the record is held packed (see `pack_record`)."""
+        return type(getattr(self, "_record", None)) is bytes
+
+    def pack_record(self) -> bool:
+        """Hold the record as compressed JSON text instead of as objects, when that gives back exactly the same record.
+
+        Reading `record` then decodes it, each time, into a new dictionary equal to the one packed: every reader
+        sees the same row as before, and none of them changes a record in place. A record that would not come back
+        equal (a value JSON has no form for, a tuple, a key that is not a string) is left as it is. Returns True when
+        the record is packed afterwards.
+        """
+        return _pack_slot(self, "_record", dict)
+
+    def unpack_record(self) -> None:
+        """Hold the record as objects again."""
+        _unpack_slot(self, "_record")
+
+
+# Packing (a row's record, a finished call's feedback): the value is held as compressed JSON text and decoded on each
+# read. A value is packed only when its JSON text reads back equal to it, so every reader sees the same value as before;
+# the readers never change such a value in place.
+_PACK_LEVEL = 1
+
+
+# The held value lives in an ordinary attribute (`_record`, `_feedback`), read and set with getattr and setattr: reaching
+# for the instance's `__dict__` would make each of hundreds of thousands of objects keep a dictionary of its own.
+
+
+def _pack_slot(owner: Any, slot: str, kind: type) -> bool:
+    held = getattr(owner, slot, None)
+    if type(held) is bytes:
+        return True
+    if not isinstance(held, kind):
+        return False
+    try:
+        # ASCII escapes keep every str, a lone surrogate included, exactly as it was.
+        text = json.dumps(held, ensure_ascii=True, separators=(",", ":"))
+        if json.loads(text) != held:
+            return False
+        packed = zlib.compress(text.encode("ascii"), _PACK_LEVEL)
+    except Exception:  # packing only saves memory: it may never raise, or a handler would stop half done
+        return False
+    setattr(owner, slot, packed)
+    return True
+
+
+def _unpack_slot(owner: Any, slot: str) -> None:
+    held = getattr(owner, slot, None)
+    if type(held) is bytes:
+        setattr(owner, slot, _unpacked(held))
+
+
+def _unpacked(data: bytes) -> Any:
+    # Only bytes `_pack_slot` wrote reach here: ASCII JSON text it has already read back once, compressed by zlib, so
+    # decoding them cannot fail.
+    return json.loads(zlib.decompress(data).decode("ascii"))
+
+
+def _packed_property(slot: str) -> property:
+    """A dataclass field reached through a property that decodes a packed value on each read. The field stays a field
+    (the constructor, equality, `asdict`, `replace` and `repr` read and write it as before)."""
+
+    def get(owner: Any) -> Any:
+        held = getattr(owner, slot)
+        return _unpacked(held) if type(held) is bytes else held
+
+    def set_(owner: Any, value: Any) -> None:
+        setattr(owner, slot, value)
+
+    return property(get, set_)
+
+
+RowState.record = _packed_property("_record")  # type: ignore[assignment]
+CallState.feedback = _packed_property("_feedback")  # type: ignore[assignment]
+
+
+# The values of a packet item that recur across packets (the item's own row id and picture name do not).
+_SHARED_ITEM_KEYS = frozenset({"rules_version", "rules_profile", "stage", "writer_family"})
+
+
+def _shared(text: Any) -> Any:
+    """One shared copy of a short text that recurs across many events (a reviewer id, a reason code, a key of a usage
+    record). Equal either way; only the memory differs."""
+    return sys.intern(text) if type(text) is str else text
+
 
 @dataclass
 class BatchState:
@@ -335,7 +426,10 @@ def _feedback_from(rows: Iterable[RowState]) -> tuple[str, ...]:
 class State:
     """Everything the run knows, rebuilt from events."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, pack_finished: bool = True) -> None:
+        # A row that is finished (accepted, rejected, set aside or repaired) holds its record packed
+        # (`RowState.pack_record`): the record reads the same, and a long job's state takes a fraction of the memory.
+        self.pack_finished = pack_finished
         self.tasks: dict[str, TaskState] = {}
         self.calls: dict[str, CallState] = {}
         self.rows: dict[str, RowState] = {}
@@ -364,11 +458,16 @@ class State:
     # ------------------------------------------------------------------ building
 
     @classmethod
-    def from_events(cls, events: Iterable[Event]) -> "State":
-        state = cls()
+    def from_events(cls, events: Iterable[Event], *, pack_finished: bool = True) -> "State":
+        state = cls(pack_finished=pack_finished)
         for event in events:
             state.apply(event)
         return state
+
+    def _finished(self, row: RowState) -> None:
+        """A row has reached a status it is done in: its record is held packed from now on."""
+        if self.pack_finished and row.status in TERMINAL_ROW_STATUSES:
+            row.pack_record()
 
     def apply(self, event: Event) -> None:
         """Fold one event into the state. Safe to apply the same event again."""
@@ -429,11 +528,11 @@ class State:
             return
         call = CallState(
             call_id=call_id,
-            task_id=p["task_id"],
+            task_id=_shared(p["task_id"]),
             line=p["line"],
             attempt=int(p["attempt"]),
-            route=p["route"],
-            purpose=p["purpose"],
+            route=_shared(p["route"]),
+            purpose=_shared(p["purpose"]),
             est_usd=float(p.get("est_usd", 0.0)),
             est_input_tokens=int(p.get("est_input_tokens", 0)),
             max_output_tokens=int(p.get("max_output_tokens", 0)),
@@ -497,16 +596,22 @@ class State:
     def _finish_call(self, call: CallState, p: dict[str, Any], status: str, ts: str) -> None:
         call.status = status
         call.handle_id = p.get("handle_id", call.handle_id)
-        call.usage = dict(p.get("usage", {}))
+        call.usage = {_shared(key): value for key, value in dict(p.get("usage", {})).items()}
         call.usd = float(p.get("usd", 0.0))
-        call.price_table_date = p.get("price_table_date")
+        call.price_table_date = _shared(p.get("price_table_date"))
         call.minutes = float(p.get("minutes", 0.0))
-        call.tier = p.get("tier")
+        call.tier = _shared(p.get("tier"))
         call.finished_ts = ts
         cell = self._spend_cell(call.route, call.purpose)
         cell[1] = max(0.0, cell[1] - call.est_usd)
         cell[0] += call.usd
         cell[2] += 1
+
+    def _call_finished(self, call: CallState) -> None:
+        """The last step of a handler that finished a call: its feedback is held packed from now on (it is read again
+        only for the latest call of a repair, whose retry carries it on). Packing never raises."""
+        if self.pack_finished:
+            _pack_slot(call, "_feedback", list)
 
     def _on_call_returned(self, event: Event) -> None:
         p = event.payload
@@ -535,6 +640,7 @@ class State:
             original = self.rows.get(call.repair_of)
             if original is not None and original.repair is not None:
                 original.repair["rows"] = list(call.row_ids)
+        self._call_finished(call)
 
     def _on_call_failed(self, event: Event) -> None:
         p = event.payload
@@ -547,6 +653,7 @@ class State:
         call.billed = bool(p.get("billed", False))
         call.kind = p.get("kind")
         self._spend_cell(call.route, call.purpose)[3] += 1
+        self._call_finished(call)
 
     def _on_batch_collected(self, event: Event) -> None:
         batch = self.batches.get(event.payload["handle_id"])
@@ -592,6 +699,7 @@ class State:
                 original = self.rows.get(row.repair_of)
                 if original is not None and original.status == "repairing":
                     original.status = "repaired"
+                    self._finished(original)
 
     def _on_row_rejected(self, event: Event) -> None:
         p = event.payload
@@ -605,6 +713,7 @@ class State:
             "errors": [str(error) for error in p.get("errors", [])],
             "retry": bool(p.get("retry", False)),
         }
+        self._finished(row)
 
     def _on_row_set_aside(self, event: Event) -> None:
         p = event.payload
@@ -614,6 +723,7 @@ class State:
             if row is not None and row.status not in TERMINAL_ROW_STATUSES:
                 row.status = "set_aside"
                 row.rejection = {"by": "assessor", "reason": str(p.get("reason", "")), "errors": [], "retry": False}
+                self._finished(row)
             return
         call = self.calls.get(p["call_id"])
         if call is not None:
@@ -629,7 +739,7 @@ class State:
             family=p["family"],
             brief_version=str(p.get("brief_version", "")),
             created=event.ts,
-            items=[dict(item) for item in p["items"]],
+            items=[{_shared(key): _shared(value) if key in _SHARED_ITEM_KEYS else value for key, value in item.items()} for item in p["items"]],
         )
         self.packets[packet.packet_id] = packet
         for item in packet.items:
@@ -643,8 +753,8 @@ class State:
                     family=packet.family,
                     round=int(item.get("round", 1)),
                     audit=bool(item.get("audit", False)),
-                    stage=str(item["stage"]) if item.get("stage") else None,
-                    writer_family=str(item["writer_family"]) if item.get("writer_family") else None,
+                    stage=_shared(str(item["stage"])) if item.get("stage") else None,
+                    writer_family=_shared(str(item["writer_family"])) if item.get("writer_family") else None,
                 )
             )
             if not item.get("audit") and row.status in ("passed", "in_question"):
@@ -689,12 +799,12 @@ class State:
             return
         assignment.open = False
         verdict = {
-            "reviewer_id": p["reviewer_id"],
-            "family": p["family"],
-            "verdict": p["verdict"],
-            "reasons": list(p.get("reasons", [])),
+            "reviewer_id": _shared(p["reviewer_id"]),
+            "family": _shared(p["family"]),
+            "verdict": _shared(p["verdict"]),
+            "reasons": [_shared(reason) for reason in p.get("reasons", [])],
             "notes": str(p.get("notes", "")),
-            "packet_id": p["packet_id"],
+            "packet_id": assignment.packet_id,
             "audit": assignment.audit,
             "round": assignment.round,
         }
@@ -714,6 +824,7 @@ class State:
         if row.status == "accepted" and p.get("reason") != "audit_reject":
             return
         row.status = "in_question"
+        row.unpack_record()  # an accepted row an audit reviewer rejected is reviewed again: its record is read again
         row.escalations += 1
         if p.get("reason") == "audit_reject":
             row.reopened = True
@@ -774,6 +885,7 @@ class State:
             return
         row.status = "accepted"
         row.accepted_by = str(p.get("by", "reviewers"))
+        self._finished(row)
 
     def _on_hand_resolved(self, event: Event) -> None:
         p = event.payload
@@ -811,8 +923,10 @@ class State:
                 )
                 if call is not None:
                     call.row_ids.append(new_id)
+                self._finished(self.rows[new_id])
         else:
             raise ValueError(f"unknown hand decision: {decision!r}")
+        self._finished(row)
 
     @staticmethod
     def _set_aside_and_reopen(row: RowState, payload: dict[str, Any], ts: str) -> None:

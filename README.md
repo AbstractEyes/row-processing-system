@@ -6,7 +6,7 @@ repository. It runs on a Colab CPU runtime (and locally for tests) and can stop 
 (runtime lost, Ctrl+C, a stop file) and resume exactly where it left off, without repeating a
 call or a row.
 
-Version 0.6.14. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
+Version 0.6.15. It has real writers for Anthropic (Message Batches), OpenAI (one call at a time;
 the Batch API adapter is in the package, but this project does not use it), Gemini (inline
 batches) and DeepSeek (one call at a time, off-peak), a one-call route for each of the first
 three, the compiled rule pool with a prompt profile for each provider and its assessor
@@ -15,6 +15,19 @@ Everything is tested offline: with a fake writer, and with each adapter against 
 types built from recorded-response-shaped data.
 
 Licensed under the Apache License, Version 2.0 (see `LICENSE`).
+
+## What changed in 0.6.15
+
+The controller's state takes far less memory on a long job. Nothing it records, writes or decides changes: no event, no stored file, no status, count or decision. No prompt or rule changes, and the rules version is unchanged.
+
+| Change | What happens now |
+|---|---|
+| A finished row's record is held packed | The state is rebuilt from the whole event log and kept in memory, and most of it was the records of rows that are finished (accepted, rejected, set aside or written again). Such a row now holds its record as compressed JSON text; `row.record` decodes it on each read into a dictionary equal to the one written, so shipping, the hand queue file, packets and every query read the same row as before. A record is packed only when its JSON text reads back equal to it, and an accepted row an audit reviewer rejects holds its record as objects again |
+| A finished call's feedback is held packed | The notes a call carried (for a rewrite, the row as it was written) are read again only for the latest call of a rewrite; a call that has returned or failed holds them packed in the same way |
+| Texts that recur are shared | Reviewer ids, verdict words and reason codes, the keys of a call's usage, and the route, purpose and task id of a call are kept as one shared copy each |
+| `State(pack_finished=True)` | The default. `State(pack_finished=False)` keeps every record as objects, as before; a state built either way reads, snapshots and compares the same. No setting and no migration: a running job upgrades in place |
+| Memory and time | On a long job of several hundred thousand rows the controller's resident memory after its start fell to less than half of what it was. The replay at the start takes about twice as long, since it packs as it replays, and a pass's queries take a fraction of a second more |
+| Version | `0.6.15`; the notebook installs @v0.6.15 |
 
 ## What changed in 0.6.14
 
